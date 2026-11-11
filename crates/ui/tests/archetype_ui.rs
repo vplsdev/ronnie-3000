@@ -588,6 +588,31 @@ fn the_block_you_add_opens_on_the_stage() {
     );
 }
 
+#[test]
+fn a_loaded_tone_joins_the_library() {
+    use ronie_ui::services::RecentTones;
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let _ = driver.click("Add a block").expect("plus");
+    driver.settle();
+    let tone = ronie_core::Tone::from_value(serde_json::json!({
+        "id": 4343, "title": "Library amp", "format": "nam", "gear": "amp",
+        "models": [{"id": 434301, "name": "One", "model_url": "https://fixtures.invalid/m/434301.nam"}]
+    }))
+    .expect("tone");
+    driver.chrome_mut().pick_tone(tone);
+    for _ in 0..20 {
+        driver.settle();
+    }
+    assert_eq!(
+        driver.chrome().recent_tones().tones()[0].title,
+        "Library amp"
+    );
+    let stored = backend
+        .text_preference(RecentTones::KEY)
+        .expect("the library is stored");
+    assert!(stored.contains("Library amp"), "{stored}");
+}
+
 // ---------------------------------------------------------------- Task 8: designs
 
 #[test]

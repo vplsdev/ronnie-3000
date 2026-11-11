@@ -10,6 +10,7 @@ pub mod images;
 pub mod key_setup;
 pub(crate) mod links;
 pub mod load_flow;
+pub mod recent_tones;
 pub mod session;
 pub mod update;
 
@@ -29,5 +30,6 @@ pub use key_setup::{CommunityParts, KeySetup, KeySetupError, is_publishable_key}
 pub use load_flow::{
     LoadFlow, LoadPhase, LoadTarget, LoadTicket, ModelSwitchFlow, ModelSwitchTicket,
 };
+pub use recent_tones::RecentTones;
 pub use session::{AuthPhase, AuthSnapshot, Session, SessionStatus};
 pub use update::{UpdateCheck, UpdateInfo};

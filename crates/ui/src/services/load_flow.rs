@@ -327,6 +327,8 @@ pub struct LoadFlow {
     browser_open: bool,
     offline: bool,
     last_tone: Option<Tone>,
+    /// The tone of the last successful load, until [`Self::take_landed`] takes it.
+    landed: Option<Tone>,
 }
 
 impl LoadFlow {
@@ -342,6 +344,7 @@ impl LoadFlow {
             browser_open: false,
             offline: false,
             last_tone: None,
+            landed: None,
         }
     }
 
@@ -464,10 +467,16 @@ impl LoadFlow {
         if self.closed || generation != self.gate.current() {
             return false;
         }
+        self.landed = self.last_tone.clone();
         self.phase = LoadPhase::Ready;
         self.browser_open = false;
         self.pending = None;
         true
+    }
+
+    /// The tone of the last successful load. It comes out once.
+    pub fn take_landed(&mut self) -> Option<Tone> {
+        self.landed.take()
     }
 
     /// Records a failed load, which can retry. Returns false for a generation that is not current.
@@ -559,6 +568,7 @@ impl LoadFlow {
             self.phase = LoadPhase::Failed;
             return false;
         };
+        let loaded = tone.clone();
         let result = self.backend.dispatch(UiAction::LoadTone {
             target_insert_id,
             tone,
@@ -568,6 +578,7 @@ impl LoadFlow {
             self.phase = LoadPhase::Failed;
             return false;
         }
+        self.landed = Some(loaded);
         self.phase = LoadPhase::Ready;
         self.browser_open = false;
         self.pending = None;

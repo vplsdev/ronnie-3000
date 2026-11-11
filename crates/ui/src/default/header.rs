@@ -30,6 +30,7 @@ use crate::services::{
     key_setup::{CommunityParts, KeySetup, KeySetupError, is_publishable_key},
     links::open_web_url,
     load_flow::{LoadFlow, LoadPhase, LoadTicket, ModelSwitchFlow},
+    recent_tones::RecentTones,
     session::{AuthFlowAdapter, Session, SessionEvent, SessionStatus},
 };
 
@@ -127,6 +128,7 @@ pub struct ChromeController {
     /// Closed browser that keeps its query, results, and scroll for the next open.
     parked_browser: Option<BrowserView>,
     load_flow: LoadFlow,
+    recent_tones: RecentTones,
     model_switches: ModelSwitchFlow,
     /// Whether the worker can hold a model list or a switch of a detail.
     detail_work_live: bool,
@@ -230,6 +232,9 @@ impl ChromeController {
             browser: None,
             parked_browser: None,
             load_flow: LoadFlow::new(backend.clone()),
+            recent_tones: backend
+                .text_preference(RecentTones::KEY)
+                .map_or_else(RecentTones::default, |text| RecentTones::from_text(&text)),
             model_switches: ModelSwitchFlow::new(backend.clone()),
             detail_work_live: false,
             images: None,
@@ -939,8 +944,46 @@ impl ChromeController {
         &mut self.load_flow
     }
 
+    /// The tones that were loaded lately.
+    #[must_use]
+    pub const fn recent_tones(&self) -> &RecentTones {
+        &self.recent_tones
+    }
+
+    fn remember_tone(&mut self, tone: ronie_core::Tone) {
+        self.recent_tones.remember(tone);
+        // The list is a convenience, so a refused write loses only the memory of it.
+        let _ = self.backend.dispatch(UiAction::SetTextPreference {
+            key: RecentTones::KEY.to_owned(),
+            value: self.recent_tones.to_text(),
+        });
+    }
+
+    /// Loads a local file into one insert and puts its tone in the library.
+    ///
+    /// # Errors
+    /// Returns the error of the drop.
+    pub fn drop_file_into(
+        &mut self,
+        insert_id: &str,
+        path: &std::path::Path,
+    ) -> Result<(), UiError> {
+        self.gallery.drop_file(insert_id, path)?;
+        let chain = self.backend.chain_state(0).chain;
+        if let Some(tone) = chain
+            .block(&ronie_core::BlockId(insert_id.to_owned()))
+            .and_then(|block| block.tone.clone())
+        {
+            self.remember_tone(tone);
+        }
+        Ok(())
+    }
+
     /// Opens tone selection for the gallery target and closes completed flows.
     pub fn sync_browser(&mut self) {
+        if let Some(tone) = self.load_flow.take_landed() {
+            self.remember_tone(tone);
+        }
         // A finished phase stays set until the next selection, so it closes an open browser
         // one time. It must not act on a selection that the user makes later.
         if self.browser.is_some()
