@@ -1413,11 +1413,250 @@ impl BlockDetail {
         let body = Rect::from_min_max(tabs.left_bottom(), page.max);
         match self.view {
             BlockView::Tone => self.show_tone(ui, body, session),
-            BlockView::Eq => {
-                let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
-                self.eq.show(&mut body_ui);
+            BlockView::Eq => self.show_light_eq(ui, body, look),
+            BlockView::Info => self.show_light_info(ui, body, look),
+        }
+    }
+
+    /// The EQ tab of the light page: the curve on a light card, and a row with the EQ power,
+    /// the band chips and the PRE / POST switch.
+    fn show_light_eq(&mut self, ui: &mut egui::Ui, rect: Rect, look: crate::theme::Look) {
+        if self.eq.view() != EqViewMode::Curve {
+            self.eq.set_view(EqViewMode::Curve);
+        }
+        let card = Rect::from_min_max(
+            rect.min + egui::vec2(0.0, 12.0),
+            rect.max - egui::vec2(0.0, 36.0),
+        );
+        ui.painter().rect_filled(card, 10.0, look.panel);
+        ui.painter().rect_stroke(
+            card,
+            10.0,
+            egui::Stroke::new(1.0, CARD_EDGE),
+            egui::StrokeKind::Inside,
+        );
+        let inner = card.shrink(1.0);
+        let mut card_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+        card_ui.set_clip_rect(inner);
+        self.eq.show(&mut card_ui);
+
+        let cy = card.bottom() + 20.0;
+        let mut x = rect.left();
+        let enabled = self.eq.params().enabled;
+        let label = if enabled { "EQ ON" } else { "EQ OFF" };
+        let width = text_width(ui, label, 10.0) + 4.0;
+        let power = Rect::from_min_max(egui::pos2(x, cy - 11.0), egui::pos2(x + width, cy + 11.0));
+        if page_toggle(ui, power, label, "EQ power", enabled, look).clicked() {
+            let _ = self.set_eq_enabled(!enabled);
+        }
+        x = power.right() + 16.0;
+        for index in 0..self.eq.params().bands.len() {
+            let chip = Rect::from_min_size(egui::pos2(x, cy - 11.0), egui::Vec2::splat(22.0));
+            x = chip.right() + 6.0;
+            let selected = self.eq.selected() == index;
+            let name = format!("Select band {}", index + 1);
+            let response = ui.interact(
+                chip,
+                ui.scope_id().with(("band-chip", index)),
+                Sense::click(),
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name)
+            });
+            let fill = if selected {
+                look.accent
+            } else if response.hovered() {
+                look.edge
+            } else {
+                CHIP_FILL
+            };
+            ui.painter().rect_filled(chip, 4.0, fill);
+            ui.painter().text(
+                chip.center(),
+                egui::Align2::CENTER_CENTER,
+                (index + 1).to_string(),
+                bold_font(11.0),
+                if selected { Color32::WHITE } else { look.text },
+            );
+            if response.clicked() {
+                self.eq.select_band(index);
             }
-            BlockView::Info => self.show_info(ui, body, session),
+        }
+
+        // PRE [switch] POST on the right; the knob sits by the active word.
+        let pre = self.eq.params().pre;
+        let pre_width = text_width(ui, "PRE", 11.0);
+        let post_width = text_width(ui, "POST", 11.0);
+        let total = pre_width + 8.0 + 30.0 + 8.0 + post_width;
+        let area = Rect::from_min_max(
+            egui::pos2(rect.right() - total, cy - 11.0),
+            egui::pos2(rect.right(), cy + 11.0),
+        );
+        let response = ui.interact(area, ui.scope_id().with("eq-pre-post"), Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::Button, true, pre, "PRE / POST")
+        });
+        let painter = ui.painter();
+        let word = |on: bool| if on { look.text } else { TAB_IDLE };
+        painter.text(
+            egui::pos2(area.left(), cy),
+            egui::Align2::LEFT_CENTER,
+            "PRE",
+            bold_font(11.0),
+            word(pre),
+        );
+        let track = Rect::from_min_size(
+            egui::pos2(area.left() + pre_width + 8.0, cy - 8.0),
+            egui::vec2(30.0, 16.0),
+        );
+        painter.rect_filled(track, 8.0, CHIP_FILL);
+        painter.rect_stroke(
+            track,
+            8.0,
+            egui::Stroke::new(1.0, CHIP_EDGE),
+            egui::StrokeKind::Inside,
+        );
+        let knob_x = if pre {
+            track.left() + 8.0
+        } else {
+            track.right() - 8.0
+        };
+        painter.circle_filled(egui::pos2(knob_x, cy), 6.0, look.text);
+        painter.text(
+            egui::pos2(area.right(), cy),
+            egui::Align2::RIGHT_CENTER,
+            "POST",
+            bold_font(11.0),
+            word(!pre),
+        );
+        if response.clicked() {
+            let _ = self.set_eq_pre(!pre);
+        }
+    }
+
+    /// The INFO tab of the light page: artwork, title, maker and counts, makes and tags,
+    /// description and the tone's page.
+    fn show_light_info(&mut self, ui: &mut egui::Ui, rect: Rect, look: crate::theme::Look) {
+        let Some(tone) = self.block.tone.clone() else {
+            return;
+        };
+        let side = (rect.height() - 24.0).clamp(80.0, 200.0);
+        let artwork =
+            Rect::from_min_size(rect.min + egui::vec2(0.0, 16.0), egui::Vec2::splat(side));
+        self.show_artwork(ui, artwork);
+        let column = Rect::from_min_max(
+            egui::pos2(artwork.right() + 24.0, artwork.top()),
+            rect.right_bottom(),
+        );
+        let mut info_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(column)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        info_ui.set_clip_rect(column);
+        info_ui.spacing_mut().item_spacing = egui::vec2(6.0, 10.0);
+        info_ui.add(
+            egui::Label::new(
+                egui::RichText::new(&tone.title)
+                    .font(bold_font(18.0))
+                    .color(look.text),
+            )
+            .selectable(false)
+            .truncate(),
+        );
+        let maker = tone.raw.get("user").and_then(|user| {
+            user.get("display_name")
+                .or_else(|| user.get("username"))
+                .and_then(serde_json::Value::as_str)
+        });
+        let count = |key: &str| tone.raw.get(key).and_then(serde_json::Value::as_u64);
+        let mut byline = Vec::new();
+        if let Some(maker) = maker {
+            byline.push(format!("by {maker}"));
+        }
+        if let Some(downloads) = count("downloads_count") {
+            byline.push(format!("{} downloads", format_count(downloads)));
+        }
+        if let Some(favorites) = count("favorites_count") {
+            byline.push(format!("{} favourites", format_count(favorites)));
+        }
+        if !byline.is_empty() {
+            info_ui.add(
+                egui::Label::new(
+                    egui::RichText::new(byline.join(" · "))
+                        .size(12.0)
+                        .color(look.text_muted),
+                )
+                .selectable(false)
+                .truncate(),
+            );
+        }
+        let chips: Vec<String> = super::block_info::clean_strings(tone.raw.get("makes"))
+            .into_iter()
+            .chain(super::block_info::clean_strings(tone.raw.get("tags")))
+            .take(8)
+            .collect();
+        if !chips.is_empty() {
+            info_ui.horizontal_wrapped(|ui| {
+                for chip in &chips {
+                    let galley = ui.painter().layout_no_wrap(
+                        chip.clone(),
+                        egui::FontId::proportional(11.0),
+                        look.text,
+                    );
+                    let (chip_rect, _) = ui.allocate_exact_size(
+                        galley.size() + egui::vec2(20.0, 12.0),
+                        Sense::hover(),
+                    );
+                    let radius = chip_rect.height() / 2.0;
+                    ui.painter().rect_filled(chip_rect, radius, look.panel);
+                    ui.painter().rect_stroke(
+                        chip_rect,
+                        radius,
+                        egui::Stroke::new(1.0, CHIP_EDGE),
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.painter()
+                        .galley(chip_rect.min + egui::vec2(10.0, 6.0), galley, look.text);
+                }
+            });
+        }
+        if let Some(text) = super::block_info::description(&tone) {
+            info_ui.add(
+                egui::Label::new(egui::RichText::new(text).size(12.0).color(INFO_BODY))
+                    .selectable(false)
+                    .wrap(),
+            );
+        }
+        let url = self.share_url();
+        if is_web_url(&url) {
+            let galley = info_ui.painter().layout_no_wrap(
+                "Open on TONE3000".to_owned(),
+                bold_font(12.0),
+                look.text,
+            );
+            let (button, response) =
+                info_ui.allocate_exact_size(galley.size() + egui::vec2(28.0, 16.0), Sense::click());
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Link, true, "Open on TONE3000")
+            });
+            let painter = info_ui.painter();
+            let fill = if response.hovered() {
+                Color32::WHITE
+            } else {
+                look.panel
+            };
+            painter.rect_filled(button, 6.0, fill);
+            painter.rect_stroke(
+                button,
+                6.0,
+                egui::Stroke::new(1.0, CHIP_EDGE),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(button.min + egui::vec2(14.0, 8.0), galley, look.text);
+            if response.clicked() {
+                open_web_url(ui.ctx(), url);
+            }
         }
     }
 
@@ -1909,6 +2148,19 @@ impl BlockDetail {
 /// Colour of a tab that is not open.
 const TAB_IDLE: Color32 = Color32::from_rgb(0x6b, 0x6b, 0x68);
 
+/// Fill of the light page's chips and switch tracks.
+const CHIP_FILL: Color32 = Color32::from_rgb(0xe5, 0xe5, 0xe2);
+/// Edge of the light page's chips, buttons and switch tracks.
+const CHIP_EDGE: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcc);
+/// Edge of the light EQ card.
+const CARD_EDGE: Color32 = Color32::from_rgb(0xdc, 0xdc, 0xd9);
+/// Body text of the light INFO tab.
+const INFO_BODY: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
+
+fn bold_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("arimo-bold".into()))
+}
+
 /// A small uppercase text action of the light page, such as BYPASS.
 fn page_text_button(
     ui: &mut egui::Ui,
@@ -1917,12 +2169,24 @@ fn page_text_button(
     active: bool,
     look: crate::theme::Look,
 ) -> egui::Response {
+    page_toggle(ui, rect, label, label, active, look)
+}
+
+/// A small uppercase text action whose accessible name may differ from its text.
+fn page_toggle(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    label: &'static str,
+    name: &'static str,
+    active: bool,
+    look: crate::theme::Look,
+) -> egui::Response {
     let response = ui.interact(
         rect,
-        ui.scope_id().with(("page-action", label)),
+        ui.scope_id().with(("page-action", name)),
         Sense::click(),
     );
-    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, active, label));
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, active, name));
     let color = if active {
         look.accent
     } else if response.hovered() {

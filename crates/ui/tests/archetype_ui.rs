@@ -1016,3 +1016,56 @@ fn an_amp_shares_the_stage_with_no_one() {
     driver.settle();
     assert!(driver.label_starting_with("Pedal render").is_none());
 }
+
+// ---------------------------------------------------------------- Light EQ and INFO
+
+fn eq_block(backend: &MockBackend) -> ronie_core::EqParams {
+    block_titled(backend, "AC30").expect("amp").params.eq
+}
+
+#[test]
+fn the_eq_page_has_band_chips_power_and_pre_post() {
+    let (mut driver, backend) = amp_page();
+    let _ = driver.click("EQ").expect("EQ tab");
+    driver.settle();
+    for band in 1..=6 {
+        assert!(
+            driver.is_visible(&format!("Select band {band}")),
+            "band {band}"
+        );
+    }
+    let _ = driver.click("Select band 3").expect("band 3");
+    driver.settle();
+    assert_eq!(
+        driver
+            .chrome()
+            .detail()
+            .map(|detail| detail.eq().selected()),
+        Some(2)
+    );
+    assert!(!eq_block(&backend).enabled);
+    let _ = driver.click("EQ power").expect("power");
+    driver.settle();
+    assert!(eq_block(&backend).enabled, "the EQ turns on");
+    assert!(!eq_block(&backend).pre);
+    let _ = driver.click("PRE / POST").expect("pre/post");
+    driver.settle();
+    assert!(eq_block(&backend).pre, "the EQ moves before the block");
+}
+
+#[test]
+fn the_eq_page_shows_the_curve() {
+    let (mut driver, _) = amp_page();
+    let _ = driver.click("EQ").expect("EQ tab");
+    driver.settle();
+    assert!(driver.is_visible("Band 1 frequency and gain"));
+}
+
+#[test]
+fn the_info_page_shows_the_tone_and_its_page_link() {
+    let (mut driver, _) = amp_page();
+    let _ = driver.click("INFO").expect("INFO tab");
+    driver.settle();
+    assert!(driver.shows_text("'02 Vox AC30/6 Top Boost"));
+    assert!(driver.is_visible("Open on TONE3000"));
+}
