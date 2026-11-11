@@ -1540,6 +1540,22 @@ impl ChromeController {
         self.faceplate.measuring()
     }
 
+    /// The global panel.
+    pub fn faceplate_mut(&mut self) -> &mut Faceplate {
+        &mut self.faceplate
+    }
+
+    /// Whether the audio engine runs in its low-latency "optimize" mode.
+    #[must_use]
+    pub fn optimize(&self) -> bool {
+        super::tuning::optimize(self.backend.as_ref())
+    }
+
+    /// Turns the low-latency "optimize" mode on or off.
+    pub fn set_optimize(&mut self, enabled: bool) -> Result<(), UiError> {
+        super::tuning::set_optimize(self.backend.as_ref(), enabled)
+    }
+
     /// Whether the tuner is visible.
     #[must_use]
     pub fn tuner_visible(&self) -> bool {

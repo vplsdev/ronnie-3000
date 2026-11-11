@@ -74,6 +74,8 @@ const CONTROLS: &[Control] = &[
     },
 ];
 
+/// Width of the Mono/Stereo lanes switch.
+const LANES_WIDTH: f32 = 64.0;
 const PRIMARY: f32 = 48.0;
 const SECONDARY: f32 = 36.0;
 const ICON: f32 = 20.0;
@@ -85,6 +87,10 @@ const KNOB_HEIGHT_SECONDARY: f32 = 63.0;
 /// Persistent faceplate bindings and optional advanced deck.
 pub struct Faceplate {
     backend: Arc<dyn UiBackend>,
+    /// Whether the Mono/Stereo lanes switch shows after Input.
+    lanes: bool,
+    /// A lanes change the user asked for, for the controller to apply.
+    lanes_request: Option<bool>,
     knobs: Vec<(Control, Knob)>,
     active_deck: Option<DeckModel>,
     deck_anchor: Option<Pos2>,
@@ -116,6 +122,8 @@ impl Faceplate {
             deck_anchor: None,
             deck_trigger: None,
             input_mode_open: false,
+            lanes: false,
+            lanes_request: None,
         }
     }
 
@@ -240,7 +248,13 @@ impl Faceplate {
         let gate = self.effect_visible("gateThreshold");
         let pitch = self.effect_visible("pitchSemitones");
         let input_mode = chain.stereo_input;
-        let input_w = PRIMARY + if input_mode { GROUP_GAP + 38.0 } else { 0.0 };
+        let input_w = PRIMARY
+            + if input_mode { GROUP_GAP + 38.0 } else { 0.0 }
+            + if self.lanes {
+                GROUP_GAP + LANES_WIDTH
+            } else {
+                0.0
+            };
         let effects_w = if gate { 66.0 } else { 0.0 }
             + if pitch { 66.0 } else { 0.0 }
             + if gate && pitch { TONE_GAP } else { 0.0 };
@@ -324,6 +338,17 @@ impl Faceplate {
                 self.input_mode_open = !self.input_mode_open;
             }
             self.show_input_mode_menu(ui, &response, stereo, chain.branch.is_some());
+        }
+        if self.lanes {
+            let lanes_x = x + input_w - LANES_WIDTH;
+            self.show_lanes(
+                ui,
+                &painter,
+                lanes_x,
+                content.top(),
+                content.bottom(),
+                stereo,
+            );
         }
         x += input_w + gap;
 
@@ -703,6 +728,75 @@ impl Faceplate {
     }
 
     /// Shows the open deck above its knob. `bar_top` is the top edge of the bottom bar.
+    /// Shows the Mono/Stereo lanes switch after Input.
+    pub fn set_show_lanes(&mut self, shown: bool) {
+        self.lanes = shown;
+    }
+
+    /// The lanes change the user asked for since the last call: `Some(true)` for stereo.
+    pub fn take_lanes_request(&mut self) -> Option<bool> {
+        self.lanes_request.take()
+    }
+
+    fn show_lanes(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        x: f32,
+        top: f32,
+        bottom: f32,
+        stereo: bool,
+    ) {
+        let look = crate::theme::Look::get(ui.ctx());
+        let center_x = x + LANES_WIDTH / 2.0;
+        painter.text(
+            egui::pos2(center_x, top + 7.0),
+            egui::Align2::CENTER_CENTER,
+            "LANES",
+            egui::FontId::new(11.0, egui::FontFamily::Name("arimo-bold".into())),
+            look.text,
+        );
+        let track = Rect::from_min_size(egui::pos2(x + 4.0, top + 22.0), egui::vec2(18.0, 40.0));
+        painter.rect(
+            track,
+            9.0,
+            look.edge,
+            Stroke::new(1.0, look.edge),
+            egui::StrokeKind::Inside,
+        );
+        let dot_y = if stereo {
+            track.top() + 9.0
+        } else {
+            track.bottom() - 9.0
+        };
+        painter.circle_filled(egui::pos2(track.center().x, dot_y), 6.0, look.text);
+        let rows = [
+            ("Stereo", "Stereo mode", true, track.top() + 9.0),
+            ("Mono", "Mono mode", false, track.bottom() - 9.0),
+        ];
+        for (text, label, wants_stereo, y) in rows {
+            let row =
+                Rect::from_min_max(egui::pos2(x, y - 9.0), egui::pos2(x + LANES_WIDTH, y + 9.0));
+            let response = ui.interact(row, ui.scope_id().with(label), Sense::click());
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+            painter.text(
+                egui::pos2(track.right() + 8.0, y),
+                egui::Align2::LEFT_CENTER,
+                text,
+                egui::FontId::proportional(11.0),
+                if wants_stereo == stereo {
+                    look.text
+                } else {
+                    look.text_muted
+                },
+            );
+            if response.clicked() && wants_stereo != stereo {
+                self.lanes_request = Some(wants_stereo);
+            }
+        }
+        let _ = bottom;
+    }
+
     fn show_deck(&mut self, ui: &mut egui::Ui, bar_top: f32) {
         let Some(kind) = self.active_deck.as_ref().map(DeckModel::kind) else {
             return;

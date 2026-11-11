@@ -39,7 +39,11 @@ pub(super) fn show(
         .exact_size(UTILITY_HEIGHT)
         .frame(egui::Frame::NONE.fill(look.utility))
         .show(ui, |ui| utility::show_utility(ui, chrome, state));
+    chrome.faceplate_mut().set_show_lanes(true);
     show_faceplate(ui, chrome, look.panel);
+    if let Some(stereo) = chrome.faceplate_mut().take_lanes_request() {
+        let _ = chrome.set_stereo(stereo);
+    }
 
     // Settle selection first, so that the stage decides on this frame's state and never falls
     // through to the reference chain gallery.
@@ -69,6 +73,9 @@ pub(super) fn show(
         }
     }
     focus.store(ui.ctx());
+    if let Some(detail) = chrome.detail_mut() {
+        detail.set_back_link(false);
+    }
     show_stage(ui, chrome, now_ms);
 }
 

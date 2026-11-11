@@ -56,7 +56,7 @@ pub(super) fn show_header(
 
     show_logo(ui, chrome, bounds, look);
     show_strip(ui, chrome, state, bounds, look);
-    show_presets(ui, chrome, bounds, look);
+    show_presets(ui, chrome, state, bounds, look);
 }
 
 fn show_logo(ui: &mut egui::Ui, chrome: &mut ChromeController, bounds: Rect, look: Look) {
@@ -331,20 +331,41 @@ fn show_plus(
     ));
     draw_plus(&painter, rect.shrink(10.0), color);
     if response.clicked() {
-        let insert = state
-            .chain
-            .left
-            .iter()
-            .rev()
-            .find(|block| block.is_insert)
-            .map(|block| block.id.0.clone());
-        if let Some(id) = insert {
+        let selected = match chrome.gallery().selection() {
+            GallerySelection::BlockDetail(id) => Some(id.clone()),
+            _ => None,
+        };
+        if let Some(id) = lane_insert(state, selected.as_ref()) {
             chrome.gallery_mut().activate(&id);
         }
     }
 }
 
-fn show_presets(ui: &mut egui::Ui, chrome: &mut ChromeController, bounds: Rect, look: Look) {
+/// The insert block of the lane that holds the selected block: lane B when the selected block
+/// sits there, else lane A.
+pub(super) fn lane_insert(
+    state: &ChainViewState,
+    selected: Option<&ronie_core::BlockId>,
+) -> Option<String> {
+    let in_right = selected.is_some_and(|id| state.chain.right.iter().any(|block| &block.id == id));
+    let lane = if in_right {
+        &state.chain.right
+    } else {
+        &state.chain.left
+    };
+    lane.iter()
+        .rev()
+        .find(|block| block.is_insert)
+        .map(|block| block.id.0.clone())
+}
+
+fn show_presets(
+    ui: &mut egui::Ui,
+    chrome: &mut ChromeController,
+    state: &ChainViewState,
+    bounds: Rect,
+    look: Look,
+) {
     let painter = ui.painter().clone();
     let left = bounds.left() + PRESETS_LEFT;
     let right = bounds.left() + PRESETS_RIGHT;
@@ -376,6 +397,46 @@ fn show_presets(ui: &mut egui::Ui, chrome: &mut ChromeController, bounds: Rect, 
     }
     if next.clicked() {
         let _ = chrome.next_preset();
+    }
+
+    // Undo and redo, after the preset arrows.
+    let undo = hit(
+        ui,
+        Rect::from_min_size(egui::pos2(left + 66.0, row_top), egui::vec2(24.0, 22.0)),
+        "Undo",
+        state.can_undo,
+    );
+    let redo = hit(
+        ui,
+        Rect::from_min_size(egui::pos2(left + 92.0, row_top), egui::vec2(24.0, 22.0)),
+        "Redo",
+        state.can_redo,
+    );
+    draw_undo(
+        &painter,
+        undo.rect,
+        false,
+        if state.can_undo {
+            look.text
+        } else {
+            look.text_muted
+        },
+    );
+    draw_undo(
+        &painter,
+        redo.rect,
+        true,
+        if state.can_redo {
+            look.text
+        } else {
+            look.text_muted
+        },
+    );
+    if undo.clicked() {
+        let _ = chrome.undo();
+    }
+    if redo.clicked() {
+        let _ = chrome.redo();
     }
 
     let action_font = egui::FontId::new(11.0, egui::FontFamily::Name("arimo-bold".into()));
@@ -469,6 +530,29 @@ fn show_presets(ui: &mut egui::Ui, chrome: &mut ChromeController, bounds: Rect, 
         Overlay::None => chrome.set_overlay_trigger(None),
         Overlay::Account => {}
     }
+}
+
+/// A curved arrow: pointing left for undo, mirrored for redo.
+fn draw_undo(painter: &egui::Painter, rect: Rect, mirrored: bool, color: Color32) {
+    let center = rect.center();
+    let sign = if mirrored { -1.0 } else { 1.0 };
+    let radius = 5.0;
+    let arc_center = center + egui::vec2(0.0, 1.0);
+    let points: Vec<egui::Pos2> = (0..=12)
+        .map(|step| {
+            let angle = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * step as f32 / 12.0;
+            arc_center + egui::vec2(sign * radius * angle.cos(), radius * angle.sin())
+        })
+        .collect();
+    let start = points[0];
+    let stroke = Stroke::new(1.6, color);
+    painter.line(points.clone(), stroke);
+    let tail = points[points.len() - 1];
+    painter.line_segment([tail, tail + egui::vec2(-sign * 3.0, 0.0)], stroke);
+    let tip = start + egui::vec2(-sign * 3.0, 0.0);
+    painter.line_segment([start, tip], stroke);
+    painter.line_segment([tip, tip + egui::vec2(sign * 3.0, -3.0)], stroke);
+    painter.line_segment([tip, tip + egui::vec2(sign * 3.0, 3.0)], stroke);
 }
 
 fn hit(ui: &mut egui::Ui, rect: Rect, label: &'static str, enabled: bool) -> egui::Response {

@@ -587,3 +587,97 @@ fn the_block_you_add_opens_on_the_stage() {
         driver.chrome().gallery().selection()
     );
 }
+
+// ---------------------------------------------------------------- Task 8: designs
+
+#[test]
+fn the_utility_bar_holds_the_designed_items() {
+    let (driver, _) = archetype_driver("main-mono");
+    for label in [
+        "Tuner", "MIDI", "Optimize", "TONE3000", "Settings", "Account",
+    ] {
+        let rect = rect_of(&driver, label).unwrap_or_else(|| panic!("{label} is missing"));
+        assert!(
+            rect.min.y >= 578.0 - 1.0,
+            "{label} sits in the utility bar: {rect:?}"
+        );
+    }
+}
+
+#[test]
+fn optimize_toggles_from_the_utility_bar() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let before = ronie_ui::default::tuning::optimize(backend.as_ref());
+    let _ = driver.click("Optimize").expect("optimize");
+    driver.settle();
+    assert_ne!(
+        ronie_ui::default::tuning::optimize(backend.as_ref()),
+        before
+    );
+}
+
+#[test]
+fn tone3000_opens_the_tone_browser() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver.click("TONE3000").expect("tone3000");
+    driver.settle();
+    assert!(driver.chrome_mut().browser_mut().is_some());
+}
+
+#[test]
+fn undo_and_redo_sit_in_the_preset_manager() {
+    let (driver, _) = archetype_driver("main-mono");
+    for label in ["Undo", "Redo"] {
+        let rect = rect_of(&driver, label).unwrap_or_else(|| panic!("{label} is missing"));
+        assert!(
+            rect.max.y <= 64.0 && rect.min.x >= 652.0,
+            "{label} sits in the header: {rect:?}"
+        );
+    }
+}
+
+#[test]
+fn the_lanes_switch_sits_in_the_global_panel() {
+    let (driver, _) = archetype_driver("main-mono");
+    for label in ["Mono mode", "Stereo mode"] {
+        let rect = rect_of(&driver, label).unwrap_or_else(|| panic!("{label} is missing"));
+        assert!(
+            (470.0..578.0).contains(&rect.center().y),
+            "{label} sits in the panel: {rect:?}"
+        );
+    }
+}
+
+#[test]
+fn the_block_page_has_no_back_link() {
+    let (driver, _) = archetype_driver("main-mono");
+    assert!(driver.chrome().gallery().selection() != &GallerySelection::None);
+    assert!(!driver.is_visible("Back to chain"));
+}
+
+#[test]
+fn plus_adds_to_the_lane_of_the_selected_block() {
+    let (mut driver, _) = archetype_driver("main-stereo");
+    let _ = driver.click("Chain: Roland JC-40").expect("lane B block");
+    driver.settle();
+    let _ = driver.click("Add a block").expect("plus");
+    driver.settle();
+    assert!(
+        matches!(
+            driver.chrome().gallery().selection(),
+            GallerySelection::SelectTone {
+                side: ronie_core::ChainSide::Right,
+                ..
+            }
+        ) || driver.chrome_mut().browser_mut().is_some()
+            && !matches!(
+                driver.chrome().gallery().selection(),
+                GallerySelection::SelectTone {
+                    side: ronie_core::ChainSide::Left,
+                    ..
+                }
+            ),
+        "the browser fills lane B: {:?}",
+        driver.chrome().gallery().selection()
+    );
+}
