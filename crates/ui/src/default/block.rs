@@ -1865,7 +1865,7 @@ impl BlockDetail {
             let width = text_width(ui, label, 10.0) + 4.0;
             let button =
                 Rect::from_min_max(egui::pos2(x, cy - 11.0), egui::pos2(x + width, cy + 11.0));
-            if page_text_button(ui, button, label, full, look).clicked() {
+            if page_toggle(ui, button, label, "Full size", full, look).clicked() {
                 let _ = self.set_slim_full(!full);
             }
             x = button.right() + 16.0;

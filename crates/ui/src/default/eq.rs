@@ -1305,7 +1305,7 @@ fn paint_curve_grid(ui: &egui::Ui, rect: Rect) {
                 if gain == 0.0 {
                     colors.grid_zero
                 } else {
-                    colors.grid
+                    colors.grid_minor
                 },
             ),
         );
@@ -1516,6 +1516,8 @@ struct EqColors {
     dot_selected: Color32,
     dot_edge: Color32,
     grid: Color32,
+    /// The ±7.5 dB lines.
+    grid_minor: Color32,
     grid_zero: Color32,
     label: Color32,
     muted: Color32,
@@ -1541,6 +1543,7 @@ impl EqColors {
                 dot_selected: look.accent,
                 dot_edge: look.text,
                 grid: Color32::from_rgb(0xe5, 0xe5, 0xe2),
+                grid_minor: Color32::from_rgb(0xe5, 0xe5, 0xe2),
                 grid_zero: Color32::from_rgb(0xcf, 0xcf, 0xcc),
                 label: Color32::from_rgb(0x6b, 0x6b, 0x68),
                 muted: look.text_muted,
@@ -1561,6 +1564,7 @@ impl EqColors {
                 dot_selected: Color32::WHITE,
                 dot_edge: Color32::BLACK,
                 grid: Color32::from_rgba_unmultiplied(235, 235, 245, 18),
+                grid_minor: Color32::from_rgba_unmultiplied(235, 235, 245, 12),
                 grid_zero: Color32::from_rgba_unmultiplied(235, 235, 245, 46),
                 label: crate::theme::palette::GRAPH_LABEL,
                 muted: crate::theme::palette::TEXT_MUTED,
@@ -1572,5 +1576,24 @@ impl EqColors {
                 spectrum: None,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod light_colors {
+    use super::*;
+
+    #[test]
+    fn the_reference_curve_grid_keeps_its_two_weights() {
+        let ctx = egui::Context::default();
+        let colors = EqColors::for_ctx(&ctx);
+        assert_eq!(
+            colors.grid,
+            Color32::from_rgba_unmultiplied(235, 235, 245, 18)
+        );
+        assert_eq!(
+            colors.grid_minor,
+            Color32::from_rgba_unmultiplied(235, 235, 245, 12)
+        );
     }
 }

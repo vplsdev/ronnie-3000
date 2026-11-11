@@ -1069,3 +1069,18 @@ fn the_info_page_shows_the_tone_and_its_page_link() {
     assert!(driver.shows_text("'02 Vox AC30/6 Top Boost"));
     assert!(driver.is_visible("Open on TONE3000"));
 }
+
+#[test]
+fn the_size_toggle_keeps_one_name() {
+    let (mut driver, backend) = amp_page();
+    backend
+        .dispatch(ronie_ui::backend::UiAction::SetPreference {
+            key: "t3k.showBlockSizeControl".to_owned(),
+            value: true,
+        })
+        .expect("show size");
+    driver.settle();
+    let _ = driver.click("Full size").expect("size toggle");
+    driver.settle();
+    assert!(driver.is_visible("Full size"), "the name survives the flip");
+}
