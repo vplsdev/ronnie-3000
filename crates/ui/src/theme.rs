@@ -190,6 +190,8 @@ pub struct Look {
     pub icon_on: egui::Color32,
     /// Chain icon of a bypassed block.
     pub icon_bypassed: egui::Color32,
+    /// Wash over a control that is switched off.
+    pub veil: egui::Color32,
 }
 
 impl Look {
@@ -208,6 +210,7 @@ impl Look {
             icon_selected: egui::Color32::WHITE,
             icon_on: palette::TEXT_MUTED,
             icon_bypassed: palette::TEXT_SUBTLE,
+            veil: palette::KNOB_VEIL,
         }
     }
 
@@ -226,6 +229,7 @@ impl Look {
             icon_selected: egui::Color32::from_rgb(0x11, 0x11, 0x11),
             icon_on: egui::Color32::from_rgb(0x6b, 0x6b, 0x68),
             icon_bypassed: egui::Color32::from_rgb(0xb9, 0xb9, 0xb6),
+            veil: egui::Color32::from_rgba_premultiplied(0xa7, 0xa7, 0xa6, 0xaa),
         }
     }
 

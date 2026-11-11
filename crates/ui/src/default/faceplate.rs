@@ -331,7 +331,7 @@ impl Faceplate {
             let rect = secondary_rect(x);
             let knob = self.knob(ui, "gateThreshold", rect, SECONDARY, Some(DeckKind::Gate));
             if !self.enabled("gateEnabled") {
-                painter.rect_filled(rect, 0.0, crate::theme::palette::KNOB_VEIL);
+                painter.rect_filled(rect, 0.0, crate::theme::Look::get(painter.ctx()).veil);
             }
             power_button(
                 ui,
@@ -369,7 +369,7 @@ impl Faceplate {
                 let _ = super::tuning::apply_optimize(self.backend.as_ref());
             }
             if !self.enabled("pitchEnabled") {
-                painter.rect_filled(rect, 0.0, crate::theme::palette::KNOB_VEIL);
+                painter.rect_filled(rect, 0.0, crate::theme::Look::get(painter.ctx()).veil);
             }
             power_button(
                 ui,
@@ -405,7 +405,7 @@ impl Faceplate {
                     egui::vec2(3.0 * PRIMARY + 2.0 * TONE_GAP, KNOB_HEIGHT_PRIMARY),
                 ),
                 0.0,
-                crate::theme::palette::KNOB_VEIL,
+                crate::theme::Look::get(painter.ctx()).veil,
             );
         }
         power_button(

@@ -6,6 +6,22 @@ All notable changes to Ronnie 3000 are in this file. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- An Archetype-style layout, opened with `ronie --layout archetype`. It has a light window
+  whose header shows the signal chain as gear icons, with a + to add a block and the preset
+  manager on the right. The selected block fills the stage, the global controls sit in a light
+  panel, and a black utility bar holds the tuner, mono and stereo, undo and redo, account and
+  settings. The current layout stays the default.
+- Tiles without artwork show the gear family of their capture (for example a chime combo, a
+  British head, a 4x12 or a green overdrive), recognised from the capture's name, its
+  TONE3000 makes, or the make and model in the `.nam` file.
+
+### Fixed
+
+- `.nam` files imported from disk lost their gear type, because Ronnie read the metadata
+  from the wrong place. Ronnie now also keeps their make, model and tone type.
+
 ## [0.1.0] - 2026-11-11
 
 The first public release.

@@ -362,3 +362,16 @@ fn utility_undo_redo_follow_history() {
         "redo bypassed it again"
     );
 }
+
+#[test]
+fn disabled_controls_fade_into_the_light_panel() {
+    let veil = color_text(ronie_ui::theme::palette::KNOB_VEIL);
+    assert!(
+        faceplate_shapes(Look::reference()).contains(&veil),
+        "the reference dims with the dark veil"
+    );
+    assert!(
+        !faceplate_shapes(Look::archetype()).contains(&veil),
+        "no dark veil on the light panel"
+    );
+}

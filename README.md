@@ -161,6 +161,9 @@ downloads the latest release instead. See [CONTRIBUTING.md](CONTRIBUTING.md) for
 3. **Leave OPTIMIZE on.** It sits in the pitch panel and keeps the delay as low as your system
    allows. The readout under it shows the estimated delay.
 
+To try the Archetype-style layout, a light window with the chain as gear icons in the header,
+start Ronnie with `ronie --layout archetype`.
+
 ### Connect your TONE3000 account
 
 The community browser uses your own TONE3000 account. The first time you click **Sign in**,
