@@ -15,6 +15,8 @@ pub mod download;
 /// Typed document and processing errors.
 pub mod error;
 mod fs;
+/// Gear families behind captures, for skins and chain icons.
+pub mod gear;
 /// Bounded HTTP transports and origin policy.
 pub mod http;
 /// Bounded JUCE variant and ValueTree codecs.
