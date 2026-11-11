@@ -38,5 +38,94 @@ pub(super) fn show(
         .frame(egui::Frame::NONE.fill(look.utility))
         .show(ui, |_ui| {});
     show_faceplate(ui, chrome, look.panel);
+    let first_tone = state
+        .chain
+        .left
+        .iter()
+        .find(|block| !block.is_insert)
+        .map(|block| block.id.0.clone());
+    let stage_free = !chrome.tuner_visible()
+        && !chrome.auth_active()
+        && chrome.browser_mut().is_none()
+        && chrome.detail_mut().is_none()
+        && matches!(
+            chrome.gallery().selection(),
+            super::chain::GallerySelection::None
+        );
+    if stage_free {
+        match first_tone {
+            // A block always shows: with nothing selected, open the first block of lane A.
+            Some(id) => chrome.gallery_mut().activate(&id),
+            None => {
+                show_empty(ui, chrome, state, look);
+                return;
+            }
+        }
+    }
     show_stage(ui, chrome, now_ms);
+}
+
+/// The stage of a chain with no tone blocks: a prompt and a button that opens the browser.
+fn show_empty(
+    ui: &mut egui::Ui,
+    chrome: &mut ChromeController,
+    state: &crate::backend::ChainViewState,
+    look: Look,
+) {
+    let area = ui.available_rect_before_wrap();
+    let painter = ui.painter().clone();
+    ui.put(
+        egui::Rect::from_center_size(
+            area.center() - egui::vec2(0.0, 28.0),
+            egui::vec2(400.0, 28.0),
+        ),
+        egui::Label::new(
+            egui::RichText::new("Your chain is empty")
+                .font(egui::FontId::new(
+                    18.0,
+                    egui::FontFamily::Name("arimo-bold".into()),
+                ))
+                .color(look.text),
+        )
+        .selectable(false),
+    );
+    let button = egui::Rect::from_center_size(
+        area.center() + egui::vec2(0.0, 16.0),
+        egui::vec2(180.0, 36.0),
+    );
+    let response = ui.interact(
+        button,
+        ui.scope_id().with("archetype-first-block"),
+        egui::Sense::click(),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Button, true, "Add your first block")
+    });
+    painter.rect_filled(
+        button,
+        6.0,
+        if response.hovered() {
+            look.accent
+        } else {
+            look.text
+        },
+    );
+    painter.text(
+        button.center(),
+        egui::Align2::CENTER_CENTER,
+        "Add a block",
+        egui::FontId::new(13.0, egui::FontFamily::Name("arimo-bold".into())),
+        look.background,
+    );
+    if response.clicked() {
+        let insert = state
+            .chain
+            .left
+            .iter()
+            .find(|block| block.is_insert)
+            .map(|block| block.id.0.clone());
+        if let Some(id) = insert {
+            chrome.gallery_mut().activate(&id);
+        }
+    }
 }

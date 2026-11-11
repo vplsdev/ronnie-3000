@@ -61,7 +61,7 @@ fn the_global_panel_hides_while_the_browser_is_open() {
         driver.label_starting_with("Gate").is_some(),
         "the global panel shows"
     );
-    let _ = driver.click_first("Add Tone").expect("an open slot");
+    let _ = driver.click("Add a block").expect("the + button");
     driver.settle();
     assert!(
         driver.chrome_mut().browser_mut().is_some(),
@@ -221,4 +221,44 @@ fn a_long_preset_name_does_not_move_the_arrows() {
         rect_of(&short, "Previous preset"),
         rect_of(&long, "Previous preset")
     );
+}
+
+// ---------------------------------------------------------------- Task 4: stage
+
+#[test]
+fn the_first_block_opens_by_itself() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    assert!(
+        matches!(
+            driver.chrome().gallery().selection(),
+            GallerySelection::BlockDetail(id) if *id == BlockId("blk-1".to_owned())
+        ),
+        "the first block of lane A is selected"
+    );
+    assert!(
+        driver.chrome_mut().detail_mut().is_some(),
+        "its detail shows"
+    );
+}
+
+#[test]
+fn an_empty_chain_prompts_to_add_a_block() {
+    let (mut driver, _) = archetype_driver("main-empty");
+    assert!(driver.shows_text("Your chain is empty"));
+    let _ = driver.click("Add your first block").expect("prompt button");
+    driver.settle();
+    assert!(
+        driver.chrome_mut().browser_mut().is_some(),
+        "the tone browser opened"
+    );
+}
+
+#[test]
+fn the_tuner_takes_the_stage() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    driver.chrome_mut().set_tuner(true);
+    driver.settle();
+    assert!(driver.chrome().tuner_visible());
+    assert!(driver.chrome_mut().detail_mut().is_none() || !driver.is_visible("Back"));
+    assert!(!driver.shows_text("Your chain is empty"));
 }
