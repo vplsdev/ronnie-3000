@@ -249,7 +249,11 @@ pub fn skin_for(block: &ChainBlock) -> Option<BlockSkin> {
         GearCategory::Cab => "Cab render",
         _ => "Amp render",
     };
-    Some(BlockSkin { id, label })
+    Some(BlockSkin {
+        id,
+        label,
+        category: family.category(),
+    })
 }
 
 /// The skin a block shows, and the accessible name of its render.
@@ -259,6 +263,8 @@ pub struct BlockSkin {
     pub id: &'static str,
     /// "Pedal render", "Amp render" or "Cab render".
     pub label: &'static str,
+    /// The kind of gear the render shows.
+    pub category: ronie_core::gear::GearCategory,
 }
 
 /// A skin's textures, uploaded once per context.

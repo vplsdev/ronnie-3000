@@ -38,6 +38,28 @@ pub enum BlockView {
     Info,
 }
 
+/// How the detail page looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BlockPage {
+    /// The dark card of the reference layout.
+    #[default]
+    Reference,
+    /// The light Archetype page: a title row, GEAR / EQ / INFO tabs and a stage.
+    Archetype,
+}
+
+/// Smallest hit square of a knob on a render, in points.
+const MIN_KNOB_TARGET: f32 = 28.0;
+
+/// Space between pedals that share the stage, in points.
+const PEDAL_GAP: f32 = 6.0;
+
+/// Width of the model picker under the stage.
+const PICKER_WIDTH: f32 = 420.0;
+
+/// Tint of the render of a bypassed block.
+const BYPASSED_TINT: Color32 = Color32::from_rgb(0xb4, 0xb4, 0xb2);
+
 /// Tallest a rendered skin draws, in points (the design's stage height).
 const RENDER_HEIGHT: f32 = 300.0;
 
@@ -47,9 +69,12 @@ pub struct BlockDetail {
     /// Whether the page shows its "Back to chain" link. A layout whose stage always shows a
     /// block has no chain to go back to.
     back_link: bool,
-    /// Whether the tone view shows the rendered skin of the gear, with its knobs, in place of
-    /// the artwork and the trims.
-    rendered: bool,
+    /// Which page the detail draws.
+    page: BlockPage,
+    /// Pedals right before and after this one in its lane, which share the light stage.
+    neighbours: (Vec<ChainBlock>, Vec<ChainBlock>),
+    /// A neighbour pedal that was clicked, for the layout to open.
+    select_request: Option<BlockId>,
     block_id: BlockId,
     block: ChainBlock,
     calibrate_input: bool,
@@ -128,7 +153,9 @@ impl BlockDetail {
         Ok(Self {
             backend,
             back_link: true,
-            rendered: false,
+            page: BlockPage::Reference,
+            neighbours: (Vec::new(), Vec::new()),
+            select_request: None,
             block_id: id,
             block,
             calibrate_input,
@@ -769,6 +796,10 @@ impl BlockDetail {
             return;
         }
         self.sync_on_change();
+        if self.page == BlockPage::Archetype {
+            self.show_archetype_page(ui, session);
+            return;
+        }
         let bounds = ui.available_rect_before_wrap();
         let card_x = bounds.left() + (bounds.width() - 800.0) / 2.0;
         let back = Rect::from_min_size(
@@ -970,11 +1001,8 @@ impl BlockDetail {
     }
 
     fn show_tone(&mut self, ui: &mut egui::Ui, rect: Rect, session: SessionStatus) {
-        if self.rendered
-            && let Some(skin) = super::skins::skin_for(&self.block)
-            && let Some(textures) = super::skins::textures(ui.ctx(), skin.id)
-        {
-            self.show_rendered_tone(ui, rect, session, skin, &textures);
+        if self.page == BlockPage::Archetype {
+            self.show_gear_stage(ui, rect, session);
             return;
         }
         let content = rect.shrink(16.0);
@@ -1342,49 +1370,696 @@ impl BlockDetail {
         self.back_link = shown;
     }
 
-    /// Shows the rendered skin of the gear in the tone view, when the app has one.
-    pub fn set_rendered(&mut self, rendered: bool) {
-        self.rendered = rendered;
+    /// The block this detail shows.
+    #[must_use]
+    pub const fn block_id(&self) -> &BlockId {
+        &self.block_id
     }
 
-    /// The tone view of a block with a rendered skin: meters at the sides, the render with its
-    /// live knobs in the centre, and the model picker below.
-    fn show_rendered_tone(
-        &mut self,
-        ui: &mut egui::Ui,
-        rect: Rect,
-        session: SessionStatus,
-        skin: super::skins::BlockSkin,
-        textures: &super::skins::SkinTextures,
-    ) {
-        use super::skins::KnobControl;
+    /// The page the detail draws.
+    #[must_use]
+    pub const fn page(&self) -> BlockPage {
+        self.page
+    }
 
-        let content = rect.shrink(16.0);
-        let picker = Rect::from_min_size(
-            egui::pos2(content.left() + 60.0, content.bottom() - 36.0),
-            egui::vec2(content.width() - 120.0, 36.0),
+    /// Sets the pedals that share the stage with this one: those right before it in its lane,
+    /// in chain order, and those right after it.
+    pub fn set_stage_neighbours(&mut self, before: Vec<ChainBlock>, after: Vec<ChainBlock>) {
+        self.neighbours = (before, after);
+    }
+
+    /// The neighbour pedal the user clicked on the stage, once.
+    pub fn take_select_request(&mut self) -> Option<BlockId> {
+        self.select_request.take()
+    }
+
+    /// Chooses the page the detail draws.
+    pub fn set_page(&mut self, page: BlockPage) {
+        self.page = page;
+    }
+
+    /// The light Archetype page: title row, tabs, then the body of the open tab.
+    fn show_archetype_page(&mut self, ui: &mut egui::Ui, session: SessionStatus) {
+        let look = crate::theme::Look::get(ui.ctx());
+        let bounds = ui.available_rect_before_wrap();
+        let page = Rect::from_min_max(
+            bounds.min + egui::vec2(24.0, 12.0),
+            bounds.max - egui::vec2(24.0, 14.0),
         );
+        let title_row = Rect::from_min_size(page.min, egui::vec2(page.width(), 36.0));
+        self.show_title_row(ui, title_row, look);
+        let tabs = Rect::from_min_size(title_row.left_bottom(), egui::vec2(page.width(), 30.0));
+        self.show_tabs(ui, tabs, look);
+        let body = Rect::from_min_max(tabs.left_bottom(), page.max);
+        match self.view {
+            BlockView::Tone => self.show_tone(ui, body, session),
+            BlockView::Eq => self.show_light_eq(ui, body, look),
+            BlockView::Info => self.show_light_info(ui, body, look),
+        }
+    }
+
+    /// The EQ tab of the light page: the curve on a light card, and a row with the EQ power,
+    /// the band chips and the PRE / POST switch.
+    fn show_light_eq(&mut self, ui: &mut egui::Ui, rect: Rect, look: crate::theme::Look) {
+        if self.eq.view() != EqViewMode::Curve {
+            self.eq.set_view(EqViewMode::Curve);
+        }
+        let card = Rect::from_min_max(
+            rect.min + egui::vec2(0.0, 12.0),
+            rect.max - egui::vec2(0.0, 36.0),
+        );
+        ui.painter().rect_filled(card, 10.0, look.panel);
+        ui.painter().rect_stroke(
+            card,
+            10.0,
+            egui::Stroke::new(1.0, CARD_EDGE),
+            egui::StrokeKind::Inside,
+        );
+        let inner = card.shrink(1.0);
+        let mut card_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+        card_ui.set_clip_rect(inner);
+        self.eq.show(&mut card_ui);
+
+        let cy = card.bottom() + 20.0;
+        let mut x = rect.left();
+        let enabled = self.eq.params().enabled;
+        let label = if enabled { "EQ ON" } else { "EQ OFF" };
+        let width = text_width(ui, label, 10.0) + 4.0;
+        let power = Rect::from_min_max(egui::pos2(x, cy - 11.0), egui::pos2(x + width, cy + 11.0));
+        if page_toggle(ui, power, label, "EQ power", enabled, look).clicked() {
+            let _ = self.set_eq_enabled(!enabled);
+        }
+        x = power.right() + 16.0;
+        for index in 0..self.eq.params().bands.len() {
+            let chip = Rect::from_min_size(egui::pos2(x, cy - 11.0), egui::Vec2::splat(22.0));
+            x = chip.right() + 6.0;
+            let selected = self.eq.selected() == index;
+            let name = format!("Select band {}", index + 1);
+            let response = ui.interact(
+                chip,
+                ui.scope_id().with(("band-chip", index)),
+                Sense::click(),
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name)
+            });
+            let fill = if selected {
+                look.accent
+            } else if response.hovered() {
+                look.edge
+            } else {
+                CHIP_FILL
+            };
+            ui.painter().rect_filled(chip, 4.0, fill);
+            ui.painter().text(
+                chip.center(),
+                egui::Align2::CENTER_CENTER,
+                (index + 1).to_string(),
+                bold_font(11.0),
+                if selected { Color32::WHITE } else { look.text },
+            );
+            if response.clicked() {
+                self.eq.select_band(index);
+            }
+        }
+
+        // PRE [switch] POST on the right; the knob sits by the active word.
+        let pre = self.eq.params().pre;
+        let pre_width = text_width(ui, "PRE", 11.0);
+        let post_width = text_width(ui, "POST", 11.0);
+        let total = pre_width + 8.0 + 30.0 + 8.0 + post_width;
+        let area = Rect::from_min_max(
+            egui::pos2(rect.right() - total, cy - 11.0),
+            egui::pos2(rect.right(), cy + 11.0),
+        );
+        let response = ui.interact(area, ui.scope_id().with("eq-pre-post"), Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::Button, true, pre, "PRE / POST")
+        });
+        let painter = ui.painter();
+        let word = |on: bool| if on { look.text } else { TAB_IDLE };
+        painter.text(
+            egui::pos2(area.left(), cy),
+            egui::Align2::LEFT_CENTER,
+            "PRE",
+            bold_font(11.0),
+            word(pre),
+        );
+        let track = Rect::from_min_size(
+            egui::pos2(area.left() + pre_width + 8.0, cy - 8.0),
+            egui::vec2(30.0, 16.0),
+        );
+        painter.rect_filled(track, 8.0, CHIP_FILL);
+        painter.rect_stroke(
+            track,
+            8.0,
+            egui::Stroke::new(1.0, CHIP_EDGE),
+            egui::StrokeKind::Inside,
+        );
+        let knob_x = if pre {
+            track.left() + 8.0
+        } else {
+            track.right() - 8.0
+        };
+        painter.circle_filled(egui::pos2(knob_x, cy), 6.0, look.text);
+        painter.text(
+            egui::pos2(area.right(), cy),
+            egui::Align2::RIGHT_CENTER,
+            "POST",
+            bold_font(11.0),
+            word(!pre),
+        );
+        if response.clicked() {
+            let _ = self.set_eq_pre(!pre);
+        }
+    }
+
+    /// The INFO tab of the light page: artwork, title, maker and counts, makes and tags,
+    /// description and the tone's page.
+    fn show_light_info(&mut self, ui: &mut egui::Ui, rect: Rect, look: crate::theme::Look) {
+        let Some(tone) = self.block.tone.clone() else {
+            return;
+        };
+        let side = (rect.height() - 24.0).clamp(80.0, 200.0);
+        let artwork =
+            Rect::from_min_size(rect.min + egui::vec2(0.0, 16.0), egui::Vec2::splat(side));
+        self.show_artwork(ui, artwork);
+        let column = Rect::from_min_max(
+            egui::pos2(artwork.right() + 24.0, artwork.top()),
+            rect.right_bottom(),
+        );
+        let mut info_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(column)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        info_ui.set_clip_rect(column);
+        info_ui.spacing_mut().item_spacing = egui::vec2(6.0, 10.0);
+        info_ui.add(
+            egui::Label::new(
+                egui::RichText::new(&tone.title)
+                    .font(bold_font(18.0))
+                    .color(look.text),
+            )
+            .selectable(false)
+            .truncate(),
+        );
+        let maker = tone.raw.get("user").and_then(|user| {
+            user.get("display_name")
+                .or_else(|| user.get("username"))
+                .and_then(serde_json::Value::as_str)
+        });
+        let count = |key: &str| tone.raw.get(key).and_then(serde_json::Value::as_u64);
+        let mut byline = Vec::new();
+        if let Some(maker) = maker {
+            byline.push(format!("by {maker}"));
+        }
+        if let Some(downloads) = count("downloads_count") {
+            byline.push(format!("{} downloads", format_count(downloads)));
+        }
+        if let Some(favorites) = count("favorites_count") {
+            byline.push(format!("{} favourites", format_count(favorites)));
+        }
+        if !byline.is_empty() {
+            info_ui.add(
+                egui::Label::new(
+                    egui::RichText::new(byline.join(" · "))
+                        .size(12.0)
+                        .color(look.text_muted),
+                )
+                .selectable(false)
+                .truncate(),
+            );
+        }
+        let chips: Vec<String> = super::block_info::clean_strings(tone.raw.get("makes"))
+            .into_iter()
+            .chain(super::block_info::clean_strings(tone.raw.get("tags")))
+            .take(8)
+            .collect();
+        if !chips.is_empty() {
+            info_ui.horizontal_wrapped(|ui| {
+                for chip in &chips {
+                    let galley = ui.painter().layout_no_wrap(
+                        chip.clone(),
+                        egui::FontId::proportional(11.0),
+                        look.text,
+                    );
+                    let (chip_rect, _) = ui.allocate_exact_size(
+                        galley.size() + egui::vec2(20.0, 12.0),
+                        Sense::hover(),
+                    );
+                    let radius = chip_rect.height() / 2.0;
+                    ui.painter().rect_filled(chip_rect, radius, look.panel);
+                    ui.painter().rect_stroke(
+                        chip_rect,
+                        radius,
+                        egui::Stroke::new(1.0, CHIP_EDGE),
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.painter()
+                        .galley(chip_rect.min + egui::vec2(10.0, 6.0), galley, look.text);
+                }
+            });
+        }
+        if let Some(text) = super::block_info::description(&tone) {
+            info_ui.add(
+                egui::Label::new(egui::RichText::new(text).size(12.0).color(INFO_BODY))
+                    .selectable(false)
+                    .wrap(),
+            );
+        }
+        let url = self.share_url();
+        if is_web_url(&url) {
+            let galley = info_ui.painter().layout_no_wrap(
+                "Open on TONE3000".to_owned(),
+                bold_font(12.0),
+                look.text,
+            );
+            let (button, response) =
+                info_ui.allocate_exact_size(galley.size() + egui::vec2(28.0, 16.0), Sense::click());
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Link, true, "Open on TONE3000")
+            });
+            let painter = info_ui.painter();
+            let fill = if response.hovered() {
+                Color32::WHITE
+            } else {
+                look.panel
+            };
+            painter.rect_filled(button, 6.0, fill);
+            painter.rect_stroke(
+                button,
+                6.0,
+                egui::Stroke::new(1.0, CHIP_EDGE),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(button.min + egui::vec2(14.0, 8.0), galley, look.text);
+            if response.clicked() {
+                open_web_url(ui.ctx(), url);
+            }
+        }
+    }
+
+    /// "AMP · TITLE" over the source line, with BYPASS / REPLACE / REMOVE on the right.
+    fn show_title_row(&mut self, ui: &mut egui::Ui, rect: Rect, look: crate::theme::Look) {
+        let painter = ui.painter_at(rect);
+        let bold = egui::FontId::new(10.0, egui::FontFamily::Name("arimo-bold".into()));
+        let title = if self.neighbours.0.is_empty() && self.neighbours.1.is_empty() {
+            page_title(&self.block)
+        } else {
+            let titles: Vec<String> = self
+                .neighbours
+                .0
+                .iter()
+                .chain(std::iter::once(&self.block))
+                .chain(&self.neighbours.1)
+                .map(|block| {
+                    block
+                        .tone
+                        .as_ref()
+                        .map_or(String::new(), |tone| tone.title.to_uppercase())
+                })
+                .collect();
+            format!("PEDALS · {}", titles.join(" → "))
+        };
+        let right_reserve = 200.0;
+        let label_width = (rect.width() - right_reserve).max(40.0);
+        let mut text_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_size(
+                    rect.min,
+                    egui::vec2(label_width, rect.height()),
+                ))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        text_ui.spacing_mut().item_spacing.y = 2.0;
+        text_ui.add_space(3.0);
+        text_ui.add(
+            egui::Label::new(egui::RichText::new(title).font(bold).color(look.text))
+                .selectable(false)
+                .truncate(),
+        );
+        text_ui.add(
+            egui::Label::new(
+                egui::RichText::new(page_meta(&self.block))
+                    .size(11.0)
+                    .color(look.text_muted),
+            )
+            .selectable(false)
+            .truncate(),
+        );
+        let mut right = rect.right();
+        let cy = rect.center().y;
+        let actions: [(&'static str, bool); 3] = [
+            ("REMOVE", false),
+            ("REPLACE", false),
+            ("BYPASS", !self.block.params.enabled),
+        ];
+        for (index, (label, active)) in actions.into_iter().enumerate() {
+            if index > 0 {
+                painter.line_segment(
+                    [
+                        egui::pos2(right - 5.5, cy - 5.0),
+                        egui::pos2(right - 5.5, cy + 5.0),
+                    ],
+                    egui::Stroke::new(1.0, look.edge),
+                );
+                right -= 11.0;
+            }
+            let width = text_width(ui, label, 10.0) + 4.0;
+            let button = Rect::from_min_max(
+                egui::pos2(right - width, cy - 11.0),
+                egui::pos2(right, cy + 11.0),
+            );
+            right = button.left();
+            if page_text_button(ui, button, label, active, look).clicked() {
+                match label {
+                    "BYPASS" => {
+                        let _ = self.set_enabled(!self.block.params.enabled);
+                    }
+                    "REPLACE" => self.swap_requested = Some(self.block_id.clone()),
+                    _ => {
+                        let _ = self.remove();
+                    }
+                }
+            }
+        }
+    }
+
+    /// GEAR / EQ / INFO, with a line under the open tab.
+    fn show_tabs(&mut self, ui: &mut egui::Ui, rect: Rect, look: crate::theme::Look) {
+        let painter = ui.painter_at(rect.expand2(egui::vec2(0.0, 1.0)));
+        painter.line_segment(
+            [rect.left_bottom(), rect.right_bottom()],
+            egui::Stroke::new(1.0, look.edge),
+        );
+        let local = self.block.tone.as_ref().is_some_and(|tone| tone.local);
+        let mut tabs = vec![("GEAR", BlockView::Tone), ("EQ", BlockView::Eq)];
+        if !local {
+            tabs.push(("INFO", BlockView::Info));
+        }
+        let font = egui::FontId::new(10.0, egui::FontFamily::Name("arimo-bold".into()));
+        let mut x = rect.left();
+        for (label, view) in tabs {
+            let width = text_width(ui, label, 10.0) + 4.0;
+            let tab = Rect::from_min_max(
+                egui::pos2(x, rect.bottom() - 28.0),
+                egui::pos2(x + width, rect.bottom()),
+            );
+            x = tab.right() + 20.0;
+            let response =
+                ui.interact(tab, ui.scope_id().with(("page-tab", label)), Sense::click());
+            let open = self.view == view;
+            response
+                .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, open, label));
+            let color = if open || response.hovered() {
+                look.text
+            } else {
+                TAB_IDLE
+            };
+            painter.text(
+                tab.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                font.clone(),
+                color,
+            );
+            if open {
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        egui::pos2(tab.left(), tab.bottom() - 2.0),
+                        tab.right_bottom(),
+                    ),
+                    0.0,
+                    look.text,
+                );
+            }
+            if response.clicked() && !open {
+                self.set_view(view);
+            }
+        }
+    }
+
+    /// The GEAR tab of the light page: meters at the sides, the render (or the artwork) in the
+    /// middle with its knobs or trims, and a row under it with the size and normalize toggles,
+    /// the model picker and a note.
+    fn show_gear_stage(&mut self, ui: &mut egui::Ui, rect: Rect, session: SessionStatus) {
+        let look = crate::theme::Look::get(ui.ctx());
+        let row = Rect::from_min_max(
+            egui::pos2(rect.left(), rect.bottom() - 36.0),
+            rect.right_bottom(),
+        );
+        let meter_top = rect.top() + 14.0;
+        let meter_bottom = row.top() - 8.0;
         self.show_meter(
             ui,
             Rect::from_min_max(
-                content.left_top(),
-                egui::pos2(content.left() + 36.0, picker.top() - 12.0),
+                egui::pos2(rect.left(), meter_top),
+                egui::pos2(rect.left() + 36.0, meter_bottom),
             ),
             true,
         );
         self.show_meter(
             ui,
             Rect::from_min_max(
-                egui::pos2(content.right() - 36.0, content.top()),
-                egui::pos2(content.right(), picker.top() - 12.0),
+                egui::pos2(rect.right() - 36.0, meter_top),
+                egui::pos2(rect.right(), meter_bottom),
             ),
             false,
         );
         let stage = Rect::from_min_max(
-            egui::pos2(content.left() + 60.0, content.top() + 24.0),
-            egui::pos2(content.right() - 60.0, picker.top() - 16.0),
+            egui::pos2(rect.left() + 56.0, rect.top() + 6.0),
+            egui::pos2(rect.right() - 56.0, row.top() - 4.0),
         );
-        let body = textures.manifest.fit(stage, RENDER_HEIGHT);
+        let skin = super::skins::skin_for(&self.block)
+            .and_then(|skin| Some((skin, super::skins::textures(ui.ctx(), skin.id)?)));
+        let gear = match &skin {
+            Some((skin, textures)) => {
+                let body = if skin.category == ronie_core::gear::GearCategory::Pedal {
+                    self.show_pedalboard(ui, stage, textures)
+                } else {
+                    textures.manifest.fit(stage, RENDER_HEIGHT)
+                };
+                self.show_render(ui, body, *skin, textures);
+                if textures.manifest.knobs.is_empty() {
+                    self.show_trims_beside(ui, body, stage);
+                }
+                body
+            }
+            None => {
+                let side = stage.height().min(200.0);
+                let artwork = Rect::from_center_size(stage.center(), egui::Vec2::splat(side));
+                self.show_artwork(ui, artwork);
+                self.show_trims_beside(ui, artwork, stage);
+                artwork
+            }
+        };
+        let _ = gear;
+
+        // The row under the stage.
+        let cy = row.center().y;
+        let mut x = stage.left();
+        if self.show_slim_size_control() {
+            let full = self.block.params.slim_size >= 0.5;
+            let label = if full { "FULL" } else { "LITE" };
+            let width = text_width(ui, label, 10.0) + 4.0;
+            let button =
+                Rect::from_min_max(egui::pos2(x, cy - 11.0), egui::pos2(x + width, cy + 11.0));
+            if page_toggle(ui, button, label, "Full size", full, look).clicked() {
+                let _ = self.set_slim_full(!full);
+            }
+            x = button.right() + 16.0;
+        }
+        if self.show_normalize_control() {
+            let overridden = self.normalize_overridden();
+            let on = self.block.params.normalize && !overridden;
+            let width = text_width(ui, "NORMALIZE", 10.0) + 4.0;
+            let button =
+                Rect::from_min_max(egui::pos2(x, cy - 11.0), egui::pos2(x + width, cy + 11.0));
+            if page_text_button(ui, button, "NORMALIZE", on, look).clicked() && !overridden {
+                let _ = self.set_normalize(!self.block.params.normalize);
+            }
+        }
+        let picker = Rect::from_center_size(
+            row.center(),
+            egui::vec2(PICKER_WIDTH.min(row.width()), 36.0),
+        );
+        let mut picker_ui = ui.new_child(egui::UiBuilder::new().max_rect(picker));
+        if let Some(id) = self.models.show(&mut picker_ui, session) {
+            let _ = self.select_model(id, session);
+        }
+        let note_right = stage.right();
+        let note_width = (note_right - picker.right() - 24.0).clamp(0.0, 230.0);
+        if note_width > 80.0 {
+            let note = if skin
+                .as_ref()
+                .is_some_and(|(_, textures)| !textures.manifest.knobs.is_empty())
+            {
+                "Drag a knob on the render to turn it; its value shows while you drag."
+            } else {
+                "Drag a trim to set the level and the mix."
+            };
+            let galley = ui.painter().layout(
+                note.to_owned(),
+                egui::FontId::proportional(10.0),
+                look.text_muted,
+                note_width,
+            );
+            let pos = egui::pos2(note_right - galley.size().x, cy - galley.size().y / 2.0);
+            ui.painter().galley(pos, galley, look.text_muted);
+        }
+    }
+
+    /// Lays the pedal and its neighbours out side by side at one height, draws the neighbours,
+    /// and returns where this pedal's body goes.
+    fn show_pedalboard(
+        &mut self,
+        ui: &mut egui::Ui,
+        stage: Rect,
+        textures: &super::skins::SkinTextures,
+    ) -> Rect {
+        let neighbour = |block: &ChainBlock| {
+            let skin = super::skins::skin_for(block)?;
+            Some((block.clone(), super::skins::textures(ui.ctx(), skin.id)?))
+        };
+        let before: Vec<_> = self.neighbours.0.iter().filter_map(neighbour).collect();
+        let after: Vec<_> = self.neighbours.1.iter().filter_map(neighbour).collect();
+        if before.is_empty() && after.is_empty() {
+            return textures.manifest.fit(stage, RENDER_HEIGHT);
+        }
+        let aspect = |manifest: &super::skins::SkinManifest| {
+            manifest.width as f32 / manifest.height.max(1) as f32
+        };
+        let count = before.len() + after.len() + 1;
+        let aspects: f32 = before
+            .iter()
+            .chain(&after)
+            .map(|(_, each)| aspect(&each.manifest))
+            .sum::<f32>()
+            + aspect(&textures.manifest);
+        let gaps = PEDAL_GAP * (count - 1) as f32;
+        let height = stage
+            .height()
+            .min(RENDER_HEIGHT)
+            .min((stage.width() - gaps) / aspects);
+        let total = aspects * height + gaps;
+        let mut x = stage.center().x - total / 2.0;
+        let top = stage.center().y - height / 2.0;
+        let mut place = |manifest: &super::skins::SkinManifest| {
+            let rect = Rect::from_min_size(
+                egui::pos2(x, top),
+                egui::vec2(aspect(manifest) * height, height),
+            );
+            x = rect.right() + PEDAL_GAP;
+            rect
+        };
+        let before_rects: Vec<_> = before
+            .iter()
+            .map(|(_, each)| place(&each.manifest))
+            .collect();
+        let own = place(&textures.manifest);
+        let after_rects: Vec<_> = after
+            .iter()
+            .map(|(_, each)| place(&each.manifest))
+            .collect();
+        for ((block, each), rect) in before
+            .iter()
+            .zip(before_rects)
+            .chain(after.iter().zip(after_rects))
+        {
+            self.show_neighbour(ui, rect, block, each);
+        }
+        own
+    }
+
+    /// A pedal next to the open one: drawn with its knobs where its settings put them, and
+    /// opened by a click.
+    fn show_neighbour(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        block: &ChainBlock,
+        textures: &super::skins::SkinTextures,
+    ) {
+        use super::skins::KnobControl;
+
+        let title = block.tone.as_ref().map_or("", |tone| tone.title.as_str());
+        let label = format!("Pedal render: {title}");
+        let response = ui.interact(
+            rect,
+            ui.scope_id().with(("neighbour", &block.id.0)),
+            Sense::click(),
+        );
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.clicked() {
+            self.select_request = Some(block.id.clone());
+        }
+        let gain = KnobSpec::block_gain();
+        let mix = KnobSpec::percent(BlockParams::default().mix);
+        let params = &block.params;
+        let tint = if params.enabled {
+            Color32::WHITE
+        } else {
+            BYPASSED_TINT
+        };
+        super::skins::paint(
+            ui.painter(),
+            textures,
+            rect,
+            |control| match control {
+                KnobControl::Gain => gain.position(params.input_gain) as f32,
+                KnobControl::Output => gain.position(params.output_gain) as f32,
+                KnobControl::Mix => mix.position(params.mix) as f32,
+            },
+            tint,
+        );
+    }
+
+    /// GAIN IN / OUTPUT / MIX trims in a column to the right of `gear`, for gear whose render
+    /// has no knobs (cabs) or that has no render.
+    fn show_trims_beside(&mut self, ui: &mut egui::Ui, gear: Rect, stage: Rect) {
+        let gain = KnobSpec::block_gain();
+        let mix = KnobSpec::percent(BlockParams::default().mix);
+        let id = ui.scope_id().with(("trim", &self.block_id.0));
+        let pass = ui.ctx().cumulative_pass_nr();
+        let x = (gear.right() + 40.0).min(stage.right() - 36.0);
+        let height = 3.0 * 63.0 + 2.0 * 12.0;
+        let top = stage.center().y - height / 2.0;
+        let slot = |index: usize| {
+            Rect::from_min_size(
+                egui::pos2(x, top + index as f32 * 75.0),
+                egui::vec2(36.0, 63.0),
+            )
+        };
+        let edit = trim_knob(ui, id, slot(0), "In", &gain, self.block.params.input_gain);
+        if let Some(edit) = self.track_trim("In", pass, edit) {
+            self.block.params.input_gain = edit.value;
+            self.write_params_in_gesture(edit.phase);
+        }
+        let edit = trim_knob(ui, id, slot(1), "Mix", &mix, self.block.params.mix);
+        if let Some(edit) = self.track_trim("Mix", pass, edit) {
+            self.block.params.mix = edit.value;
+            self.write_params_in_gesture(edit.phase);
+        }
+        let edit = trim_knob(ui, id, slot(2), "Out", &gain, self.block.params.output_gain);
+        if let Some(edit) = self.track_trim("Out", pass, edit) {
+            self.block.params.output_gain = edit.value;
+            self.write_params_in_gesture(edit.phase);
+        }
+    }
+
+    /// Draws the render in `body` with its live knobs, and a value hint over the knob under the
+    /// pointer, being dragged, or holding keyboard focus.
+    fn show_render(
+        &mut self,
+        ui: &mut egui::Ui,
+        body: Rect,
+        skin: super::skins::BlockSkin,
+        textures: &super::skins::SkinTextures,
+    ) {
+        use super::skins::KnobControl;
+
         let render = ui.interact(
             body,
             ui.scope_id().with(("render", &self.block_id.0)),
@@ -1405,10 +2080,14 @@ impl BlockDetail {
                 KnobControl::Mix => ("MIX", &mix, self.block.params.mix),
             };
             let knob_rect = knob.rect_in(body, &textures.manifest);
-            let output =
-                crate::widgets::knob::show(ui, id.with(label), knob_rect, spec, label, value);
+            let hit = Rect::from_center_size(
+                knob_rect.center(),
+                knob_rect.size().max(egui::Vec2::splat(MIN_KNOB_TARGET)),
+            );
+            let output = crate::widgets::knob::show(ui, id.with(label), hit, spec, label, value);
             positions.push((knob.control, spec.position(output.shown) as f32));
-            if output.response.hovered() || output.response.dragged() {
+            let response = &output.response;
+            if response.hovered() || response.dragged() || response.has_focus() {
                 hint = Some((knob_rect, format!("{label}  {}", spec.format(output.shown))));
             }
             if let Some(edit) = self.track_trim(label, pass, output.edit) {
@@ -1421,10 +2100,12 @@ impl BlockDetail {
             }
         }
 
-        let tint = if self.load_state() == TileVisualState::Ready {
+        let tint = if self.load_state() != TileVisualState::Ready {
+            Color32::from_white_alpha(89)
+        } else if self.block.params.enabled {
             Color32::WHITE
         } else {
-            Color32::from_white_alpha(89)
+            BYPASSED_TINT
         };
         let painter = ui.painter().clone();
         super::skins::paint(
@@ -1441,18 +2122,15 @@ impl BlockDetail {
         );
         if let Some((knob_rect, text)) = hint {
             let galley =
-                painter.layout_no_wrap(text, egui::FontId::monospace(10.0), Color32::WHITE);
+                painter.layout_no_wrap(text.clone(), egui::FontId::monospace(10.0), Color32::WHITE);
             let bubble = Rect::from_center_size(
                 egui::pos2(knob_rect.center().x, knob_rect.top() - 14.0),
                 galley.size() + egui::vec2(16.0, 8.0),
             );
             painter.rect_filled(bubble, 4.0, Color32::from_rgb(0x11, 0x11, 0x11));
             painter.galley(bubble.min + egui::vec2(8.0, 4.0), galley, Color32::WHITE);
-        }
-
-        let mut picker_ui = ui.new_child(egui::UiBuilder::new().max_rect(picker));
-        if let Some(id) = self.models.show(&mut picker_ui, session) {
-            let _ = self.select_model(id, session);
+            ui.interact(bubble, id.with("hint"), Sense::hover())
+                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text.as_str()));
         }
     }
 
@@ -1464,6 +2142,116 @@ impl BlockDetail {
                 params: self.block.params.clone(),
             })
             .map(|_| ())
+    }
+}
+
+/// Colour of a tab that is not open.
+const TAB_IDLE: Color32 = Color32::from_rgb(0x6b, 0x6b, 0x68);
+
+/// Fill of the light page's chips and switch tracks.
+const CHIP_FILL: Color32 = Color32::from_rgb(0xe5, 0xe5, 0xe2);
+/// Edge of the light page's chips, buttons and switch tracks.
+const CHIP_EDGE: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcc);
+/// Edge of the light EQ card.
+const CARD_EDGE: Color32 = Color32::from_rgb(0xdc, 0xdc, 0xd9);
+/// Body text of the light INFO tab.
+const INFO_BODY: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
+
+fn bold_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("arimo-bold".into()))
+}
+
+/// A small uppercase text action of the light page, such as BYPASS.
+fn page_text_button(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    label: &'static str,
+    active: bool,
+    look: crate::theme::Look,
+) -> egui::Response {
+    page_toggle(ui, rect, label, label, active, look)
+}
+
+/// A small uppercase text action whose accessible name may differ from its text.
+fn page_toggle(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    label: &'static str,
+    name: &'static str,
+    active: bool,
+    look: crate::theme::Look,
+) -> egui::Response {
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with(("page-action", name)),
+        Sense::click(),
+    );
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, active, name));
+    let color = if active {
+        look.accent
+    } else if response.hovered() {
+        look.text
+    } else {
+        Color32::from_rgb(0x33, 0x33, 0x33)
+    };
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::new(10.0, egui::FontFamily::Name("arimo-bold".into())),
+        color,
+    );
+    response
+}
+
+/// The category word of the light page title, from the gear the block models.
+fn page_category(block: &ChainBlock) -> &'static str {
+    use ronie_core::gear::{GearCategory, GearHints, identify};
+    let Some(tone) = block.tone.as_ref() else {
+        return "BLOCK";
+    };
+    let model = block
+        .active_model_id
+        .and_then(|id| tone.models.iter().find(|model| model.id == id));
+    match identify(&GearHints::from_tone(tone, model)).category {
+        GearCategory::Pedal => "PEDAL",
+        GearCategory::Amp => "AMP",
+        GearCategory::Cab => "CAB",
+        GearCategory::FullRig => "RIG",
+        GearCategory::Outboard => "OUTBOARD",
+        GearCategory::Space => "SPACE",
+        _ => "BLOCK",
+    }
+}
+
+/// "AMP · '02 VOX AC30/6 TOP BOOST".
+fn page_title(block: &ChainBlock) -> String {
+    let title = block.tone.as_ref().map_or("", |tone| tone.title.as_str());
+    format!("{} · {}", page_category(block), title.to_uppercase())
+}
+
+/// Where the block's sound comes from and how many captures its tone holds.
+fn page_meta(block: &ChainBlock) -> String {
+    let Some(tone) = block.tone.as_ref() else {
+        return String::new();
+    };
+    let ir = block.tone.as_ref().is_some_and(|tone| {
+        tone.raw.get("format").and_then(serde_json::Value::as_str) == Some("ir")
+    });
+    if tone.local {
+        return if ir {
+            "Local impulse response"
+        } else {
+            "Local NAM capture"
+        }
+        .to_owned();
+    }
+    let count = model_total(block);
+    match (ir, count) {
+        (true, 0 | 1) => "IR from TONE3000".to_owned(),
+        (true, n) => format!("IR pack from TONE3000 · {n} mic positions"),
+        (false, 0 | 1) => "NAM capture from TONE3000".to_owned(),
+        (false, n) => format!("NAM capture from TONE3000 · {n} captures in this tone"),
     }
 }
 

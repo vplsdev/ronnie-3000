@@ -205,3 +205,22 @@ fn the_render_scripts_print_no_maker_or_model_names() {
         }
     }
 }
+
+#[test]
+fn floor_shadows_stay_faint_on_the_light_stage() {
+    for family in FAMILIES {
+        let id = family.skin_id().unwrap();
+        let body = skins::body_image(id).unwrap();
+        let darkest_shadow = body
+            .pixels
+            .iter()
+            .filter(|pixel| pixel.a() < 200 && pixel.r().max(pixel.g()).max(pixel.b()) < 4)
+            .map(|pixel| pixel.a())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            darkest_shadow <= 96,
+            "{id} has a floor shadow of alpha {darkest_shadow}"
+        );
+    }
+}

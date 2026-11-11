@@ -444,7 +444,7 @@ fn the_background_leaves_the_banner_visible() {
 #[test]
 fn removing_a_block_opens_its_neighbour_without_a_flash() {
     let (mut driver, _) = archetype_driver("main-mono");
-    let _ = driver.click("Remove block").expect("remove");
+    let _ = driver.click("REMOVE").expect("remove");
     driver.frame();
     assert!(
         !driver.is_visible("Add Tone"),
@@ -468,7 +468,7 @@ fn removing_the_last_block_opens_the_previous_one() {
         .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
         .expect("third block");
     driver.settle();
-    let _ = driver.click("Remove block").expect("remove");
+    let _ = driver.click("REMOVE").expect("remove");
     for _ in 0..3 {
         assert!(
             !driver.is_visible("Add Tone"),
@@ -775,4 +775,312 @@ fn first_tone_id(backend: &MockBackend) -> String {
         .id
         .0
         .clone()
+}
+
+// ---------------------------------------------------------------- Light block page
+
+use ronie_ui::default::block::BlockView;
+
+fn amp_page() -> (UiDriver, Arc<MockBackend>) {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    (driver, backend)
+}
+
+fn block_titled(backend: &MockBackend, needle: &str) -> Option<ronie_core::ChainBlock> {
+    let state = backend.chain_state(0);
+    state
+        .chain
+        .left
+        .iter()
+        .chain(state.chain.right.iter())
+        .find(|block| {
+            block
+                .tone
+                .as_ref()
+                .is_some_and(|tone| tone.title.contains(needle))
+        })
+        .cloned()
+}
+
+#[test]
+fn the_block_page_has_a_title_row_and_tabs() {
+    let (driver, _) = amp_page();
+    for label in ["GEAR", "EQ", "INFO", "BYPASS", "REPLACE", "REMOVE"] {
+        assert!(driver.is_visible(label), "{label} is on the page");
+    }
+    assert!(
+        driver.shows_text("AMP · '02 VOX AC30/6 TOP BOOST"),
+        "the title row names the block"
+    );
+    assert!(driver.shows_text("NAM capture from TONE3000 · 6 captures in this tone"));
+}
+
+#[test]
+fn the_eq_tab_opens_the_eq() {
+    let (mut driver, _) = amp_page();
+    let _ = driver.click("EQ").expect("EQ tab");
+    driver.settle();
+    assert_eq!(
+        driver.chrome().detail().map(|detail| detail.view()),
+        Some(BlockView::Eq)
+    );
+    let _ = driver.click("GEAR").expect("GEAR tab");
+    driver.settle();
+    assert_eq!(
+        driver.chrome().detail().map(|detail| detail.view()),
+        Some(BlockView::Tone)
+    );
+}
+
+#[test]
+fn bypass_toggles_the_block() {
+    let (mut driver, backend) = amp_page();
+    let _ = driver.click("BYPASS").expect("BYPASS");
+    driver.settle();
+    assert!(!block_titled(&backend, "AC30").expect("amp").params.enabled);
+}
+
+#[test]
+fn remove_removes_the_block() {
+    let (mut driver, backend) = amp_page();
+    let _ = driver.click("REMOVE").expect("REMOVE");
+    driver.settle();
+    assert!(block_titled(&backend, "AC30").is_none());
+}
+
+#[test]
+fn replace_opens_the_browser_for_the_block() {
+    let (mut driver, _) = amp_page();
+    let _ = driver.click("REPLACE").expect("REPLACE");
+    driver.settle();
+    assert!(
+        matches!(
+            driver.chrome().gallery().selection(),
+            GallerySelection::SelectTone { .. }
+        ) || driver.chrome_mut().browser_mut().is_some(),
+        "the browser opens to replace the block"
+    );
+}
+
+#[test]
+fn the_amp_render_fills_the_designed_stage_height() {
+    let (driver, _) = amp_page();
+    let render = rect_of(&driver, "Amp render").expect("render");
+    assert!(
+        (240.0..=300.0).contains(&render.height()),
+        "the render is {render:?}"
+    );
+}
+
+#[test]
+fn render_knobs_have_a_comfortable_hit_target() {
+    let (driver, _) = amp_page();
+    for prefix in ["GAIN IN:", "OUTPUT:", "MIX:"] {
+        let label = driver.label_starting_with(prefix).expect("knob");
+        let rect = rect_of(&driver, &label).expect("rect");
+        assert!(
+            rect.width() >= 28.0 && rect.height() >= 28.0,
+            "{prefix} is {rect:?}"
+        );
+    }
+}
+
+#[test]
+fn a_focused_render_knob_shows_its_value() {
+    let (mut driver, _) = amp_page();
+    for _ in 0..60 {
+        if driver
+            .focused()
+            .is_some_and(|label| label.starts_with("GAIN IN"))
+        {
+            break;
+        }
+        let _ = driver.press_key(eframe::egui::Key::Tab);
+    }
+    assert!(
+        driver
+            .focused()
+            .is_some_and(|label| label.starts_with("GAIN IN")),
+        "Tab reaches GAIN IN"
+    );
+    driver.unhover();
+    driver.settle();
+    assert!(
+        driver.shows_text("GAIN IN  0.0 dB"),
+        "the value hint shows for the focused knob"
+    );
+}
+
+#[test]
+fn a_cab_page_keeps_its_level_and_mix_trims() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver
+        .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
+        .expect("cab");
+    driver.settle();
+    for prefix in ["In:", "Mix:", "Out:"] {
+        assert!(
+            driver.label_starting_with(prefix).is_some(),
+            "{prefix} trim"
+        );
+    }
+}
+
+#[test]
+fn normalize_toggles_from_the_gear_page() {
+    let (mut driver, backend) = amp_page();
+    backend
+        .dispatch(ronie_ui::backend::UiAction::SetPreference {
+            key: "t3k.showBlockNormalizeControl".to_owned(),
+            value: true,
+        })
+        .expect("show normalize");
+    driver.settle();
+    assert!(
+        block_titled(&backend, "AC30")
+            .expect("amp")
+            .params
+            .normalize
+    );
+    let _ = driver.click("NORMALIZE").expect("NORMALIZE");
+    driver.settle();
+    assert!(
+        !block_titled(&backend, "AC30")
+            .expect("amp")
+            .params
+            .normalize
+    );
+}
+
+// ---------------------------------------------------------------- Pedals share the stage
+
+const OD: &str = "TS808 Tube Screamer Overdrive";
+
+/// main-mono with a green overdrive right after the fuzz.
+fn pedalboard_driver() -> (UiDriver, Arc<MockBackend>) {
+    let mut scenario = scenario("main-mono");
+    let chain = scenario.state["chain"]["chain"]
+        .as_array_mut()
+        .expect("chain");
+    let mut od = chain[0].clone();
+    od["blockId"] = "blk-od".into();
+    od["activeModelId"] = 1199.into();
+    od["tone"]["id"] = 199.into();
+    od["tone"]["title"] = OD.into();
+    od["tone"]["models"] = serde_json::json!([{ "id": 1199, "name": "Drive 5" }]);
+    chain.insert(1, od);
+    let backend = Arc::new(MockBackend::from_scenario(&scenario));
+    let mut chrome = ChromeController::new(backend.clone(), Vec::new(), false, true);
+    chrome.set_view_mode(ViewMode::RonieFlow);
+    let mut driver = UiDriver::new(chrome, (*backend).clone());
+    driver.settle();
+    (driver, backend)
+}
+
+#[test]
+fn consecutive_pedals_share_the_stage() {
+    let (driver, _) = pedalboard_driver();
+    assert!(driver.is_visible("Pedal render"), "the open pedal");
+    assert!(
+        driver.is_visible(&format!("Pedal render: {OD}")),
+        "its neighbour shares the stage"
+    );
+    assert!(
+        driver.shows_text("PEDALS · GREEN RUSSIAN BIG MUFF + BD-2 → TS808 TUBE SCREAMER OVERDRIVE")
+    );
+}
+
+#[test]
+fn clicking_a_neighbour_pedal_selects_it() {
+    let (mut driver, _) = pedalboard_driver();
+    let _ = driver
+        .click(&format!("Pedal render: {OD}"))
+        .expect("neighbour");
+    driver.settle();
+    assert_eq!(
+        driver.chrome().gallery().selection(),
+        &GallerySelection::BlockDetail(BlockId("blk-od".to_owned()))
+    );
+    assert!(
+        driver.is_visible("Pedal render: Green Russian Big Muff + BD-2"),
+        "the fuzz is now the neighbour"
+    );
+}
+
+#[test]
+fn an_amp_shares_the_stage_with_no_one() {
+    let (mut driver, _) = pedalboard_driver();
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    assert!(driver.label_starting_with("Pedal render").is_none());
+}
+
+// ---------------------------------------------------------------- Light EQ and INFO
+
+fn eq_block(backend: &MockBackend) -> ronie_core::EqParams {
+    block_titled(backend, "AC30").expect("amp").params.eq
+}
+
+#[test]
+fn the_eq_page_has_band_chips_power_and_pre_post() {
+    let (mut driver, backend) = amp_page();
+    let _ = driver.click("EQ").expect("EQ tab");
+    driver.settle();
+    for band in 1..=6 {
+        assert!(
+            driver.is_visible(&format!("Select band {band}")),
+            "band {band}"
+        );
+    }
+    let _ = driver.click("Select band 3").expect("band 3");
+    driver.settle();
+    assert_eq!(
+        driver
+            .chrome()
+            .detail()
+            .map(|detail| detail.eq().selected()),
+        Some(2)
+    );
+    assert!(!eq_block(&backend).enabled);
+    let _ = driver.click("EQ power").expect("power");
+    driver.settle();
+    assert!(eq_block(&backend).enabled, "the EQ turns on");
+    assert!(!eq_block(&backend).pre);
+    let _ = driver.click("PRE / POST").expect("pre/post");
+    driver.settle();
+    assert!(eq_block(&backend).pre, "the EQ moves before the block");
+}
+
+#[test]
+fn the_eq_page_shows_the_curve() {
+    let (mut driver, _) = amp_page();
+    let _ = driver.click("EQ").expect("EQ tab");
+    driver.settle();
+    assert!(driver.is_visible("Band 1 frequency and gain"));
+}
+
+#[test]
+fn the_info_page_shows_the_tone_and_its_page_link() {
+    let (mut driver, _) = amp_page();
+    let _ = driver.click("INFO").expect("INFO tab");
+    driver.settle();
+    assert!(driver.shows_text("'02 Vox AC30/6 Top Boost"));
+    assert!(driver.is_visible("Open on TONE3000"));
+}
+
+#[test]
+fn the_size_toggle_keeps_one_name() {
+    let (mut driver, backend) = amp_page();
+    backend
+        .dispatch(ronie_ui::backend::UiAction::SetPreference {
+            key: "t3k.showBlockSizeControl".to_owned(),
+            value: true,
+        })
+        .expect("show size");
+    driver.settle();
+    let _ = driver.click("Full size").expect("size toggle");
+    driver.settle();
+    assert!(driver.is_visible("Full size"), "the name survives the flip");
 }
