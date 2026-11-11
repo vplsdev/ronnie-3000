@@ -1,10 +1,12 @@
 //! Archetype header: logo, the chain as gear icons, and the preset manager.
 
 use eframe::egui::{self, Align2, Color32, Rect, Stroke};
-use ronie_core::ChainBlock;
+use ronie_core::{ChainBlock, ChainSide};
 
 use crate::backend::ChainViewState;
 use crate::theme::Look;
+
+use super::add_menu::AddMenu;
 
 use super::super::{
     chain::GallerySelection,
@@ -284,6 +286,17 @@ fn arrow(
     response.clicked()
 }
 
+/// The + button's box, inside the header `bounds`.
+pub(super) fn plus_rect(bounds: Rect) -> Rect {
+    Rect::from_center_size(
+        egui::pos2(
+            bounds.left() + STRIP_RIGHT - PLUS_ROOM / 2.0 + 4.0,
+            bounds.center().y,
+        ),
+        egui::Vec2::splat(40.0),
+    )
+}
+
 fn show_plus(
     ui: &mut egui::Ui,
     chrome: &mut ChromeController,
@@ -298,65 +311,79 @@ fn show_plus(
         (bounds.top() + 18.0)..=(bounds.bottom() - 18.0),
         Stroke::new(1.0, look.edge),
     );
-    let rect = Rect::from_center_size(
-        egui::pos2(
-            bounds.left() + STRIP_RIGHT - PLUS_ROOM / 2.0 + 4.0,
-            bounds.center().y,
-        ),
-        egui::Vec2::splat(40.0),
-    );
+    let rect = plus_rect(bounds);
     let response = ui.interact(
         rect,
         ui.scope_id().with("archetype-add"),
         egui::Sense::click(),
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Add a block"));
-    let color = if response.hovered() {
-        look.text
+    let mut menu = AddMenu::load(ui.ctx());
+    if menu.open {
+        painter.rect_filled(rect, 6.0, Color32::from_rgb(0x11, 0x11, 0x11));
+        draw_plus(&painter, rect.shrink(10.0), Color32::WHITE);
     } else {
-        look.text_muted
-    };
-    let outline = vec![
-        rect.left_top(),
-        rect.right_top(),
-        rect.right_bottom(),
-        rect.left_bottom(),
-        rect.left_top(),
-    ];
-    painter.extend(egui::Shape::dashed_line(
-        &outline,
-        Stroke::new(1.5, color),
-        4.0,
-        3.0,
-    ));
-    draw_plus(&painter, rect.shrink(10.0), color);
-    if response.clicked() {
-        let selected = match chrome.gallery().selection() {
-            GallerySelection::BlockDetail(id) => Some(id.clone()),
-            _ => None,
+        let color = if response.hovered() {
+            look.text
+        } else {
+            look.text_muted
         };
-        if let Some(id) = lane_insert(state, selected.as_ref()) {
-            chrome.gallery_mut().activate(&id);
+        let outline = vec![
+            rect.left_top(),
+            rect.right_top(),
+            rect.right_bottom(),
+            rect.left_bottom(),
+            rect.left_top(),
+        ];
+        painter.extend(egui::Shape::dashed_line(
+            &outline,
+            Stroke::new(1.5, color),
+            4.0,
+            3.0,
+        ));
+        draw_plus(&painter, rect.shrink(10.0), color);
+    }
+    if response.clicked() {
+        if menu.open {
+            menu.open = false;
+        } else {
+            let selected = match chrome.gallery().selection() {
+                GallerySelection::BlockDetail(id) => Some(id.clone()),
+                _ => None,
+            };
+            menu.open_for(lane_of(state, selected.as_ref()));
         }
+        menu.store(ui.ctx());
     }
 }
 
-/// The insert block of the lane that holds the selected block: lane B when the selected block
-/// sits there, else lane A.
-pub(super) fn lane_insert(
-    state: &ChainViewState,
-    selected: Option<&ronie_core::BlockId>,
-) -> Option<String> {
-    let in_right = selected.is_some_and(|id| state.chain.right.iter().any(|block| &block.id == id));
-    let lane = if in_right {
-        &state.chain.right
+/// The lane that holds the selected block: lane B when the block sits there, else lane A.
+fn lane_of(state: &ChainViewState, selected: Option<&ronie_core::BlockId>) -> ChainSide {
+    if selected.is_some_and(|id| state.chain.right.iter().any(|block| &block.id == id)) {
+        ChainSide::Right
     } else {
-        &state.chain.left
+        ChainSide::Left
+    }
+}
+
+/// The insert block that ends one lane.
+pub(super) fn insert_of(state: &ChainViewState, side: ChainSide) -> Option<String> {
+    let lane = match side {
+        ChainSide::Left => &state.chain.left,
+        ChainSide::Right => &state.chain.right,
     };
     lane.iter()
         .rev()
         .find(|block| block.is_insert)
         .map(|block| block.id.0.clone())
+}
+
+/// The insert block of the lane that holds the selected block.
+pub(super) fn lane_insert(
+    state: &ChainViewState,
+    selected: Option<&ronie_core::BlockId>,
+) -> Option<String> {
+    insert_of(state, lane_of(state, selected))
 }
 
 fn show_presets(

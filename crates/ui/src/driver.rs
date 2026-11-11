@@ -71,6 +71,8 @@ pub struct Control {
     pub rect: egui::Rect,
     /// Whether the control can take a click.
     pub clickable: bool,
+    /// Whether a radio button or toggle is on.
+    pub checked: bool,
     id: egui::Id,
 }
 
@@ -622,6 +624,7 @@ impl UiDriver {
                     rect: (to_global * widget.interact_rect).intersect(screen),
                     clickable: node.supports_action(accesskit::Action::Click)
                         && !node.is_disabled(),
+                    checked: node.toggled() == Some(accesskit::Toggled::True),
                     id: widget.id,
                 })
             })
