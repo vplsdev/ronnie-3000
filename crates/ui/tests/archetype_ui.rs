@@ -681,3 +681,98 @@ fn plus_adds_to_the_lane_of_the_selected_block() {
         driver.chrome().gallery().selection()
     );
 }
+
+// ---------------------------------------------------------------- Rendered skins
+
+#[test]
+fn the_amp_page_shows_the_render_knobs_instead_of_the_trims() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver
+        .click("Chain: '02 Vox AC30/6 Top Boost")
+        .expect("amp");
+    driver.settle();
+    assert!(driver.is_visible("Amp render"));
+    for label in ["GAIN IN:", "OUTPUT:", "MIX:"] {
+        assert!(
+            driver.label_starting_with(label).is_some(),
+            "{label} is on the render"
+        );
+    }
+    assert!(
+        driver.label_starting_with("In:").is_none(),
+        "the In trim gives way to GAIN IN"
+    );
+}
+
+#[test]
+fn dragging_gain_in_on_the_render_raises_the_input_gain() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let _ = driver
+        .click("Chain: '02 Vox AC30/6 Top Boost")
+        .expect("amp");
+    driver.settle();
+    let amp = |backend: &MockBackend| {
+        backend
+            .chain_state(0)
+            .chain
+            .left
+            .iter()
+            .find(|block| {
+                block
+                    .tone
+                    .as_ref()
+                    .is_some_and(|tone| tone.title.contains("AC30"))
+            })
+            .expect("amp block")
+            .params
+            .input_gain
+    };
+    let before = amp(&backend);
+    let up: Vec<_> = (1..=6)
+        .map(|step| eframe::egui::vec2(0.0, -10.0 * step as f32))
+        .collect();
+    let label = driver
+        .label_starting_with("GAIN IN:")
+        .expect("GAIN IN knob");
+    let _ = driver.drag_control(&label, &up).expect("drag");
+    assert!(amp(&backend) > before, "input gain rose from {before}");
+}
+
+#[test]
+fn a_cab_page_shows_its_render_without_knobs() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver
+        .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
+        .expect("cab");
+    driver.settle();
+    assert!(driver.is_visible("Cab render"));
+    assert!(driver.label_starting_with("GAIN IN:").is_none());
+}
+
+#[test]
+fn the_reference_layout_keeps_its_trims() {
+    let backend = Arc::new(MockBackend::from_scenario(&scenario("main-mono")));
+    let chrome = ChromeController::new(backend.clone(), Vec::new(), false, true);
+    let mut driver = UiDriver::new(chrome, (*backend).clone());
+    driver.settle();
+    driver
+        .chrome_mut()
+        .gallery_mut()
+        .activate(&first_tone_id(&backend));
+    driver.settle();
+    assert!(driver.label_starting_with("In:").is_some());
+    assert!(driver.label_starting_with("GAIN IN:").is_none());
+}
+
+fn first_tone_id(backend: &MockBackend) -> String {
+    backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .find(|block| block.tone.is_some())
+        .expect("a tone block")
+        .id
+        .0
+        .clone()
+}

@@ -1,0 +1,40 @@
+{
+  "id": "fuzz",
+  "width": 441,
+  "height": 637,
+  "knobs": [
+    {
+      "control": "output",
+      "label": "OUTPUT",
+      "center": [
+        115.0,
+        153.0
+      ],
+      "side": 86,
+      "frames": 32,
+      "columns": 8
+    },
+    {
+      "control": "mix",
+      "label": "MIX",
+      "center": [
+        221.0,
+        153.0
+      ],
+      "side": 86,
+      "frames": 32,
+      "columns": 8
+    },
+    {
+      "control": "gain",
+      "label": "GAIN IN",
+      "center": [
+        326.0,
+        153.0
+      ],
+      "side": 86,
+      "frames": 32,
+      "columns": 8
+    }
+  ]
+}

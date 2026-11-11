@@ -74,4 +74,5 @@ Each `GearFamily` names a `skin_id()` (the rendered skin) and an `icon_id()` (th
 ## Open questions
 
 - Light theme as the default, or as a second theme next to the current dark one?
-- How to store the images: compressed WebP or AVIF in git, Git LFS, or rendered at release time.
+- How to store the images: compressed WebP or AVIF in git, Git LFS, or rendered at release time. Decided in PR 4: WebP
+  in git under `crates/ui/assets/skins/`, embedded in the binary (about 4 MB for 23 skins).

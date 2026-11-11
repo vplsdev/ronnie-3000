@@ -1,0 +1,40 @@
+{
+  "id": "comp",
+  "width": 441,
+  "height": 637,
+  "knobs": [
+    {
+      "control": "output",
+      "label": "OUTPUT",
+      "center": [
+        170.0,
+        180.0
+      ],
+      "side": 70,
+      "frames": 32,
+      "columns": 8
+    },
+    {
+      "control": "gain",
+      "label": "GAIN IN",
+      "center": [
+        271.0,
+        180.0
+      ],
+      "side": 70,
+      "frames": 32,
+      "columns": 8
+    },
+    {
+      "control": "mix",
+      "label": "MIX",
+      "center": [
+        220.0,
+        183.0
+      ],
+      "side": 32,
+      "frames": 32,
+      "columns": 8
+    }
+  ]
+}

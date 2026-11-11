@@ -162,7 +162,9 @@ downloads the latest release instead. See [CONTRIBUTING.md](CONTRIBUTING.md) for
    allows. The readout under it shows the estimated delay.
 
 To try the Archetype-style layout, a light window with the chain as gear icons in the header,
-start Ronnie with `ronie --layout archetype`.
+start Ronnie with `ronie --layout archetype`. There, each block's page shows a 3D render of its
+gear, and you can drag the GAIN IN, OUTPUT and MIX knobs on it. The renders come from the
+Blender scripts in [`tools/render`](tools/render/README.md).
 
 ### Connect your TONE3000 account
 

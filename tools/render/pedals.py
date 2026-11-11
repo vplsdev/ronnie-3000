@@ -426,6 +426,7 @@ elif form == "compact":
     left, right = ("GAIN IN", "OUTPUT") if FAMILY == "boost" else ("OUTPUT", "GAIN IN")
     knob("left", -1.55, 3.35, 0.78, 1.1, 0.6, TOP, left)
     knob("right", 1.55, 3.35, 0.78, 1.1, 0.45, TOP, right)
+    knob("mix", 0, 3.35, 0.36, 0.8, 1.0, TOP, "MIX")
     lcd(0, 1.7, TOP, cfg["lcd"], w=1.8, h=0.68)
     led(0, 0.55, TOP)
     name_text(-0.8, 0.78 if len(cfg["name"]) > 7 else 0.9, TOP)

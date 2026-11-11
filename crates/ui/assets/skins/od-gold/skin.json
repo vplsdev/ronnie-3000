@@ -1,0 +1,40 @@
+{
+  "id": "od-gold",
+  "width": 441,
+  "height": 637,
+  "knobs": [
+    {
+      "control": "gain",
+      "label": "GAIN IN",
+      "center": [
+        148.0,
+        171.0
+      ],
+      "side": 76,
+      "frames": 32,
+      "columns": 8
+    },
+    {
+      "control": "output",
+      "label": "OUTPUT",
+      "center": [
+        293.0,
+        171.0
+      ],
+      "side": 76,
+      "frames": 32,
+      "columns": 8
+    },
+    {
+      "control": "mix",
+      "label": "MIX",
+      "center": [
+        221.0,
+        231.0
+      ],
+      "side": 54,
+      "frames": 32,
+      "columns": 8
+    }
+  ]
+}

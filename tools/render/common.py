@@ -116,7 +116,8 @@ def clean_body(path):
     ys = np.arange(h, dtype=np.float32)[:, None]
     xs = np.arange(w, dtype=np.float32)[None, :]
     edge = np.minimum(np.minimum(xs, w - 1 - xs), np.minimum(ys, h - 1 - ys))
-    fade = np.clip(edge / EDGE_FADE, 0.0, 1.0)
+    # The outer 2 px are fully clear, then alpha ramps up over EDGE_FADE px.
+    fade = np.clip((edge - 1.0) / EDGE_FADE, 0.0, 1.0)
     # PNG pixels load with straight alpha, so only the alpha channel changes.
     px[..., 3] = clean * fade
     save_pixels(img, px, path)
@@ -170,15 +171,19 @@ def finish(scene, out_dir, skin_id, samples):
         r = scene.render
         r.use_border = True
         r.use_crop_to_border = True
-        r.border_min_x = x0 / width
-        r.border_max_x = (x0 + side) / width
-        r.border_max_y = 1.0 - y0 / height
-        r.border_min_y = 1.0 - (y0 + side) / height
+        # Blender truncates each border edge to a pixel, so each edge sits a quarter pixel past
+        # its target and float error cannot move it a pixel down.
+        r.border_min_x = (x0 + 0.25) / width
+        r.border_max_x = (x0 + side + 0.25) / width
+        r.border_min_y = (height - y0 - side + 0.25) / height
+        r.border_max_y = (height - y0 + 0.25) / height
         scene.cycles.samples = max(32, samples // 2)
         for i in range(FRAMES):
             knob.set_value(i / (FRAMES - 1))
             frame = os.path.join(out_dir, f"knob-{knob.control}-{i:02d}.png")
             render_to(scene, frame)
+            size = tuple(bpy.data.images.load(frame, check_existing=False).size)
+            assert size == (side, side), f"{knob.control} frame is {size}, not {side}"
             feather(frame)
         r.use_border = False
         r.use_crop_to_border = False
