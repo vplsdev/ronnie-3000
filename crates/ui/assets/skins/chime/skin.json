@@ -1,16 +1,16 @@
 {
   "id": "chime",
-  "width": 624,
-  "height": 634,
+  "width": 880,
+  "height": 894,
   "knobs": [
     {
       "control": "gain",
       "label": "GAIN IN",
       "center": [
-        133.0,
-        179.0
+        188.0,
+        252.0
       ],
-      "side": 34,
+      "side": 48,
       "frames": 32,
       "columns": 8
     },
@@ -18,10 +18,10 @@
       "control": "output",
       "label": "OUTPUT",
       "center": [
-        185.0,
-        179.0
+        261.0,
+        252.0
       ],
-      "side": 34,
+      "side": 48,
       "frames": 32,
       "columns": 8
     },
@@ -29,10 +29,10 @@
       "control": "mix",
       "label": "MIX",
       "center": [
-        238.0,
-        179.0
+        335.0,
+        252.0
       ],
-      "side": 34,
+      "side": 48,
       "frames": 32,
       "columns": 8
     }

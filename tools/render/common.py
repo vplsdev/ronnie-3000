@@ -20,14 +20,17 @@ from mathutils import Vector
 
 FRAMES = 32
 # The body fits this height, and no more than MAX_WIDTH, so that a 300-point stage stays sharp at 2x.
-TARGET_HEIGHT = 640
-MAX_WIDTH = 1100
+TARGET_HEIGHT = 900
+MAX_WIDTH = 1800
 # A knob crop is this many knob radii wide; the feather runs over its outer FEATHER part.
 CROP_RADII = 2.7
 FEATHER = 0.12
 # Shadow-catcher haze below this alpha is dropped; alpha fades to 0 within EDGE_FADE px of the frame.
 ALPHA_FLOOR = 4.0 / 255.0
 EDGE_FADE = 12
+# The body is trimmed to what has alpha above TRIM_ALPHA, plus TRIM_PAD px.
+TRIM_ALPHA = 8.0 / 255.0
+TRIM_PAD = 24
 
 LABEL_CONTROL = {"GAIN IN": "gain", "OUTPUT": "output", "MIX": "mix"}
 
@@ -108,19 +111,37 @@ def save_pixels(img, px, path):
 
 
 def clean_body(path):
-    """Drops the shadow-catcher haze and fades alpha to 0 at the frame edges."""
+    """Drops the shadow-catcher haze, trims the empty margin, and fades alpha to 0 at the edges.
+
+    Returns the trimmed body's (left, top, width, height) in the full frame, top-down.
+    """
     img, px = load_pixels(path)
-    h, w, _ = px.shape
+    px = px[::-1].copy()  # top-down rows from here on
     a = px[..., 3]
-    clean = np.clip((a - ALPHA_FLOOR) / (1.0 - ALPHA_FLOOR), 0.0, 1.0)
-    ys = np.arange(h, dtype=np.float32)[:, None]
-    xs = np.arange(w, dtype=np.float32)[None, :]
-    edge = np.minimum(np.minimum(xs, w - 1 - xs), np.minimum(ys, h - 1 - ys))
+    px[..., 3] = np.clip((a - ALPHA_FLOOR) / (1.0 - ALPHA_FLOOR), 0.0, 1.0)
+    rows = np.where((px[..., 3] > TRIM_ALPHA).any(axis=1))[0]
+    cols = np.where((px[..., 3] > TRIM_ALPHA).any(axis=0))[0]
+    h, w = a.shape
+    top = max(0, int(rows[0]) - TRIM_PAD)
+    bottom = min(h, int(rows[-1]) + 1 + TRIM_PAD)
+    left = max(0, int(cols[0]) - TRIM_PAD)
+    right = min(w, int(cols[-1]) + 1 + TRIM_PAD)
+    px = px[top:bottom, left:right].copy()
+    ch, cw = px.shape[:2]
+    ys = np.arange(ch, dtype=np.float32)[:, None]
+    xs = np.arange(cw, dtype=np.float32)[None, :]
+    edge = np.minimum(np.minimum(xs, cw - 1 - xs), np.minimum(ys, ch - 1 - ys))
     # The outer 2 px are fully clear, then alpha ramps up over EDGE_FADE px.
-    fade = np.clip((edge - 1.0) / EDGE_FADE, 0.0, 1.0)
-    # PNG pixels load with straight alpha, so only the alpha channel changes.
-    px[..., 3] = clean * fade
-    save_pixels(img, px, path)
+    px[..., 3] *= np.clip((edge - 1.0) / EDGE_FADE, 0.0, 1.0)
+    bpy.data.images.remove(img)
+    out = bpy.data.images.new("body", cw, ch, alpha=True, float_buffer=False)
+    out.alpha_mode = "STRAIGHT"
+    out.pixels.foreach_set(px[::-1].ravel())
+    out.filepath_raw = path
+    out.file_format = "PNG"
+    out.save()
+    bpy.data.images.remove(out)
+    return left, top, cw, ch
 
 
 def feather(path):
@@ -153,7 +174,7 @@ def finish(scene, out_dir, skin_id, samples):
     scene.cycles.samples = samples
     body = os.path.join(out_dir, "body.png")
     render_to(scene, body)
-    clean_body(body)
+    trim_left, trim_top, body_width, body_height = clean_body(body)
 
     bpy.context.view_layer.update()
     right = cam.matrix_world.to_3x3().col[0].normalized()
@@ -190,13 +211,13 @@ def finish(scene, out_dir, skin_id, samples):
         knobs.append({
             "control": knob.control,
             "label": knob.label,
-            "center": [x0 + side / 2.0, y0 + side / 2.0],
+            "center": [x0 - trim_left + side / 2.0, y0 - trim_top + side / 2.0],
             "side": side,
             "frames": FRAMES,
             "columns": 8,
         })
 
-    manifest = {"id": skin_id, "width": width, "height": height, "knobs": knobs}
+    manifest = {"id": skin_id, "width": body_width, "height": body_height, "knobs": knobs}
     with open(os.path.join(out_dir, "skin.json"), "w") as f:
         json.dump(manifest, f, indent=2)
     print("WROTE", out_dir)

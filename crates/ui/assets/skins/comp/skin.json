@@ -1,16 +1,16 @@
 {
   "id": "comp",
-  "width": 441,
-  "height": 637,
+  "width": 621,
+  "height": 743,
   "knobs": [
     {
       "control": "output",
       "label": "OUTPUT",
       "center": [
-        170.0,
-        180.0
+        239.0,
+        100.0
       ],
-      "side": 70,
+      "side": 98,
       "frames": 32,
       "columns": 8
     },
@@ -18,10 +18,10 @@
       "control": "gain",
       "label": "GAIN IN",
       "center": [
-        271.0,
-        180.0
+        382.0,
+        100.0
       ],
-      "side": 70,
+      "side": 98,
       "frames": 32,
       "columns": 8
     },
@@ -29,10 +29,10 @@
       "control": "mix",
       "label": "MIX",
       "center": [
-        220.0,
-        183.0
+        311.0,
+        104.0
       ],
-      "side": 32,
+      "side": 46,
       "frames": 32,
       "columns": 8
     }

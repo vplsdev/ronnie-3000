@@ -151,3 +151,57 @@ fn a_frame_uv_walks_the_strip_row_by_row() {
     let ninth = knob.frame_uv(8.0 / 31.0);
     assert!((ninth.min.x).abs() < 1e-6 && (ninth.min.y - 0.25).abs() < 1e-6);
 }
+
+#[test]
+fn the_render_scripts_print_no_maker_or_model_names() {
+    let scripts = [
+        include_str!("../../../tools/render/pedals.py"),
+        include_str!("../../../tools/render/gear.py"),
+    ];
+    let banned = [
+        "big muff",
+        "rat 2",
+        "dyna comp",
+        "centaur",
+        "klon",
+        "ep boost",
+        "tube screamer",
+        "ts808",
+        "5150",
+        "rectifier",
+        "jcm",
+        "plexi",
+        "ac30",
+        "ac15",
+        "twin reverb",
+        "deluxe",
+        "svt",
+        "greenback",
+        "v30",
+        "marshall",
+        "vox",
+        "fender",
+        "mesa",
+        "ampeg",
+        "celestion",
+        "boss",
+        "ibanez",
+        "evh",
+        "peavey",
+        "electro-harmonix",
+    ];
+    for script in scripts {
+        let quoted: Vec<String> = script
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_lowercase)
+            .collect();
+        for name in banned {
+            assert!(
+                !quoted.iter().any(|text| text.contains(name)),
+                "a render script prints \"{name}\""
+            );
+        }
+    }
+}

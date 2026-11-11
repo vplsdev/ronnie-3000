@@ -1,16 +1,16 @@
 {
   "id": "highgain",
-  "width": 1008,
-  "height": 644,
+  "width": 1408,
+  "height": 900,
   "knobs": [
     {
       "control": "gain",
       "label": "GAIN IN",
       "center": [
-        236.0,
-        480.0
+        330.0,
+        670.0
       ],
-      "side": 60,
+      "side": 82,
       "frames": 32,
       "columns": 8
     },
@@ -18,10 +18,10 @@
       "control": "output",
       "label": "OUTPUT",
       "center": [
-        323.0,
-        480.0
+        451.0,
+        670.0
       ],
-      "side": 60,
+      "side": 82,
       "frames": 32,
       "columns": 8
     },
@@ -29,10 +29,10 @@
       "control": "mix",
       "label": "MIX",
       "center": [
-        409.0,
-        480.0
+        572.0,
+        670.0
       ],
-      "side": 60,
+      "side": 82,
       "frames": 32,
       "columns": 8
     }

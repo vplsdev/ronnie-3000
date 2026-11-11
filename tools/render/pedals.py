@@ -124,17 +124,17 @@ KNOBS = {
 
 # ================================================================ families
 F = {
-    "od-green": dict(form="treadle", name="OD808", lcd="DRV 3", paint=dict(color=(0.016, 0.15, 0.05), rough=0.45, coat=0.22, coat_rough=0.28, bump=(1600, 0.05)),
+    "od-green": dict(form="treadle", name="GREEN OD", lcd="DRV 3", paint=dict(color=(0.016, 0.15, 0.05), rough=0.45, coat=0.22, coat_rough=0.28, bump=(1600, 0.05)),
                      wear=(0.10, 0.36, 0.16), ink=(0.86, 0.85, 0.80), knob="black", led=(1.0, 0.025, 0.0)),
-    "od-gold": dict(form="standard", name="CENTAUR", lcd="GAIN 2", paint=dict(color=(0.42, 0.24, 0.045), metallic=0.9, rough=0.3, coat=0.6, coat_rough=0.08, flake=(900, 0.3)),
+    "od-gold": dict(form="standard", name="GOLD OD", lcd="GAIN 2", paint=dict(color=(0.42, 0.24, 0.045), metallic=0.9, rough=0.3, coat=0.6, coat_rough=0.08, flake=(900, 0.3)),
                     wear=(0.8, 0.62, 0.3), ink=(0.05, 0.035, 0.015), knob="black", led=(1.0, 0.025, 0.0), frame=True, track=0.25),
-    "dist-black": dict(form="row3", name="RAT 2", lcd="DIST 5", paint=dict(color=(0.012, 0.012, 0.013), rough=0.72, bump=(2500, 0.12)),
+    "dist-black": dict(form="row3", name="DIST", lcd="DIST 5", paint=dict(color=(0.012, 0.012, 0.013), rough=0.72, bump=(2500, 0.12)),
                        wear=(0.08, 0.08, 0.08), ink=(0.85, 0.85, 0.85), knob="chrome", led=(1.0, 0.025, 0.0), bold=0.03),
-    "fuzz": dict(form="wide", name="BIG MUFF", lcd="SUS 7", paint=dict(color=(0.62, 0.63, 0.64), metallic=1.0, rough=0.3, aniso=0.7),
+    "fuzz": dict(form="wide", name="FUZZ", lcd="SUS 7", paint=dict(color=(0.62, 0.63, 0.64), metallic=1.0, rough=0.3, aniso=0.7),
                  wear=None, ink=(0.45, 0.025, 0.015), knob="black", led=(1.0, 0.025, 0.0), shear=0.2, bold=0.03, frame=True),
-    "boost": dict(form="compact", name="EP BOOST", lcd="+10 dB", paint=dict(color=(0.74, 0.71, 0.62), rough=0.55, bump=(2200, 0.06)),
+    "boost": dict(form="compact", name="BOOST", lcd="+10 dB", paint=dict(color=(0.74, 0.71, 0.62), rough=0.55, bump=(2200, 0.06)),
                   wear=(0.55, 0.53, 0.47), ink=(0.06, 0.06, 0.06), knob="black", led=(1.0, 0.025, 0.0)),
-    "comp": dict(form="compact", name="DYNA COMP", lcd="SUS 4", paint=dict(color=(0.42, 0.02, 0.012), rough=0.38, coat=0.4, coat_rough=0.15, bump=(1600, 0.05)),
+    "comp": dict(form="compact", name="COMP", lcd="SUS 4", paint=dict(color=(0.42, 0.02, 0.012), rough=0.38, coat=0.4, coat_rough=0.15, bump=(1600, 0.05)),
                  wear=(0.6, 0.15, 0.1), ink=(0.9, 0.86, 0.78), knob="black", led=(1.0, 0.025, 0.0), bold=0.02),
     "default-dark": dict(form="standard", name="MYSTERY", lcd="CAP 1", paint=dict(color=(0.09, 0.09, 0.1), metallic=0.7, rough=0.34, aniso=0.6),
                          wear=None, ink=(0.88, 0.88, 0.86), knob="black", led=(1.0, 0.18, 0.0)),

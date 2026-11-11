@@ -1,16 +1,16 @@
 {
   "id": "clean",
-  "width": 656,
-  "height": 647,
+  "width": 912,
+  "height": 900,
   "knobs": [
     {
       "control": "gain",
       "label": "GAIN IN",
       "center": [
-        189.0,
-        199.0
+        263.0,
+        276.0
       ],
-      "side": 38,
+      "side": 52,
       "frames": 32,
       "columns": 8
     },
@@ -18,10 +18,10 @@
       "control": "output",
       "label": "OUTPUT",
       "center": [
-        246.0,
-        199.0
+        343.0,
+        276.0
       ],
-      "side": 38,
+      "side": 52,
       "frames": 32,
       "columns": 8
     },
@@ -29,10 +29,10 @@
       "control": "mix",
       "label": "MIX",
       "center": [
-        304.0,
-        199.0
+        423.0,
+        276.0
       ],
-      "side": 38,
+      "side": 52,
       "frames": 32,
       "columns": 8
     }

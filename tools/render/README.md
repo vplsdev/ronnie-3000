@@ -22,7 +22,7 @@ the Cycles samples for the body (default 256). The knob frames use half that num
 
 Each skin gets a folder under `crates/ui/assets/skins/<skin>/`:
 
-- `body.webp`: the gear on a transparent background, 640 px tall and at most 1100 px wide. That keeps the 300-point
+- `body.webp`: the gear on a transparent background, trimmed to the gear and its shadow (rendered 900 px tall, at most 1800 px wide). That keeps the 300-point
   stage sharp at 2×. Shadow-catcher haze below 4/255 alpha is dropped, and alpha fades to 0 over the outer 12 px.
 - `knob-<control>.webp`: 32 frames of each live knob (`gain`, `output`, `mix`), from value 0 to value 1, 8 per row.
   Each frame is a square crop of the same render, feathered to a circle so that it sits on the body without a seam.
