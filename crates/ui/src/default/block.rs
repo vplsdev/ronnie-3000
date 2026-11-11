@@ -41,6 +41,9 @@ pub enum BlockView {
 /// Complete block detail controller.
 pub struct BlockDetail {
     backend: Arc<dyn UiBackend>,
+    /// Whether the page shows its "Back to chain" link. A layout whose stage always shows a
+    /// block has no chain to go back to.
+    back_link: bool,
     block_id: BlockId,
     block: ChainBlock,
     calibrate_input: bool,
@@ -118,6 +121,7 @@ impl BlockDetail {
         info.set_page_url(tone_url(&block));
         Ok(Self {
             backend,
+            back_link: true,
             block_id: id,
             block,
             calibrate_input,
@@ -764,7 +768,7 @@ impl BlockDetail {
             egui::pos2(card_x, bounds.top() + 24.0),
             egui::vec2(104.0, 22.0),
         );
-        if back_link(ui, back).clicked() {
+        if self.back_link && back_link(ui, back).clicked() {
             self.revoke_switch();
             self.closed = true;
         }
@@ -1317,6 +1321,11 @@ impl BlockDetail {
             params: self.block.params.clone(),
             gesture,
         });
+    }
+
+    /// Shows or hides the "Back to chain" link.
+    pub fn set_back_link(&mut self, shown: bool) {
+        self.back_link = shown;
     }
 
     fn write_params(&mut self) -> Result<(), UiError> {

@@ -1092,7 +1092,7 @@ impl Knob {
             egui::Align2::CENTER_CENTER,
             self.caption.as_deref().unwrap_or(&self.label),
             egui::FontId::proportional(14.0),
-            crate::theme::palette::TEXT_MUTED,
+            crate::theme::Look::get(ui.ctx()).text_muted,
         );
         output.response
     }

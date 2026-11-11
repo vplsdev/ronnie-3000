@@ -158,3 +158,94 @@ impl Default for Theme {
         }
     }
 }
+
+use eframe::egui;
+
+/// Colours for one layout, looked up at run time so that a layout can turn light or dark.
+///
+/// The reference layout uses [`Look::reference`]; the Archetype layout installs
+/// [`Look::archetype`] before it draws. Code that opts in reads the active look with
+/// [`Look::get`]; everything else keeps the constant [`palette`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Look {
+    /// Window background behind every panel.
+    pub background: egui::Color32,
+    /// Raised panels such as the global controls.
+    pub panel: egui::Color32,
+    /// Hairlines and panel edges.
+    pub edge: egui::Color32,
+    /// Primary text.
+    pub text: egui::Color32,
+    /// Secondary text such as values and captions.
+    pub text_muted: egui::Color32,
+    /// The utility bar at the bottom of the window.
+    pub utility: egui::Color32,
+    /// Text on the utility bar.
+    pub utility_text: egui::Color32,
+    /// Accent for active states.
+    pub accent: egui::Color32,
+    /// Chain icon of the selected block.
+    pub icon_selected: egui::Color32,
+    /// Chain icon of an active block.
+    pub icon_on: egui::Color32,
+    /// Chain icon of a bypassed block.
+    pub icon_bypassed: egui::Color32,
+    /// Wash over a control that is switched off.
+    pub veil: egui::Color32,
+}
+
+impl Look {
+    /// Today's dark colours.
+    #[must_use]
+    pub const fn reference() -> Self {
+        Self {
+            background: egui::Color32::BLACK,
+            panel: palette::SURFACE_RAISED,
+            edge: palette::HAIRLINE,
+            text: egui::Color32::WHITE,
+            text_muted: palette::TEXT_MUTED,
+            utility: egui::Color32::BLACK,
+            utility_text: egui::Color32::WHITE,
+            accent: palette::FIRE,
+            icon_selected: egui::Color32::WHITE,
+            icon_on: palette::TEXT_MUTED,
+            icon_bypassed: palette::TEXT_SUBTLE,
+            veil: palette::KNOB_VEIL,
+        }
+    }
+
+    /// The light Archetype colours.
+    #[must_use]
+    pub const fn archetype() -> Self {
+        Self {
+            background: egui::Color32::from_rgb(0xf3, 0xf3, 0xf1),
+            panel: egui::Color32::from_rgb(0xfb, 0xfb, 0xfa),
+            edge: egui::Color32::from_rgb(0xd9, 0xd9, 0xd6),
+            text: egui::Color32::from_rgb(0x11, 0x11, 0x11),
+            text_muted: egui::Color32::from_rgb(0x5f, 0x5f, 0x5c),
+            utility: egui::Color32::from_rgb(0x0b, 0x0b, 0x0b),
+            utility_text: egui::Color32::from_rgb(0xf2, 0xf2, 0xf2),
+            accent: egui::Color32::from_rgb(0xff, 0x6a, 0x1a),
+            icon_selected: egui::Color32::from_rgb(0x11, 0x11, 0x11),
+            icon_on: egui::Color32::from_rgb(0x6b, 0x6b, 0x68),
+            icon_bypassed: egui::Color32::from_rgb(0xb9, 0xb9, 0xb6),
+            veil: egui::Color32::from_rgba_premultiplied(0xa7, 0xa7, 0xa6, 0xaa),
+        }
+    }
+
+    fn id() -> egui::Id {
+        egui::Id::unique("ronie-look")
+    }
+
+    /// Makes `look` the active look for this context.
+    pub fn install(ctx: &egui::Context, look: Self) {
+        ctx.data_mut(|data| data.insert_temp(Self::id(), look));
+    }
+
+    /// The active look, or the reference look when none was installed.
+    #[must_use]
+    pub fn get(ctx: &egui::Context) -> Self {
+        ctx.data(|data| data.get_temp(Self::id()))
+            .unwrap_or_else(Self::reference)
+    }
+}

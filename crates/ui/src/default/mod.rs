@@ -1,5 +1,6 @@
 //! Reference Default chrome and shared interaction controllers.
 
+mod archetype;
 pub mod banners;
 pub mod block;
 pub mod block_info;

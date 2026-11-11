@@ -82,6 +82,8 @@ fn user_name(user: &serde_json::Value) -> Option<&str> {
 /// Complete Default chrome controller. Processor mutations go through `UiBackend`.
 pub struct ChromeController {
     backend: Arc<dyn UiBackend>,
+    /// Which layout draws the window.
+    view_mode: crate::shell::ViewMode,
     presets: PresetController,
     session: Session,
     community: Option<Box<dyn CommunityAccess>>,
@@ -159,6 +161,28 @@ impl ChromeController {
         Self::with_session(backend, presets, session, hints_enabled)
     }
 
+    /// Records the control that opened the current popover, so that a second press on it closes
+    /// the popover and dismissal returns focus to it.
+    pub(super) fn set_overlay_trigger(&mut self, trigger: Option<Trigger>) {
+        self.overlay_trigger = trigger;
+    }
+
+    /// The processor load as a percentage, for status readouts.
+    pub(super) fn cpu_percent(&self) -> f32 {
+        self.backend.meter_levels().cpu * 100.0
+    }
+
+    /// Which layout draws the window.
+    #[must_use]
+    pub const fn view_mode(&self) -> crate::shell::ViewMode {
+        self.view_mode
+    }
+
+    /// Chooses the layout that draws the window.
+    pub fn set_view_mode(&mut self, mode: crate::shell::ViewMode) {
+        self.view_mode = mode;
+    }
+
     /// Creates Default chrome around one session.
     pub(crate) fn with_session(
         backend: Arc<dyn UiBackend>,
@@ -167,6 +191,7 @@ impl ChromeController {
         hints_enabled: bool,
     ) -> Self {
         Self {
+            view_mode: crate::shell::ViewMode::ReferenceDefault,
             presets: PresetController::new(backend.clone(), presets),
             session,
             community: None,
@@ -1515,6 +1540,22 @@ impl ChromeController {
         self.faceplate.measuring()
     }
 
+    /// The global panel.
+    pub fn faceplate_mut(&mut self) -> &mut Faceplate {
+        &mut self.faceplate
+    }
+
+    /// Whether the audio engine runs in its low-latency "optimize" mode.
+    #[must_use]
+    pub fn optimize(&self) -> bool {
+        super::tuning::optimize(self.backend.as_ref())
+    }
+
+    /// Turns the low-latency "optimize" mode on or off.
+    pub fn set_optimize(&mut self, enabled: bool) -> Result<(), UiError> {
+        super::tuning::set_optimize(self.backend.as_ref(), enabled)
+    }
+
     /// Whether the tuner is visible.
     #[must_use]
     pub fn tuner_visible(&self) -> bool {
@@ -1951,15 +1992,37 @@ pub fn show(ui: &mut egui::Ui, chrome: &mut ChromeController) {
     }
     let state = chrome.backend.chain_state(0);
     chrome.sync_remote_images(ui.ctx(), &state.chain);
-    show_header(ui, chrome, &state);
-    show_overlay(ui, chrome);
-    show_hints(ui, chrome);
+    if chrome.view_mode == crate::shell::ViewMode::RonieFlow {
+        super::archetype::show(ui, chrome, &state, now_ms);
+    } else {
+        crate::theme::Look::install(ui.ctx(), crate::theme::Look::reference());
+        show_header(ui, chrome, &state);
+        show_overlay(ui, chrome);
+        show_hints(ui, chrome);
+        show_faceplate(ui, chrome, Color32::BLACK);
+        show_stage(ui, chrome, now_ms);
+    }
+    close_hidden_drags(ui, chrome);
+    if let Some(events) = background_events {
+        ui.ctx().input_mut(|input| input.events = events);
+    }
+    show_dialogs(ui, chrome, now_ms);
+    show_toast(ui, chrome);
+}
+
+/// Draws the global controls in a bottom panel, unless the tone browser or the auth page
+/// covers the window.
+pub(super) fn show_faceplate(ui: &mut egui::Ui, chrome: &mut ChromeController, fill: Color32) {
     if chrome.browser.is_none() && !chrome.auth_active() {
         egui::Panel::bottom("default-faceplate")
             .exact_size(108.0)
-            .frame(egui::Frame::NONE.fill(Color32::BLACK))
+            .frame(egui::Frame::NONE.fill(fill))
             .show(ui, |ui| chrome.faceplate.show(ui));
     }
+}
+
+/// Draws the central area: the auth page, the tuner, the tone browser, a block, or the chain.
+pub(super) fn show_stage(ui: &mut egui::Ui, chrome: &mut ChromeController, now_ms: i64) {
     chrome.sync_auth(ui);
     if !chrome.auth_active() {
         if chrome.tuner_visible {
@@ -2003,12 +2066,6 @@ pub fn show(ui: &mut egui::Ui, chrome: &mut ChromeController) {
             }
         }
     }
-    close_hidden_drags(ui, chrome);
-    if let Some(events) = background_events {
-        ui.ctx().input_mut(|input| input.events = events);
-    }
-    show_dialogs(ui, chrome, now_ms);
-    show_toast(ui, chrome);
 }
 
 /// Closes the knob drag of each page that this pass did not show.
@@ -2429,7 +2486,7 @@ pub(super) fn draw_chevron(painter: &egui::Painter, rect: egui::Rect, right: boo
     ));
 }
 
-fn draw_plus(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
+pub(super) fn draw_plus(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
     let center = rect.center();
     let stroke = egui::Stroke::new(1.5, color);
     painter.line_segment(
@@ -2490,7 +2547,7 @@ fn draw_save(painter: &egui::Painter, rect: egui::Rect) {
     ));
 }
 
-fn show_overlay(ui: &mut egui::Ui, chrome: &mut ChromeController) {
+pub(super) fn show_overlay(ui: &mut egui::Ui, chrome: &mut ChromeController) {
     let trigger = chrome.overlay_trigger;
     let popover = |name: &str, panel: egui::Rect, radius: f32| {
         Popover::new(
