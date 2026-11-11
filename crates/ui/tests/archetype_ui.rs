@@ -262,3 +262,103 @@ fn the_tuner_takes_the_stage() {
     assert!(driver.chrome_mut().detail_mut().is_none() || !driver.is_visible("Back"));
     assert!(!driver.shows_text("Your chain is empty"));
 }
+
+// ---------------------------------------------------------------- Task 5: panel and utility bar
+
+fn faceplate_shapes(look: Look) -> String {
+    use eframe::egui;
+    let backend = Arc::new(MockBackend::from_scenario(&scenario("main-mono")));
+    let mut faceplate = ronie_ui::default::faceplate::Faceplate::new(backend);
+    let context = egui::Context::default();
+    ronie_ui::fonts::Fonts::install(&context);
+    Look::install(&context, look);
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1024.0, 578.0),
+        )),
+        ..Default::default()
+    };
+    let mut output = context.run_ui(input, |ui| {
+        egui::Panel::bottom("faceplate")
+            .exact_size(108.0)
+            .show(ui, |ui| faceplate.show(ui));
+    });
+    output.textures_delta.clear();
+    output
+        .shapes
+        .iter()
+        .map(|clipped| format!("{:?}", clipped.shape))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn color_text(color: eframe::egui::Color32) -> String {
+    format!("{color:?}")
+}
+
+#[test]
+fn faceplate_uses_the_light_panel_in_archetype_mode() {
+    let look = Look::archetype();
+    let shapes = faceplate_shapes(look);
+    assert!(
+        shapes.contains(&color_text(look.panel)),
+        "the panel fill is light"
+    );
+    assert!(
+        shapes.contains(&color_text(look.text_muted)),
+        "captions use the muted text colour"
+    );
+    let reference = faceplate_shapes(Look::reference());
+    assert!(
+        !reference.contains(&color_text(look.panel)),
+        "the reference stays dark"
+    );
+}
+
+#[test]
+fn utility_tuner_toggles_the_tuner() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver.click("Tuner").expect("tuner");
+    driver.settle();
+    assert!(driver.chrome().tuner_visible());
+}
+
+#[test]
+fn utility_settings_opens_settings() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver.click("Settings").expect("settings");
+    driver.settle();
+    assert!(driver.chrome_mut().settings_mut().is_some());
+}
+
+#[test]
+fn utility_mono_stereo_switch_modes() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let _ = driver.click("Stereo mode").expect("stereo");
+    driver.settle();
+    assert!(backend.chain_state(0).chain.stereo_enabled);
+    let _ = driver.click("Mono mode").expect("mono");
+    driver.settle();
+    assert!(!backend.chain_state(0).chain.stereo_enabled);
+}
+
+#[test]
+fn utility_undo_redo_follow_history() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let _ = driver.secondary_click(VOX).expect("bypass a block");
+    driver.settle();
+    assert!(!backend.chain_state(0).chain.left[1].params.enabled);
+    let _ = driver.click("Undo").expect("undo");
+    driver.settle();
+    assert!(
+        backend.chain_state(0).chain.left[1].params.enabled,
+        "undo restored it"
+    );
+    let _ = driver.click("Redo").expect("redo");
+    driver.settle();
+    assert!(
+        !backend.chain_state(0).chain.left[1].params.enabled,
+        "redo bypassed it again"
+    );
+}

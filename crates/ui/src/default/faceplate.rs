@@ -222,10 +222,11 @@ impl Faceplate {
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let bounds = ui.available_rect_before_wrap();
         let painter = ui.painter_at(bounds);
-        painter.rect_filled(bounds, 0.0, crate::theme::palette::SURFACE_RAISED);
+        let look = crate::theme::Look::get(ui.ctx());
+        painter.rect_filled(bounds, 0.0, look.panel);
         painter.line_segment(
             [bounds.left_top(), bounds.right_top()],
-            Stroke::new(1.0, crate::theme::palette::HAIRLINE),
+            Stroke::new(1.0, look.edge),
         );
         let content = Rect::from_min_max(
             bounds.min + egui::vec2(30.0, 16.0),
@@ -287,24 +288,24 @@ impl Faceplate {
                             "R"
                         },
                         egui::FontId::new(11.0, egui::FontFamily::Name("roboto-mono-bold".into())),
-                        Color32::WHITE,
+                        crate::theme::Look::get(painter.ctx()).text,
                     );
                 }
                 ronie_core::InputMode::Stereo | ronie_core::InputMode::DualMono => {
                     painter.circle_stroke(
                         mode_rect.center() + egui::vec2(-9.0, 0.0),
                         4.0,
-                        Stroke::new(1.2, Color32::WHITE),
+                        Stroke::new(1.2, crate::theme::Look::get(painter.ctx()).text),
                     );
                     painter.circle_stroke(
                         mode_rect.center() + egui::vec2(-2.0, 0.0),
                         4.0,
-                        Stroke::new(1.2, Color32::WHITE),
+                        Stroke::new(1.2, crate::theme::Look::get(painter.ctx()).text),
                     );
                 }
             }
             let chevron = mode_rect.center() + egui::vec2(11.0, 0.0);
-            let stroke = Stroke::new(1.5, crate::theme::palette::TEXT_MUTED);
+            let stroke = Stroke::new(1.5, crate::theme::Look::get(painter.ctx()).text_muted);
             painter.line_segment(
                 [
                     chevron + egui::vec2(-4.0, -2.0),
@@ -533,7 +534,7 @@ impl Faceplate {
             let icon_color = if running {
                 Color32::BLACK
             } else {
-                crate::theme::palette::TEXT_MUTED
+                crate::theme::Look::get(painter.ctx()).text_muted
             };
             let stroke = Stroke::new(7.0 / 6.0, icon_color);
             for y in [-7.0 / 3.0, 7.0 / 3.0] {
@@ -817,9 +818,9 @@ fn power_button(
 
 fn draw_power(painter: &egui::Painter, rect: Rect, enabled: bool) {
     let color = if enabled {
-        Color32::WHITE
+        crate::theme::Look::get(painter.ctx()).text
     } else {
-        crate::theme::palette::TEXT_MUTED
+        crate::theme::Look::get(painter.ctx()).text_muted
     };
     let stroke = Stroke::new(1.2, color);
     let center = rect.center();
@@ -837,7 +838,7 @@ fn draw_advert(painter: &egui::Painter, rect: Rect, label: &'static str, inward:
     painter.rect_stroke(
         rect,
         24.0,
-        Stroke::new(1.0, Color32::WHITE),
+        Stroke::new(1.0, crate::theme::Look::get(painter.ctx()).text),
         egui::StrokeKind::Inside,
     );
     let font = egui::FontId::proportional(12.0);
@@ -861,7 +862,7 @@ fn draw_advert(painter: &egui::Painter, rect: Rect, label: &'static str, inward:
                 point(2.0, 8.0),
                 point(2.0, 2.0),
             ],
-            Stroke::new(0.805, Color32::WHITE),
+            Stroke::new(0.805, crate::theme::Look::get(painter.ctx()).text),
         ));
         if points_right == inward {
             x += 28.0 + text_width;
@@ -870,7 +871,7 @@ fn draw_advert(painter: &egui::Painter, rect: Rect, label: &'static str, inward:
                 egui::Align2::CENTER_CENTER,
                 label,
                 font.clone(),
-                Color32::WHITE,
+                crate::theme::Look::get(painter.ctx()).text,
             );
             x += 8.0;
         }

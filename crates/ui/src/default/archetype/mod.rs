@@ -6,6 +6,7 @@
 
 use crate::theme::Look;
 mod header;
+mod utility;
 
 use eframe::egui;
 
@@ -36,7 +37,7 @@ pub(super) fn show(
     egui::Panel::bottom("archetype-utility")
         .exact_size(UTILITY_HEIGHT)
         .frame(egui::Frame::NONE.fill(look.utility))
-        .show(ui, |_ui| {});
+        .show(ui, |ui| utility::show_utility(ui, chrome, state));
     show_faceplate(ui, chrome, look.panel);
     let first_tone = state
         .chain

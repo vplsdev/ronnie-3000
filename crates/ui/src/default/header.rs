@@ -161,6 +161,11 @@ impl ChromeController {
         Self::with_session(backend, presets, session, hints_enabled)
     }
 
+    /// The processor load as a percentage, for status readouts.
+    pub(super) fn cpu_percent(&self) -> f32 {
+        self.backend.meter_levels().cpu * 100.0
+    }
+
     /// Which layout draws the window.
     #[must_use]
     pub const fn view_mode(&self) -> crate::shell::ViewMode {
