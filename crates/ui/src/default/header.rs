@@ -161,6 +161,12 @@ impl ChromeController {
         Self::with_session(backend, presets, session, hints_enabled)
     }
 
+    /// Records the control that opened the current popover, so that a second press on it closes
+    /// the popover and dismissal returns focus to it.
+    pub(super) fn set_overlay_trigger(&mut self, trigger: Option<Trigger>) {
+        self.overlay_trigger = trigger;
+    }
+
     /// The processor load as a percentage, for status readouts.
     pub(super) fn cpu_percent(&self) -> f32 {
         self.backend.meter_levels().cpu * 100.0

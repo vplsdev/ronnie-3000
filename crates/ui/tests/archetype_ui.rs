@@ -375,3 +375,215 @@ fn disabled_controls_fade_into_the_light_panel() {
         "no dark veil on the light panel"
     );
 }
+
+// ---------------------------------------------------------------- Task 7: review fixes
+
+/// Runs `frames` frames of the whole window for `chrome` and returns the last frame's shapes.
+fn window_shapes(chrome: &mut ChromeController, frames: usize) -> Vec<eframe::egui::Shape> {
+    use eframe::egui;
+    let context = egui::Context::default();
+    ronie_ui::fonts::Fonts::install(&context);
+    let mut shapes = Vec::new();
+    for _ in 0..frames {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1024.0, 658.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = context.run_ui(input, |ui| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| ronie_ui::default::show(ui, chrome));
+        });
+        output.textures_delta.clear();
+        shapes = output
+            .shapes
+            .into_iter()
+            .map(|clipped| clipped.shape)
+            .collect();
+    }
+    shapes
+}
+
+fn flat(shapes: Vec<eframe::egui::Shape>) -> Vec<eframe::egui::Shape> {
+    let mut out = Vec::new();
+    for shape in shapes {
+        match shape {
+            eframe::egui::Shape::Vec(inner) => out.extend(flat(inner)),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+#[test]
+fn the_background_leaves_the_banner_visible() {
+    use eframe::egui::Shape;
+    let fixture = scenario("banner-no-input");
+    let backend = Arc::new(MockBackend::from_scenario(&fixture));
+    let mut chrome = ChromeController::new(backend, Vec::new(), false, true);
+    chrome.set_view_mode(ViewMode::RonieFlow);
+    let device = ronie_ui::default::SystemDeviceState::from_ui_value(&fixture.state["device"])
+        .expect("device settings")
+        .banner;
+    chrome.set_device_state(Some(device), 0);
+    let shapes = flat(window_shapes(&mut chrome, 3));
+    let background = Look::archetype().background;
+    let banner_drawn = shapes.iter().any(|shape| {
+        matches!(shape, Shape::Rect(rect) if rect.rect.min.y < 1.0 && (40.0..=46.0).contains(&rect.rect.height()) && rect.fill == eframe::egui::Color32::BLACK)
+    });
+    assert!(banner_drawn, "the scenario shows a banner");
+    let covered = shapes.iter().any(|shape| {
+        matches!(shape, Shape::Rect(rect) if rect.fill == background && rect.rect.min.y < 40.0)
+    });
+    assert!(!covered, "no light fill is painted over the banner");
+}
+
+#[test]
+fn removing_a_block_opens_its_neighbour_without_a_flash() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver.click("Remove block").expect("remove");
+    driver.frame();
+    assert!(
+        !driver.is_visible("Add Tone"),
+        "the chain gallery never shows on the stage"
+    );
+    driver.settle();
+    assert!(
+        matches!(
+            driver.chrome().gallery().selection(),
+            GallerySelection::BlockDetail(id) if *id == BlockId("blk-2".to_owned())
+        ),
+        "the next block opens: {:?}",
+        driver.chrome().gallery().selection()
+    );
+}
+
+#[test]
+fn removing_the_last_block_opens_the_previous_one() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver
+        .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
+        .expect("third block");
+    driver.settle();
+    let _ = driver.click("Remove block").expect("remove");
+    for _ in 0..3 {
+        assert!(
+            !driver.is_visible("Add Tone"),
+            "the chain gallery never shows on the stage"
+        );
+        driver.frame();
+    }
+    driver.settle();
+    assert!(
+        matches!(
+            driver.chrome().gallery().selection(),
+            GallerySelection::BlockDetail(id) if *id == BlockId("blk-2".to_owned())
+        ),
+        "the previous block opens: {:?}",
+        driver.chrome().gallery().selection()
+    );
+}
+
+#[test]
+fn a_second_click_on_the_preset_pill_closes_the_browser() {
+    use ronie_ui::default::Overlay;
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver.click("Browse presets").expect("pill");
+    driver.settle();
+    assert_eq!(driver.chrome().overlay(), Overlay::PresetBrowser);
+    let _ = driver.click("Browse presets").expect("pill again");
+    driver.settle();
+    assert_eq!(
+        driver.chrome().overlay(),
+        Overlay::None,
+        "the second click closes it"
+    );
+}
+
+#[test]
+fn deck_captions_stay_light_on_the_dark_deck() {
+    use eframe::egui::{self, Shape};
+    let backend = Arc::new(MockBackend::from_scenario(&scenario("main-mono")));
+    let mut faceplate = ronie_ui::default::faceplate::Faceplate::new(backend);
+    faceplate.open_deck(ronie_ui::default::DeckKind::Gate);
+    let context = egui::Context::default();
+    ronie_ui::fonts::Fonts::install(&context);
+    Look::install(&context, Look::archetype());
+    let mut texts = Vec::new();
+    for _ in 0..2 {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1024.0, 578.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = context.run_ui(input, |ui| {
+            egui::Panel::bottom("faceplate")
+                .exact_size(108.0)
+                .show(ui, |ui| faceplate.show(ui));
+        });
+        output.textures_delta.clear();
+        texts = flat(
+            output
+                .shapes
+                .into_iter()
+                .map(|clipped| clipped.shape)
+                .collect(),
+        )
+        .into_iter()
+        .filter_map(|shape| match shape {
+            Shape::Text(text) if text.pos.y < 470.0 => {
+                Some((text.galley.text().to_owned(), text.fallback_color))
+            }
+            _ => None,
+        })
+        .collect();
+    }
+    assert!(!texts.is_empty(), "the deck shows above the panel");
+    for (text, color) in &texts {
+        // Unmultiplied, so that a dimmed caption is judged by its own colour.
+        let [r, g, b, _] = color.to_srgba_unmultiplied();
+        let brightest = r.max(g).max(b);
+        assert!(
+            brightest >= 0x80,
+            "{text} is dark ({color:?}) on the dark deck"
+        );
+    }
+}
+
+#[test]
+fn the_block_you_add_opens_on_the_stage() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let _ = driver.click("Add a block").expect("plus");
+    driver.settle();
+    let tone = ronie_core::Tone::from_value(serde_json::json!({
+        "id": 4242, "title": "Freshly added amp", "format": "nam", "gear": "amp",
+        "models": [{"id": 424201, "name": "One", "model_url": "https://fixtures.invalid/m/424201.nam"}]
+    }))
+    .expect("tone");
+    driver.chrome_mut().pick_tone(tone);
+    for _ in 0..20 {
+        driver.settle();
+    }
+    let chain = backend.chain_state(0).chain;
+    let added = chain
+        .left
+        .iter()
+        .find(|block| {
+            block
+                .tone
+                .as_ref()
+                .is_some_and(|tone| tone.title == "Freshly added amp")
+        })
+        .map(|block| block.id.clone())
+        .expect("the tone was added");
+    assert!(
+        matches!(driver.chrome().gallery().selection(), GallerySelection::BlockDetail(id) if *id == added),
+        "the added block opens: {:?}",
+        driver.chrome().gallery().selection()
+    );
+}

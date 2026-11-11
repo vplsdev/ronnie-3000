@@ -10,6 +10,7 @@ use super::super::{
     chain::GallerySelection,
     header::{ChromeController, draw_chevron, draw_plus},
     overlays::{DismissReason, Overlay},
+    popover::Trigger,
     tile::{block_glyph, draw_glyph},
 };
 
@@ -461,6 +462,12 @@ fn show_presets(ui: &mut egui::Ui, chrome: &mut ChromeController, bounds: Rect, 
         } else {
             chrome.open_presets();
         }
+    }
+    match chrome.overlay() {
+        Overlay::PresetBrowser => chrome.set_overlay_trigger(Some(Trigger::from(&browse))),
+        Overlay::SavePreset => chrome.set_overlay_trigger(Some(Trigger::from(&save))),
+        Overlay::None => chrome.set_overlay_trigger(None),
+        Overlay::Account => {}
     }
 }
 

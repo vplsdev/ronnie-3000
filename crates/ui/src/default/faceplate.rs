@@ -288,24 +288,24 @@ impl Faceplate {
                             "R"
                         },
                         egui::FontId::new(11.0, egui::FontFamily::Name("roboto-mono-bold".into())),
-                        crate::theme::Look::get(painter.ctx()).text,
+                        Color32::WHITE,
                     );
                 }
                 ronie_core::InputMode::Stereo | ronie_core::InputMode::DualMono => {
                     painter.circle_stroke(
                         mode_rect.center() + egui::vec2(-9.0, 0.0),
                         4.0,
-                        Stroke::new(1.2, crate::theme::Look::get(painter.ctx()).text),
+                        Stroke::new(1.2, Color32::WHITE),
                     );
                     painter.circle_stroke(
                         mode_rect.center() + egui::vec2(-2.0, 0.0),
                         4.0,
-                        Stroke::new(1.2, crate::theme::Look::get(painter.ctx()).text),
+                        Stroke::new(1.2, Color32::WHITE),
                     );
                 }
             }
             let chevron = mode_rect.center() + egui::vec2(11.0, 0.0);
-            let stroke = Stroke::new(1.5, crate::theme::Look::get(painter.ctx()).text_muted);
+            let stroke = Stroke::new(1.5, crate::theme::palette::TEXT_MUTED);
             painter.line_segment(
                 [
                     chevron + egui::vec2(-4.0, -2.0),
@@ -573,7 +573,11 @@ impl Faceplate {
             None,
         );
 
+        // Decks float on a dark surface, so they keep the dark colours in any layout.
+        let look = crate::theme::Look::get(ui.ctx());
+        crate::theme::Look::install(ui.ctx(), crate::theme::Look::reference());
         self.show_deck(ui, bounds.top());
+        crate::theme::Look::install(ui.ctx(), look);
         self.close_hidden_drags(ui.ctx().cumulative_pass_nr());
     }
 
