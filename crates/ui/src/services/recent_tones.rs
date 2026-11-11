@@ -82,7 +82,9 @@ fn stash_name(model: Option<&ToneModel>) -> Option<&str> {
     }
 }
 
-fn same_tone(a: &Tone, b: &Tone) -> bool {
+/// Whether two tones are the same catalog tone, or the same local file.
+#[must_use]
+pub fn same_tone(a: &Tone, b: &Tone) -> bool {
     match (stash_name(a.models.first()), stash_name(b.models.first())) {
         (Some(x), Some(y)) => a.title == b.title && x == y,
         (None, None) => a.id == b.id,

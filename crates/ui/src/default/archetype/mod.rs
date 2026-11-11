@@ -12,6 +12,7 @@ mod utility;
 use eframe::egui;
 
 use super::header::{ChromeController, show_faceplate, show_overlay, show_stage};
+use crate::services::load_flow::LoadPhase;
 
 /// Header height in design points.
 pub(super) const HEADER_HEIGHT: f32 = 64.0;
@@ -105,7 +106,16 @@ fn show_add_menu(
     header_bounds: egui::Rect,
 ) {
     let mut menu = add_menu::AddMenu::load(ui.ctx());
+    if menu.adding && chrome.load_flow_phase() != LoadPhase::Loading {
+        // The add from this menu ended: a landed tone closes the menu, and a failure leaves it.
+        menu.adding = false;
+        if chrome.load_flow_phase() == LoadPhase::Ready {
+            menu.open = false;
+        }
+        menu.store(ui.ctx());
+    }
     if !menu.open {
+        chrome.close_add_results();
         return;
     }
     if !state.chain.stereo_enabled {
@@ -115,20 +125,27 @@ fn show_add_menu(
     let data = add_menu::MenuData {
         stereo: state.chain.stereo_enabled,
         library: chrome.recent_tones(),
-        in_chain: Vec::new(),
-        signed_in: chrome.account_name().is_some(),
-        results: None,
-        loading: None,
+        in_chain: state
+            .chain
+            .left
+            .iter()
+            .chain(&state.chain.right)
+            .filter(|block| !block.is_insert)
+            .filter_map(|block| block.tone.as_ref())
+            .collect(),
+        signed_in: chrome.session().signed_in(),
+        results: chrome.add_store(),
+        loading: chrome.loading_tone(),
     };
     let anchor = header::plus_rect(header_bounds);
     let action = add_menu::show(ui, anchor, &mut menu, &data);
     if let Some(action) = action {
         let insert = header::insert_of(state, menu.lane);
         match action {
-            add_menu::AddMenuAction::OpenBrowser(_) => {
+            add_menu::AddMenuAction::OpenBrowser(category) => {
                 menu.open = false;
                 if let Some(id) = insert {
-                    chrome.gallery_mut().activate(&id);
+                    chrome.open_browser_for(&id, category, &menu.search);
                 }
             }
             add_menu::AddMenuAction::LoadFile => {
@@ -141,10 +158,25 @@ fn show_add_menu(
                     let _ = chrome.drop_file_into(&id, &path);
                 }
             }
-            add_menu::AddMenuAction::Add(_)
-            | add_menu::AddMenuAction::SignIn
-            | add_menu::AddMenuAction::Search => {}
+            add_menu::AddMenuAction::Add(tone) => {
+                if let Some(id) = insert {
+                    chrome.add_tone(menu.lane, &id, tone);
+                }
+                // A download keeps the menu open, so that its row shows the load.
+                menu.adding = chrome.load_flow_phase() == LoadPhase::Loading;
+                menu.open = menu.adding;
+            }
+            add_menu::AddMenuAction::SignIn => {
+                menu.open = false;
+                let _ = chrome.sign_in();
+            }
         }
+    }
+    match menu.view {
+        add_menu::MenuView::Results(category) if menu.open => {
+            chrome.open_add_results(category, &menu.search);
+        }
+        _ => chrome.close_add_results(),
     }
     menu.store(ui.ctx());
     ui.ctx().request_repaint();

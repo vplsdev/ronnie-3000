@@ -2,17 +2,38 @@
 //! block, and the ways to load a file or open the tone browser.
 
 use eframe::egui::{self, Align, Color32, FontFamily, FontId, Layout, Rect, RichText, Stroke};
-use ronie_core::{ChainSide, Tone, ToneId, gear::GearCategory};
+use ronie_core::{ChainSide, ModelKind, Tone, ToneId, gear::GearCategory};
 
-use crate::services::{catalog::CatalogStore, recent_tones::RecentTones};
+use crate::services::{
+    catalog::{CatalogStatus, CatalogStore},
+    recent_tones::{RecentTones, same_tone},
+};
 
-use super::super::tile::{GearGlyph, draw_glyph};
+use super::super::{
+    tile::{GearGlyph, draw_glyph, tone_glyph},
+    tone_card::{compact_count, model_count},
+};
 
 const MENU_WIDTH: f32 = 380.0;
 const PADDING: f32 = 8.0;
 const HEAD: f32 = 34.0;
 const ROW: f32 = 44.0;
 const LINK: f32 = 36.0;
+/// A tone row of the results.
+const TONE_ROW: f32 = 40.0;
+/// The search field and its margins.
+const SEARCH: f32 = 4.0 + 30.0 + 2.0;
+/// A section title such as YOUR LIBRARY.
+const SECTION: f32 = 28.0;
+/// A muted line in place of rows.
+const NOTE: f32 = 28.0;
+/// The sign-in box and its margins.
+const SIGN_IN_BOX: f32 = 2.0 + 62.0 + 6.0;
+/// The hairline between the results and the link below them.
+const DIVIDER: f32 = 13.0;
+/// The most library rows and TONE3000 rows that the results show.
+const LIBRARY_ROWS: usize = 3;
+const REMOTE_ROWS: usize = 4;
 const GAP_BELOW_ANCHOR: f32 = 6.0;
 
 const BACKGROUND: Color32 = Color32::from_rgb(0x0b, 0x0b, 0x0b);
@@ -21,6 +42,9 @@ const MUTED: Color32 = Color32::from_rgb(0x8a, 0x8a, 0x87);
 const SOFT: Color32 = Color32::from_rgb(0xbd, 0xbd, 0xbd);
 const HOVER: Color32 = Color32::from_rgb(0x1d, 0x1d, 0x1d);
 const HAIRLINE: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
+const FIELD: Color32 = Color32::from_rgb(0x1a, 0x1a, 0x1a);
+const FIELD_BORDER: Color32 = Color32::from_rgb(0x2e, 0x2e, 0x2e);
+const ACCENT: Color32 = Color32::from_rgb(0xff, 0x6a, 0x1a);
 
 /// What the menu shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,10 +56,9 @@ pub(super) enum MenuView {
 }
 
 /// What the player did in the menu.
-#[allow(dead_code)] // The results view builds Add, SignIn and Search.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum AddMenuAction {
-    /// Open the tone browser, narrowed to a category when there is one.
+    /// Open the tone browser, narrowed to a category and the search text when there is one.
     OpenBrowser(Option<GearCategory>),
     /// Pick a local model file.
     LoadFile,
@@ -43,8 +66,6 @@ pub(super) enum AddMenuAction {
     Add(Tone),
     /// Start the sign-in.
     SignIn,
-    /// The search text changed.
-    Search,
 }
 
 /// The menu's own state; it lives in egui temp data between frames.
@@ -54,6 +75,10 @@ pub(super) struct AddMenu {
     pub(super) view: MenuView,
     pub(super) lane: ChainSide,
     pub(super) search: String,
+    /// Whether the search field takes the keyboard at the next frame.
+    focus_search: bool,
+    /// Whether a tone that the menu added is still downloading, so the menu stays open.
+    pub(super) adding: bool,
 }
 
 impl Default for AddMenu {
@@ -63,6 +88,8 @@ impl Default for AddMenu {
             view: MenuView::Categories,
             lane: ChainSide::Left,
             search: String::new(),
+            focus_search: false,
+            adding: false,
         }
     }
 }
@@ -87,17 +114,27 @@ impl AddMenu {
         self.view = MenuView::Categories;
         self.lane = lane;
         self.search.clear();
+        self.adding = false;
+    }
+
+    /// Shows the tones of one category, with an empty search that takes the keyboard.
+    fn show_results(&mut self, category: GearCategory) {
+        self.view = MenuView::Results(category);
+        self.search.clear();
+        self.focus_search = true;
     }
 }
 
 /// What the menu needs to know about the rest of the app.
-#[allow(dead_code)] // The results view reads the fields that the categories do not.
 pub(super) struct MenuData<'a> {
     pub(super) stereo: bool,
     pub(super) library: &'a RecentTones,
-    pub(super) in_chain: Vec<ToneId>,
+    /// The tones of the chain, in both lanes.
+    pub(super) in_chain: Vec<&'a Tone>,
     pub(super) signed_in: bool,
+    /// The TONE3000 results of the category on show.
     pub(super) results: Option<&'a CatalogStore>,
+    /// The tone that a load is fetching now.
     pub(super) loading: Option<ToneId>,
 }
 
@@ -145,6 +182,141 @@ fn category_name(category: GearCategory) -> &'static str {
         .iter()
         .find(|row| row.0 == category)
         .map_or("", |row| row.2)
+}
+
+/// The tones of one category in a sentence, such as "amps".
+const fn plural(category: GearCategory) -> &'static str {
+    match category {
+        GearCategory::Pedal => "pedals",
+        GearCategory::Amp => "amps",
+        GearCategory::FullRig => "rigs",
+        GearCategory::Cab => "cabs",
+        GearCategory::Outboard => "outboard gear",
+        GearCategory::Space => "spaces",
+        GearCategory::Unknown => "tones",
+    }
+}
+
+/// A count with a comma between each group of three digits.
+fn grouped(value: u64) -> String {
+    let digits = value.to_string();
+    let mut output = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            output.push(',');
+        }
+        output.push(digit);
+    }
+    output
+}
+
+/// What the right end of a tone row says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowState {
+    Add,
+    InChain,
+    Downloading,
+}
+
+/// The rows that the results view shows, chosen once for the height and the drawing.
+struct Results<'a> {
+    category: GearCategory,
+    library: Vec<&'a Tone>,
+    remote: Vec<&'a Tone>,
+    /// A line in place of the TONE3000 rows: loading, a failure, or no match.
+    remote_note: Option<String>,
+}
+
+impl<'a> Results<'a> {
+    fn new(category: GearCategory, search: &str, data: &MenuData<'a>) -> Self {
+        let needle = search.trim().to_lowercase();
+        let library = data
+            .library
+            .in_category(category)
+            .into_iter()
+            .filter(|tone| needle.is_empty() || tone.title.to_lowercase().contains(&needle))
+            .take(LIBRARY_ROWS)
+            .collect();
+        let mut remote = Vec::new();
+        let mut remote_note = None;
+        if data.signed_in {
+            let store = data.results;
+            if let Some(page) = store.and_then(CatalogStore::result) {
+                remote.extend(page.data.iter().take(REMOTE_ROWS));
+            }
+            if remote.is_empty() {
+                remote_note = Some(match store.map(CatalogStore::status) {
+                    Some(CatalogStatus::Error) => store
+                        .and_then(CatalogStore::error)
+                        .unwrap_or("The search failed.")
+                        .to_owned(),
+                    Some(CatalogStatus::Ready) => {
+                        format!("No {} on TONE3000 match.", plural(category))
+                    }
+                    _ => "Loading\u{2026}".to_owned(),
+                });
+            }
+        }
+        Self {
+            category,
+            library,
+            remote,
+            remote_note,
+        }
+    }
+
+    fn height(&self, signed_in: bool) -> f32 {
+        let library = if self.library.is_empty() {
+            NOTE
+        } else {
+            TONE_ROW * self.library.len() as f32
+        };
+        let remote = if !signed_in {
+            SIGN_IN_BOX
+        } else if self.remote_note.is_some() {
+            NOTE
+        } else {
+            TONE_ROW * self.remote.len() as f32
+        };
+        SEARCH + SECTION + library + SECTION + remote + DIVIDER + LINK
+    }
+
+    fn state_of(tone: &Tone, data: &MenuData<'_>) -> RowState {
+        if data.loading.is_some_and(|id| id == tone.id && !tone.local) {
+            RowState::Downloading
+        } else if data.in_chain.iter().any(|held| same_tone(held, tone)) {
+            RowState::InChain
+        } else {
+            RowState::Add
+        }
+    }
+}
+
+/// The line under a library tone: where it came from.
+fn library_line(tone: &Tone) -> String {
+    if tone.local {
+        let extension = if tone.kind == ModelKind::Ir {
+            "wav"
+        } else {
+            "nam"
+        };
+        return format!("Local .{extension} file");
+    }
+    let count = model_count(tone);
+    let noun = if count == 1 { "capture" } else { "captures" };
+    format!("Downloaded \u{b7} {count} {noun}")
+}
+
+/// The line under a TONE3000 tone: its creator and its downloads.
+fn remote_line(tone: &Tone) -> String {
+    let user = &tone.raw["user"];
+    let creator = user["display_name"]
+        .as_str()
+        .filter(|name| !name.is_empty())
+        .or_else(|| user["username"].as_str())
+        .unwrap_or("Unknown");
+    let downloads = tone.raw["downloads_count"].as_u64().unwrap_or(0);
+    format!("{creator} \u{b7} {} \u{2193}", compact_count(downloads))
 }
 
 fn sans(size: f32) -> FontId {
@@ -200,10 +372,17 @@ pub(super) fn show(
     menu: &mut AddMenu,
     data: &MenuData<'_>,
 ) -> Option<AddMenuAction> {
-    let height = match menu.view {
-        MenuView::Categories => PADDING * 2.0 + HEAD + 4.0 + ROW * 6.0 + 13.0 + LINK * 2.0,
-        MenuView::Results(_) => PADDING * 2.0 + HEAD,
+    let results = match menu.view {
+        MenuView::Categories => None,
+        MenuView::Results(category) => Some(Results::new(category, &menu.search, data)),
     };
+    let height = PADDING * 2.0
+        + HEAD
+        + results
+            .as_ref()
+            .map_or(4.0 + ROW * 6.0 + 13.0 + LINK * 2.0, |results| {
+                results.height(data.signed_in)
+            });
     let screen = ui.ctx().content_rect();
     let left = (anchor.center().x - MENU_WIDTH / 2.0)
         .clamp(screen.left() + 4.0, screen.right() - MENU_WIDTH - 4.0);
@@ -218,7 +397,7 @@ pub(super) fn show(
         .show(ui.ctx(), |ui| {
             ui.set_min_size(rect.size());
             ui.set_max_size(rect.size());
-            action = draw(ui, rect, anchor, menu, data);
+            action = draw(ui, rect, anchor, menu, data, results.as_ref());
         });
 
     let (escape, clicked_at) = ui.input(|input| {
@@ -243,6 +422,7 @@ fn draw(
     anchor: Rect,
     menu: &mut AddMenu,
     data: &MenuData<'_>,
+    results: Option<&Results<'_>>,
 ) -> Option<AddMenuAction> {
     let painter = ui.painter().clone();
     painter.rect_filled(
@@ -303,6 +483,12 @@ fn draw(
     }
     lane_picker(ui, head, menu, data.stereo);
 
+    if let Some(results) = results
+        && menu.view == MenuView::Results(results.category)
+    {
+        let body = Rect::from_min_max(egui::pos2(inner.left(), head.bottom()), inner.max);
+        return draw_results(ui, body, menu, data, results);
+    }
     if menu.view == MenuView::Categories {
         let mut top = head.bottom() + 4.0;
         for (category, glyph, name, hint) in CATEGORIES {
@@ -363,7 +549,7 @@ fn draw(
                 MUTED,
             );
             if response.clicked() {
-                menu.view = MenuView::Results(category);
+                menu.show_results(category);
             }
         }
         painter.hline(
@@ -517,4 +703,333 @@ fn link_icon(painter: &egui::Painter, rect: Rect, page: bool) {
             stroke,
         );
     }
+}
+
+/// Draws the search field, the library, TONE3000, and the link to the browser, from the top of
+/// `body`.
+fn draw_results(
+    ui: &mut egui::Ui,
+    body: Rect,
+    menu: &mut AddMenu,
+    data: &MenuData<'_>,
+    results: &Results<'_>,
+) -> Option<AddMenuAction> {
+    let painter = ui.painter().clone();
+    let mut action = None;
+    let mut top = body.top();
+    let noun = plural(results.category);
+
+    let field = Rect::from_min_size(
+        egui::pos2(body.left() + 6.0, top + 4.0),
+        egui::vec2(body.width() - 12.0, 30.0),
+    );
+    top += SEARCH;
+    let hint = if data.signed_in {
+        format!("Search {noun} in your library and on TONE3000")
+    } else {
+        format!("Search {noun} in your library")
+    };
+    search_field(ui, field, menu, &hint);
+
+    top = section(ui, body, top, "YOUR LIBRARY", None);
+    if results.library.is_empty() {
+        let note = if menu.search.trim().is_empty() {
+            "Nothing yet. Tones you load show up here."
+        } else {
+            "No tone in your library matches."
+        };
+        top = note_line(ui, body, top, note);
+    }
+    for (index, tone) in results.library.iter().enumerate() {
+        let row = Rect::from_min_size(
+            egui::pos2(body.left(), top),
+            egui::vec2(body.width(), TONE_ROW),
+        );
+        top += TONE_ROW;
+        let state = Results::state_of(tone, data);
+        if tone_row(
+            ui,
+            &painter,
+            row,
+            ("library", index),
+            tone,
+            &library_line(tone),
+            state,
+        ) {
+            action = Some(AddMenuAction::Add((*tone).clone()));
+        }
+    }
+
+    top = section(
+        ui,
+        body,
+        top,
+        "TONE3000",
+        (data.signed_in && menu.search.trim().is_empty()).then_some("TRENDING"),
+    );
+    if data.signed_in {
+        if let Some(note) = &results.remote_note {
+            top = note_line(ui, body, top, note);
+        }
+        for (index, tone) in results.remote.iter().enumerate() {
+            let row = Rect::from_min_size(
+                egui::pos2(body.left(), top),
+                egui::vec2(body.width(), TONE_ROW),
+            );
+            top += TONE_ROW;
+            let state = Results::state_of(tone, data);
+            if tone_row(
+                ui,
+                &painter,
+                row,
+                ("remote", index),
+                tone,
+                &remote_line(tone),
+                state,
+            ) {
+                action = Some(AddMenuAction::Add((*tone).clone()));
+            }
+        }
+    } else {
+        let card = Rect::from_min_size(
+            egui::pos2(body.left() + 6.0, top + 2.0),
+            egui::vec2(body.width() - 12.0, 62.0),
+        );
+        top += SIGN_IN_BOX;
+        if sign_in_box(ui, &painter, card) {
+            action = Some(AddMenuAction::SignIn);
+        }
+    }
+
+    painter.hline(
+        (body.left() + 6.0)..=(body.right() - 6.0),
+        top + 6.5,
+        Stroke::new(1.0, HAIRLINE),
+    );
+    top += DIVIDER;
+    let label = if !data.signed_in {
+        "OPEN THE TONE BROWSER".to_owned()
+    } else if let Some(page) = data.results.and_then(CatalogStore::result) {
+        format!(
+            "SHOW ALL {} {} IN THE TONE BROWSER",
+            grouped(page.total),
+            noun.to_uppercase()
+        )
+    } else {
+        format!("SHOW ALL {} IN THE TONE BROWSER", noun.to_uppercase())
+    };
+    let row = Rect::from_min_size(egui::pos2(body.left(), top), egui::vec2(body.width(), LINK));
+    let response = menu_item(ui, row, "show-all", &label);
+    if response.hovered() {
+        painter.rect_filled(row, 6.0, HOVER);
+    }
+    text_in(
+        ui,
+        Rect::from_min_max(
+            egui::pos2(row.left() + 14.0, row.top()),
+            egui::pos2(row.right() - 34.0, row.bottom()),
+        ),
+        tracked(&label, bold(11.0), TEXT, 0.06),
+        false,
+    );
+    let arrow = egui::pos2(row.right() - 20.0, row.center().y);
+    painter.hline(
+        (arrow.x - 6.0)..=(arrow.x + 5.0),
+        arrow.y,
+        Stroke::new(1.5, TEXT),
+    );
+    chevron(&painter, arrow + egui::vec2(3.0, 0.0), false, TEXT);
+    if response.clicked() {
+        action = Some(AddMenuAction::OpenBrowser(Some(results.category)));
+    }
+    action
+}
+
+/// The dark search field. Its text is the search of the menu.
+fn search_field(ui: &mut egui::Ui, field: Rect, menu: &mut AddMenu, hint: &str) {
+    let painter = ui.painter().clone();
+    painter.rect(
+        field,
+        5.0,
+        FIELD,
+        Stroke::new(1.0, FIELD_BORDER),
+        egui::StrokeKind::Inside,
+    );
+    let lens = field.left_center() + egui::vec2(15.0, -1.0);
+    let stroke = Stroke::new(1.5, MUTED);
+    painter.circle_stroke(lens, 4.0, stroke);
+    painter.line_segment(
+        [lens + egui::vec2(3.0, 3.0), lens + egui::vec2(6.0, 6.0)],
+        stroke,
+    );
+    let editor = Rect::from_min_max(
+        field.min + egui::vec2(31.0, 0.0),
+        field.max - egui::vec2(8.0, 0.0),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(editor)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child.visuals_mut().text_cursor.stroke.color = TEXT;
+    child.visuals_mut().extreme_bg_color = FIELD;
+    let response = child.add(
+        egui::TextEdit::singleline(&mut menu.search)
+            .id(egui::Id::unique("archetype-add-search"))
+            .hint_text(RichText::new(hint).color(MUTED))
+            .font(sans(12.0))
+            .text_color(TEXT)
+            .frame(egui::Frame::NONE)
+            .desired_width(editor.width()),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, hint));
+    if std::mem::take(&mut menu.focus_search) {
+        response.request_focus();
+    }
+}
+
+/// A small section title such as YOUR LIBRARY, with an optional note at its right. Returns the
+/// top of what follows.
+fn section(ui: &mut egui::Ui, body: Rect, top: f32, title: &str, note: Option<&str>) -> f32 {
+    let line = Rect::from_min_max(
+        egui::pos2(body.left() + 14.0, top + 10.0),
+        egui::pos2(body.right() - 14.0, top + SECTION - 6.0),
+    );
+    text_in(ui, line, tracked(title, bold(9.5), MUTED, 0.14), false);
+    if let Some(note) = note {
+        text_in(ui, line, tracked(note, sans(9.5), MUTED, 0.04), true);
+    }
+    top + SECTION
+}
+
+/// A muted line in place of rows. Returns the top of what follows.
+fn note_line(ui: &mut egui::Ui, body: Rect, top: f32, text: &str) -> f32 {
+    text_in(
+        ui,
+        Rect::from_min_max(
+            egui::pos2(body.left() + 14.0, top),
+            egui::pos2(body.right() - 14.0, top + NOTE),
+        ),
+        RichText::new(text).font(sans(11.0)).color(MUTED),
+        false,
+    );
+    top + NOTE
+}
+
+/// One tone row: its icon, title, line, and what a click does. Returns whether it was clicked
+/// to add the tone.
+fn tone_row(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    row: Rect,
+    id: (&str, usize),
+    tone: &Tone,
+    line: &str,
+    state: RowState,
+) -> bool {
+    let response = menu_item(ui, row, &format!("{}-{}", id.0, id.1), &tone.title);
+    if response.hovered() {
+        painter.rect_filled(row, 6.0, HOVER);
+    }
+    let icon = Rect::from_center_size(
+        egui::pos2(row.left() + 14.0 + 12.0, row.center().y),
+        egui::Vec2::splat(24.0),
+    );
+    draw_glyph(painter, icon, tone_glyph(tone, tone.models.first()), TEXT);
+    let text_left = row.left() + 14.0 + 24.0 + 12.0;
+    let text_right = row.right() - 14.0 - 92.0;
+    text_in(
+        ui,
+        Rect::from_min_max(
+            egui::pos2(text_left, row.center().y - 14.0),
+            egui::pos2(text_right, row.center().y),
+        ),
+        RichText::new(&tone.title).font(sans(12.0)).color(TEXT),
+        false,
+    );
+    text_in(
+        ui,
+        Rect::from_min_max(
+            egui::pos2(text_left, row.center().y),
+            egui::pos2(text_right, row.center().y + 13.0),
+        ),
+        RichText::new(line).font(sans(10.5)).color(MUTED),
+        false,
+    );
+    let (label, color) = match state {
+        RowState::Add if response.hovered() => ("ADD", ACCENT),
+        RowState::Add => ("ADD", MUTED),
+        RowState::InChain => ("IN CHAIN", MUTED),
+        RowState::Downloading => ("DOWNLOADING", MUTED),
+    };
+    text_in(
+        ui,
+        Rect::from_min_max(
+            egui::pos2(text_right, row.top()),
+            egui::pos2(row.right() - 14.0, row.bottom()),
+        ),
+        tracked(label, bold(10.0), color, 0.08),
+        true,
+    );
+    if state == RowState::Downloading {
+        // The load reports no progress, so a short piece of the bar slides along it.
+        let track = Rect::from_min_max(
+            egui::pos2(row.left() + 14.0, row.bottom() - 5.0),
+            egui::pos2(row.right() - 14.0, row.bottom() - 3.0),
+        );
+        painter.rect_filled(track, 1.0, HAIRLINE);
+        let piece = track.width() * 0.3;
+        let phase = (ui.input(|input| input.time) * 0.8).fract() as f32;
+        let left = track.left() - piece + (track.width() + piece) * phase;
+        painter.with_clip_rect(track).rect_filled(
+            Rect::from_min_size(egui::pos2(left, track.top()), egui::vec2(piece, 2.0)),
+            1.0,
+            ACCENT,
+        );
+    }
+    response.clicked() && state != RowState::Downloading
+}
+
+/// The box that takes the place of the TONE3000 rows for a signed-out user. Returns whether
+/// its button was clicked.
+fn sign_in_box(ui: &mut egui::Ui, painter: &egui::Painter, card: Rect) -> bool {
+    painter.rect_stroke(
+        card,
+        6.0,
+        Stroke::new(1.0, HAIRLINE),
+        egui::StrokeKind::Inside,
+    );
+    let button = Rect::from_min_size(
+        egui::pos2(card.right() - 14.0 - 72.0, card.center().y - 14.0),
+        egui::vec2(72.0, 28.0),
+    );
+    let text = Rect::from_min_max(
+        egui::pos2(card.left() + 14.0, card.top() + 8.0),
+        egui::pos2(button.left() - 12.0, card.bottom() - 8.0),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(text)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child.add(
+        egui::Label::new(
+            RichText::new("Sign in to search and download from the TONE3000 community library.")
+                .font(sans(11.0))
+                .color(SOFT),
+        )
+        .selectable(false)
+        .wrap(),
+    );
+    let response = ui.interact(button, ui.scope_id().with("sign-in"), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "SIGN IN"));
+    painter.rect_filled(button, 5.0, TEXT);
+    painter.text(
+        button.center(),
+        egui::Align2::CENTER_CENTER,
+        "SIGN IN",
+        bold(10.0),
+        BACKGROUND,
+    );
+    response.clicked()
 }

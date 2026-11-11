@@ -20,7 +20,7 @@ pub use community::{CommunityAccess, CommunityHandle, CommunityService};
 pub use community_worker::{
     CATALOG_PAGE_SIZE, CommunityEvent, CommunityFailure, CommunityScope, CommunityWork,
     CommunityWorker, LoadRequest, MODEL_PAGE_SIZE, ModelList, ModelSwitchRequest, ModelsRequest,
-    QueryReply, QueryRequest, TAXONOMY_PAGE_SIZE, TaxonomyRequest,
+    QueryReply, QueryRequest, QueryScope, TAXONOMY_PAGE_SIZE, TaxonomyRequest,
 };
 pub use connectivity::{ConnectionGate, ConnectionProblem};
 pub use images::{
