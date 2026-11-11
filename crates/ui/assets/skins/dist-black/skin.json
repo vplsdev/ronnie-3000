@@ -1,0 +1,40 @@
+{
+  "id": "dist-black",
+  "width": 621,
+  "height": 769,
+  "knobs": [
+    {
+      "control": "output",
+      "label": "OUTPUT",
+      "center": [
+        197.0,
+        99.0
+      ],
+      "side": 96,
+      "frames": 32,
+      "columns": 8
+    },
+    {
+      "control": "mix",
+      "label": "MIX",
+      "center": [
+        310.0,
+        99.0
+      ],
+      "side": 96,
+      "frames": 32,
+      "columns": 8
+    },
+    {
+      "control": "gain",
+      "label": "GAIN IN",
+      "center": [
+        424.0,
+        99.0
+      ],
+      "side": 96,
+      "frames": 32,
+      "columns": 8
+    }
+  ]
+}

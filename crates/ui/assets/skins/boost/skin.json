@@ -1,0 +1,40 @@
+{
+  "id": "boost",
+  "width": 544,
+  "height": 743,
+  "knobs": [
+    {
+      "control": "gain",
+      "label": "GAIN IN",
+      "center": [
+        239.0,
+        100.0
+      ],
+      "side": 98,
+      "frames": 32,
+      "columns": 8
+    },
+    {
+      "control": "output",
+      "label": "OUTPUT",
+      "center": [
+        382.0,
+        100.0
+      ],
+      "side": 98,
+      "frames": 32,
+      "columns": 8
+    },
+    {
+      "control": "mix",
+      "label": "MIX",
+      "center": [
+        311.0,
+        104.0
+      ],
+      "side": 46,
+      "frames": 32,
+      "columns": 8
+    }
+  ]
+}

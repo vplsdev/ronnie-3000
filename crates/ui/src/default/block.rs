@@ -38,12 +38,18 @@ pub enum BlockView {
     Info,
 }
 
+/// Tallest a rendered skin draws, in points (the design's stage height).
+const RENDER_HEIGHT: f32 = 300.0;
+
 /// Complete block detail controller.
 pub struct BlockDetail {
     backend: Arc<dyn UiBackend>,
     /// Whether the page shows its "Back to chain" link. A layout whose stage always shows a
     /// block has no chain to go back to.
     back_link: bool,
+    /// Whether the tone view shows the rendered skin of the gear, with its knobs, in place of
+    /// the artwork and the trims.
+    rendered: bool,
     block_id: BlockId,
     block: ChainBlock,
     calibrate_input: bool,
@@ -122,6 +128,7 @@ impl BlockDetail {
         Ok(Self {
             backend,
             back_link: true,
+            rendered: false,
             block_id: id,
             block,
             calibrate_input,
@@ -963,6 +970,13 @@ impl BlockDetail {
     }
 
     fn show_tone(&mut self, ui: &mut egui::Ui, rect: Rect, session: SessionStatus) {
+        if self.rendered
+            && let Some(skin) = super::skins::skin_for(&self.block)
+            && let Some(textures) = super::skins::textures(ui.ctx(), skin.id)
+        {
+            self.show_rendered_tone(ui, rect, session, skin, &textures);
+            return;
+        }
         let content = rect.shrink(16.0);
         let bottom = content.bottom();
         let normalize = self.show_normalize_control();
@@ -1326,6 +1340,120 @@ impl BlockDetail {
     /// Shows or hides the "Back to chain" link.
     pub fn set_back_link(&mut self, shown: bool) {
         self.back_link = shown;
+    }
+
+    /// Shows the rendered skin of the gear in the tone view, when the app has one.
+    pub fn set_rendered(&mut self, rendered: bool) {
+        self.rendered = rendered;
+    }
+
+    /// The tone view of a block with a rendered skin: meters at the sides, the render with its
+    /// live knobs in the centre, and the model picker below.
+    fn show_rendered_tone(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        session: SessionStatus,
+        skin: super::skins::BlockSkin,
+        textures: &super::skins::SkinTextures,
+    ) {
+        use super::skins::KnobControl;
+
+        let content = rect.shrink(16.0);
+        let picker = Rect::from_min_size(
+            egui::pos2(content.left() + 60.0, content.bottom() - 36.0),
+            egui::vec2(content.width() - 120.0, 36.0),
+        );
+        self.show_meter(
+            ui,
+            Rect::from_min_max(
+                content.left_top(),
+                egui::pos2(content.left() + 36.0, picker.top() - 12.0),
+            ),
+            true,
+        );
+        self.show_meter(
+            ui,
+            Rect::from_min_max(
+                egui::pos2(content.right() - 36.0, content.top()),
+                egui::pos2(content.right(), picker.top() - 12.0),
+            ),
+            false,
+        );
+        let stage = Rect::from_min_max(
+            egui::pos2(content.left() + 60.0, content.top() + 24.0),
+            egui::pos2(content.right() - 60.0, picker.top() - 16.0),
+        );
+        let body = textures.manifest.fit(stage, RENDER_HEIGHT);
+        let render = ui.interact(
+            body,
+            ui.scope_id().with(("render", &self.block_id.0)),
+            egui::Sense::hover(),
+        );
+        render.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, skin.label));
+
+        let gain = KnobSpec::block_gain();
+        let mix = KnobSpec::percent(BlockParams::default().mix);
+        let id = ui.scope_id().with(("render-knob", &self.block_id.0));
+        let pass = ui.ctx().cumulative_pass_nr();
+        let mut positions = Vec::new();
+        let mut hint = None;
+        for knob in &textures.manifest.knobs {
+            let (label, spec, value) = match knob.control {
+                KnobControl::Gain => ("GAIN IN", &gain, self.block.params.input_gain),
+                KnobControl::Output => ("OUTPUT", &gain, self.block.params.output_gain),
+                KnobControl::Mix => ("MIX", &mix, self.block.params.mix),
+            };
+            let knob_rect = knob.rect_in(body, &textures.manifest);
+            let output =
+                crate::widgets::knob::show(ui, id.with(label), knob_rect, spec, label, value);
+            positions.push((knob.control, spec.position(output.shown) as f32));
+            if output.response.hovered() || output.response.dragged() {
+                hint = Some((knob_rect, format!("{label}  {}", spec.format(output.shown))));
+            }
+            if let Some(edit) = self.track_trim(label, pass, output.edit) {
+                match knob.control {
+                    KnobControl::Gain => self.block.params.input_gain = edit.value,
+                    KnobControl::Output => self.block.params.output_gain = edit.value,
+                    KnobControl::Mix => self.block.params.mix = edit.value,
+                }
+                self.write_params_in_gesture(edit.phase);
+            }
+        }
+
+        let tint = if self.load_state() == TileVisualState::Ready {
+            Color32::WHITE
+        } else {
+            Color32::from_white_alpha(89)
+        };
+        let painter = ui.painter().clone();
+        super::skins::paint(
+            &painter,
+            textures,
+            body,
+            |control| {
+                positions
+                    .iter()
+                    .find(|(each, _)| *each == control)
+                    .map_or(0.5, |(_, position)| *position)
+            },
+            tint,
+        );
+        if let Some((knob_rect, text)) = hint {
+            let galley =
+                painter.layout_no_wrap(text, egui::FontId::monospace(10.0), Color32::WHITE);
+            let bubble = Rect::from_center_size(
+                egui::pos2(knob_rect.center().x, knob_rect.top() - 14.0),
+                galley.size() + egui::vec2(16.0, 8.0),
+            );
+            painter.rect_filled(bubble, 4.0, Color32::from_rgb(0x11, 0x11, 0x11));
+            painter.galley(bubble.min + egui::vec2(8.0, 4.0), galley, Color32::WHITE);
+        }
+
+        let mut picker_ui = ui.new_child(egui::UiBuilder::new().max_rect(picker));
+        if let Some(id) = self.models.show(&mut picker_ui, session) {
+            let _ = self.select_model(id, session);
+        }
     }
 
     fn write_params(&mut self) -> Result<(), UiError> {

@@ -56,6 +56,7 @@ fn execute() -> Result<(), String> {
     let mut capture = None;
     let mut compare = None;
     let mut native_scenario = None;
+    let mut archetype = false;
     let mut native_capture = None;
     let mut native_report = None;
     let mut native_window = None;
@@ -103,6 +104,13 @@ fn execute() -> Result<(), String> {
                 let report = PathBuf::from(args.next().ok_or("--compare-dir needs a report path")?);
                 compare_directory = Some((reference, candidate, report));
             }
+            "--layout" => {
+                archetype = match args.next().as_deref() {
+                    Some("archetype") => true,
+                    Some("reference") => false,
+                    _ => return Err("--layout needs archetype or reference".into()),
+                };
+            }
             "--selftest" => selftest = true,
             "--bench" => bench = true,
             "--shell-selftest" => shell_selftest = true,
@@ -128,6 +136,9 @@ fn execute() -> Result<(), String> {
         )?;
         if let Some(size) = native_window {
             run.use_window_size(size);
+        }
+        if archetype {
+            run.options.view_mode = ronie_ui::shell::ViewMode::RonieFlow;
         }
         run.run().map_err(|error| error.to_string())?;
         return Ok(());

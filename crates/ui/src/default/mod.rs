@@ -28,6 +28,7 @@ pub mod popover;
 pub mod presets;
 pub mod settings;
 pub mod sign_in;
+pub mod skins;
 pub mod spectrum;
 pub mod system_settings;
 pub mod tile;

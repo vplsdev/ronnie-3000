@@ -10,9 +10,14 @@ All notable changes to Ronnie 3000 are in this file. The format follows
 
 - An Archetype-style layout, opened with `ronie --layout archetype`. It has a light window
   whose header shows the signal chain as gear icons, with a + to add a block and the preset
-  manager on the right. The selected block fills the stage, the global controls sit in a light
-  panel, and a black utility bar holds the tuner, mono and stereo, undo and redo, account and
-  settings. The current layout stays the default.
+  manager on the right, with undo and redo. The selected block fills the stage, the global
+  controls and a mono/stereo lanes switch sit in a light panel, and a black utility bar holds
+  the tuner, MIDI, optimize, TONE3000, settings and your account. The current layout stays the
+  default.
+- In the Archetype layout, a block's page shows a 3D render of its gear: a pedal, an amp or a
+  cab, chosen from what the capture models. Drag the GAIN IN, OUTPUT and MIX knobs on the render
+  to set the block's input gain, output gain and mix. The renders are original designs, made
+  with the Blender scripts in `tools/render`.
 - Tiles without artwork show the gear family of their capture (for example a chime combo, a
   British head, a 4x12 or a green overdrive), recognised from the capture's name, its
   TONE3000 makes, or the make and model in the `.nam` file.
