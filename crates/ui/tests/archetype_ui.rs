@@ -1384,7 +1384,7 @@ fn tone3000_rows_come_from_the_menu_store() {
     for title in ["5150 III Red", "Friedman BE-100", "Twin Reverb Clean"] {
         assert!(driver.is_visible(title), "{title} is missing");
     }
-    assert!(driver.shows_text("lowend_lab \u{b7} 3,200 \u{2193}"));
+    assert!(driver.shows_text("lowend_lab \u{b7} 3.2k \u{2193}"));
     assert!(driver.is_visible("SHOW ALL 1,284 AMPS IN THE TONE BROWSER"));
 }
 

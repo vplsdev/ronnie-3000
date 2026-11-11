@@ -11,7 +11,7 @@ use crate::services::{
 
 use super::super::{
     tile::{GearGlyph, draw_glyph, tone_glyph},
-    tone_card::{compact_count, model_count},
+    tone_card::model_count,
 };
 
 const MENU_WIDTH: f32 = 380.0;
@@ -315,8 +315,25 @@ fn remote_line(tone: &Tone) -> String {
         .filter(|name| !name.is_empty())
         .or_else(|| user["username"].as_str())
         .unwrap_or("Unknown");
-    let downloads = tone.raw["downloads_count"].as_u64().unwrap_or(0);
-    format!("{creator} \u{b7} {} \u{2193}", compact_count(downloads))
+    let count = tone.raw["downloads_count"].as_u64().unwrap_or(0);
+    format!("{creator} \u{b7} {} \u{2193}", downloads(count))
+}
+
+/// A download count as the menu prints it: whole up to 999, then in thousands or millions with
+/// one decimal below a hundred, such as "3.2k", "12.4k" and "124k".
+fn downloads(value: u64) -> String {
+    let (scaled, unit) = match value {
+        0..1_000 => return value.to_string(),
+        1_000..1_000_000 => (value as f64 / 1_000.0, "k"),
+        _ => (value as f64 / 1_000_000.0, "M"),
+    };
+    let text = if scaled < 100.0 {
+        format!("{scaled:.1}")
+    } else {
+        format!("{scaled:.0}")
+    };
+    let text = text.strip_suffix(".0").unwrap_or(&text);
+    format!("{text}{unit}")
 }
 
 fn sans(size: f32) -> FontId {
@@ -336,6 +353,16 @@ fn text_in(ui: &mut egui::Ui, rect: Rect, text: RichText, right: bool) {
     };
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
     child.add(egui::Label::new(text).selectable(false).truncate());
+}
+
+/// Lays out one line of text for the painter.
+fn galley_of(ui: &egui::Ui, text: RichText) -> std::sync::Arc<egui::Galley> {
+    egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::FontSelection::Default,
+    )
 }
 
 fn tracked(text: &str, font: FontId, color: Color32, em: f32) -> RichText {
@@ -425,11 +452,18 @@ fn draw(
     results: Option<&Results<'_>>,
 ) -> Option<AddMenuAction> {
     let painter = ui.painter().clone();
-    painter.rect_filled(
-        rect.translate(egui::vec2(0.0, 6.0)).expand(1.0),
-        8.0,
-        Color32::from_black_alpha(40),
-    );
+    // The two soft shadows of the board: a wide one far below, and a close one.
+    for (offset, blur, alpha) in [(18, 40, 71), (2, 6, 51)] {
+        painter.add(
+            egui::Shadow {
+                offset: [0, offset],
+                blur,
+                spread: 0,
+                color: Color32::from_black_alpha(alpha),
+            }
+            .as_shape(rect, 8.0),
+        );
+    }
     painter.rect_filled(rect, 8.0, BACKGROUND);
     let tip = anchor
         .center()
@@ -466,13 +500,13 @@ fn draw(
             });
             chevron(
                 &painter,
-                back.left_center() + egui::vec2(18.0, 0.0),
+                back.left_center() + egui::vec2(20.0, 0.0),
                 true,
                 TEXT,
             );
             text_in(
                 ui,
-                Rect::from_min_max(back.min + egui::vec2(32.0, 0.0), back.max),
+                Rect::from_min_max(back.min + egui::vec2(34.0, 0.0), back.max),
                 tracked(category_name(category), bold(10.0), TEXT, 0.14),
                 false,
             );
@@ -664,13 +698,16 @@ fn lane_picker(ui: &mut egui::Ui, head: Rect, menu: &mut AddMenu, stereo: bool) 
         if chosen {
             painter.rect_filled(segment, 3.0, TEXT);
         }
-        painter.text(
-            segment.center(),
-            egui::Align2::CENTER_CENTER,
-            label,
-            bold(10.0),
-            if chosen { BACKGROUND } else { SOFT },
+        let galley = galley_of(
+            ui,
+            tracked(
+                label,
+                bold(10.0),
+                if chosen { BACKGROUND } else { SOFT },
+                0.08,
+            ),
         );
+        painter.galley(segment.center() - galley.size() / 2.0, galley, BACKGROUND);
         if response.clicked() {
             menu.lane = side;
         }
@@ -681,15 +718,20 @@ fn lane_picker(ui: &mut egui::Ui, head: Rect, menu: &mut AddMenu, stereo: bool) 
 fn link_icon(painter: &egui::Painter, rect: Rect, page: bool) {
     let stroke = Stroke::new(1.5, TEXT);
     if page {
-        painter.rect_stroke(
-            rect.shrink2(egui::vec2(2.0, 0.5)),
-            2.0,
+        // A page with a folded corner, on the 24-point grid of the board's icon.
+        let point = |x: f32, y: f32| rect.min + egui::vec2(x, y) * (rect.width() / 24.0);
+        painter.add(egui::Shape::closed_line(
+            vec![
+                point(4.0, 3.0),
+                point(14.0, 3.0),
+                point(20.0, 9.0),
+                point(20.0, 21.0),
+                point(4.0, 21.0),
+            ],
             stroke,
-            egui::StrokeKind::Inside,
-        );
-        painter.hline(
-            (rect.left() + 5.0)..=(rect.right() - 5.0),
-            rect.center().y,
+        ));
+        painter.line(
+            vec![point(14.0, 3.0), point(14.0, 9.0), point(20.0, 9.0)],
             stroke,
         );
     } else {
@@ -999,9 +1041,11 @@ fn sign_in_box(ui: &mut egui::Ui, painter: &egui::Painter, card: Rect) -> bool {
         Stroke::new(1.0, HAIRLINE),
         egui::StrokeKind::Inside,
     );
+    let label = galley_of(ui, tracked("SIGN IN", bold(10.0), BACKGROUND, 0.08));
+    let width = label.size().x + 28.0;
     let button = Rect::from_min_size(
-        egui::pos2(card.right() - 14.0 - 72.0, card.center().y - 14.0),
-        egui::vec2(72.0, 28.0),
+        egui::pos2(card.right() - 14.0 - width, card.center().y - 14.0),
+        egui::vec2(width, 28.0),
     );
     let text = Rect::from_min_max(
         egui::pos2(card.left() + 14.0, card.top() + 8.0),
@@ -1024,12 +1068,28 @@ fn sign_in_box(ui: &mut egui::Ui, painter: &egui::Painter, card: Rect) -> bool {
     let response = ui.interact(button, ui.scope_id().with("sign-in"), egui::Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "SIGN IN"));
     painter.rect_filled(button, 5.0, TEXT);
-    painter.text(
-        button.center(),
-        egui::Align2::CENTER_CENTER,
-        "SIGN IN",
-        bold(10.0),
-        BACKGROUND,
-    );
+    painter.galley(button.center() - label.size() / 2.0, label, BACKGROUND);
     response.clicked()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::downloads;
+
+    #[test]
+    fn downloads_read_in_thousands_from_one_thousand() {
+        for (value, text) in [
+            (0, "0"),
+            (999, "999"),
+            (1_000, "1k"),
+            (3_200, "3.2k"),
+            (8_149, "8.1k"),
+            (12_400, "12.4k"),
+            (99_960, "100k"),
+            (124_000, "124k"),
+            (1_260_000, "1.3M"),
+        ] {
+            assert_eq!(downloads(value), text, "{value}");
+        }
+    }
 }
