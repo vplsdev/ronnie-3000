@@ -226,3 +226,40 @@ tests.
   with `screencapture -l<window id>` (or `-x` for the screen). Check the header, stage, panel and utility bar against
   the canvas, and save the image to the scratchpad for the PR description.
 - [ ] **Step 3: Commit** `git commit -m "Document the Archetype layout"`.
+
+---
+
+## Phase 2: final review fixes and alignment with the approved designs
+
+Designs (canvas, 1024×614): `ArchGearAmp`, `ArchGearPedals`, `ArchGearCab`, `ArchEq`, `ArchInfo`, `ArchEmpty`,
+`ArchStereo`, `ArchStrip`. The user approved them on 2026-11-11. The rendered gear on the GEAR tab arrives in PR 4.
+
+### Task 7: Review fixes (no new UI)
+- **Banner:** the background fill starts below any banner, by filling `ui.available_rect_before_wrap()`, not `max_rect`.
+  Test `the_background_leaves_the_banner_visible`: on a banner scenario, no light background rect is painted over
+  y < 44.
+- **No dark gallery flash:** in Archetype mode `show_stage` never falls through to `gallery.show`. When the stage is
+  free after the syncs, it opens a block in the same frame. Test `removing_a_block_opens_its_neighbour_without_a_flash`:
+  one `frame()` after "Remove block", "Add Tone" (a gallery tile) is not visible, and the next block is selected.
+- **Focus after a change** (design `ArchStrip`):
+  - after add or swap, the loaded block opens;
+  - after remove, the neighbour opens (the next block, else the previous one).
+
+  Remember the last focus in egui temp memory.
+- **Popover triggers:** the preset pill, SAVE AS… and Account set `overlay_trigger`, so a second click closes the
+  popover. Test `a_second_click_on_the_preset_pill_closes_the_browser`.
+- **Dark surfaces stay dark:** decks draw under `Look::reference()`, and the input-mode chip glyph stays white. Test
+  `deck_captions_stay_light_on_the_dark_deck`.
+
+### Task 8: Align with the designs
+- **Utility bar** (`ArchEmpty`/`ArchGearAmp` footer):
+  - left: TUNER | MIDI | OPTIMIZE | TONE3000 | SETTINGS;
+  - right: CPU x.x% | the account name, or SIGN IN.
+
+  MIDI opens settings. OPTIMIZE toggles `tuning::set_optimize` and is green when on. TONE3000 opens the tone browser
+  for the selected lane. The account item opens the account menu with its trigger.
+- **Preset manager:** Undo and Redo icons sit after the preset arrows.
+- **Lanes:** a Mono/Stereo switch ("Mono mode"/"Stereo mode") in the global panel after Input, in Archetype mode only.
+- **Block page:** no "Back to chain" link in Archetype mode.
+- **Stereo +:** adds to the lane of the selected block. The lane choice inside the black + menu comes with that menu
+  (a later PR).
