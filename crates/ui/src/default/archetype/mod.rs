@@ -108,6 +108,10 @@ fn show_add_menu(
     if !menu.open {
         return;
     }
+    if !state.chain.stereo_enabled {
+        // Mono has one lane; a lane B choice from before the switch no longer exists.
+        menu.lane = ronie_core::ChainSide::Left;
+    }
     let data = add_menu::MenuData {
         stereo: state.chain.stereo_enabled,
         library: chrome.recent_tones(),

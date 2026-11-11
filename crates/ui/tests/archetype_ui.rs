@@ -288,6 +288,29 @@ fn category_rows_count_the_library() {
 }
 
 #[test]
+fn mono_falls_back_to_lane_a() {
+    let (mut driver, _) = archetype_driver("main-stereo");
+    let _ = driver.click("Chain: Roland JC-40").expect("lane B block");
+    driver.settle();
+    open_menu(&mut driver);
+    assert!(lane_radio(&driver, "LANE B"));
+    // A click on the switch would close the menu, so the chain changes behind it.
+    let _ = driver.chrome_mut().set_stereo(false);
+    driver.settle();
+    assert!(driver.shows_text("to the end of the chain"));
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("link");
+    driver.settle();
+    assert!(driver.chrome_mut().browser_mut().is_some());
+    let target = driver
+        .chrome_mut()
+        .load_flow_mut()
+        .pending_target()
+        .cloned()
+        .expect("a target");
+    assert_eq!(target.side, ronie_core::ChainSide::Left);
+}
+
+#[test]
 fn open_the_tone_browser_opens_it_for_the_lane() {
     let (mut driver, _) = archetype_driver("main-stereo");
     let _ = driver.click("Chain: Roland JC-40").expect("lane B block");
