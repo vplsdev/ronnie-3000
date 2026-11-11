@@ -953,3 +953,66 @@ fn normalize_toggles_from_the_gear_page() {
             .normalize
     );
 }
+
+// ---------------------------------------------------------------- Pedals share the stage
+
+const OD: &str = "TS808 Tube Screamer Overdrive";
+
+/// main-mono with a green overdrive right after the fuzz.
+fn pedalboard_driver() -> (UiDriver, Arc<MockBackend>) {
+    let mut scenario = scenario("main-mono");
+    let chain = scenario.state["chain"]["chain"]
+        .as_array_mut()
+        .expect("chain");
+    let mut od = chain[0].clone();
+    od["blockId"] = "blk-od".into();
+    od["activeModelId"] = 1199.into();
+    od["tone"]["id"] = 199.into();
+    od["tone"]["title"] = OD.into();
+    od["tone"]["models"] = serde_json::json!([{ "id": 1199, "name": "Drive 5" }]);
+    chain.insert(1, od);
+    let backend = Arc::new(MockBackend::from_scenario(&scenario));
+    let mut chrome = ChromeController::new(backend.clone(), Vec::new(), false, true);
+    chrome.set_view_mode(ViewMode::RonieFlow);
+    let mut driver = UiDriver::new(chrome, (*backend).clone());
+    driver.settle();
+    (driver, backend)
+}
+
+#[test]
+fn consecutive_pedals_share_the_stage() {
+    let (driver, _) = pedalboard_driver();
+    assert!(driver.is_visible("Pedal render"), "the open pedal");
+    assert!(
+        driver.is_visible(&format!("Pedal render: {OD}")),
+        "its neighbour shares the stage"
+    );
+    assert!(
+        driver.shows_text("PEDALS · GREEN RUSSIAN BIG MUFF + BD-2 → TS808 TUBE SCREAMER OVERDRIVE")
+    );
+}
+
+#[test]
+fn clicking_a_neighbour_pedal_selects_it() {
+    let (mut driver, _) = pedalboard_driver();
+    let _ = driver
+        .click(&format!("Pedal render: {OD}"))
+        .expect("neighbour");
+    driver.settle();
+    assert_eq!(
+        driver.chrome().gallery().selection(),
+        &GallerySelection::BlockDetail(BlockId("blk-od".to_owned()))
+    );
+    assert!(
+        driver.is_visible("Pedal render: Green Russian Big Muff + BD-2"),
+        "the fuzz is now the neighbour"
+    );
+}
+
+#[test]
+fn an_amp_shares_the_stage_with_no_one() {
+    let (mut driver, _) = pedalboard_driver();
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    assert!(driver.label_starting_with("Pedal render").is_none());
+}

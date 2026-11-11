@@ -51,6 +51,9 @@ pub enum BlockPage {
 /// Smallest hit square of a knob on a render, in points.
 const MIN_KNOB_TARGET: f32 = 28.0;
 
+/// Space between pedals that share the stage, in points.
+const PEDAL_GAP: f32 = 6.0;
+
 /// Width of the model picker under the stage.
 const PICKER_WIDTH: f32 = 420.0;
 
@@ -66,11 +69,12 @@ pub struct BlockDetail {
     /// Whether the page shows its "Back to chain" link. A layout whose stage always shows a
     /// block has no chain to go back to.
     back_link: bool,
-    /// Whether the tone view shows the rendered skin of the gear, with its knobs, in place of
-    /// the artwork and the trims.
-    rendered: bool,
     /// Which page the detail draws.
     page: BlockPage,
+    /// Pedals right before and after this one in its lane, which share the light stage.
+    neighbours: (Vec<ChainBlock>, Vec<ChainBlock>),
+    /// A neighbour pedal that was clicked, for the layout to open.
+    select_request: Option<BlockId>,
     block_id: BlockId,
     block: ChainBlock,
     calibrate_input: bool,
@@ -149,8 +153,9 @@ impl BlockDetail {
         Ok(Self {
             backend,
             back_link: true,
-            rendered: false,
             page: BlockPage::Reference,
+            neighbours: (Vec::new(), Vec::new()),
+            select_request: None,
             block_id: id,
             block,
             calibrate_input,
@@ -1365,10 +1370,27 @@ impl BlockDetail {
         self.back_link = shown;
     }
 
+    /// The block this detail shows.
+    #[must_use]
+    pub const fn block_id(&self) -> &BlockId {
+        &self.block_id
+    }
+
     /// The page the detail draws.
     #[must_use]
     pub const fn page(&self) -> BlockPage {
         self.page
+    }
+
+    /// Sets the pedals that share the stage with this one: those right before it in its lane,
+    /// in chain order, and those right after it.
+    pub fn set_stage_neighbours(&mut self, before: Vec<ChainBlock>, after: Vec<ChainBlock>) {
+        self.neighbours = (before, after);
+    }
+
+    /// The neighbour pedal the user clicked on the stage, once.
+    pub fn take_select_request(&mut self) -> Option<BlockId> {
+        self.select_request.take()
     }
 
     /// Chooses the page the detail draws.
@@ -1403,7 +1425,24 @@ impl BlockDetail {
     fn show_title_row(&mut self, ui: &mut egui::Ui, rect: Rect, look: crate::theme::Look) {
         let painter = ui.painter_at(rect);
         let bold = egui::FontId::new(10.0, egui::FontFamily::Name("arimo-bold".into()));
-        let title = page_title(&self.block);
+        let title = if self.neighbours.0.is_empty() && self.neighbours.1.is_empty() {
+            page_title(&self.block)
+        } else {
+            let titles: Vec<String> = self
+                .neighbours
+                .0
+                .iter()
+                .chain(std::iter::once(&self.block))
+                .chain(&self.neighbours.1)
+                .map(|block| {
+                    block
+                        .tone
+                        .as_ref()
+                        .map_or(String::new(), |tone| tone.title.to_uppercase())
+                })
+                .collect();
+            format!("PEDALS · {}", titles.join(" → "))
+        };
         let right_reserve = 200.0;
         let label_width = (rect.width() - right_reserve).max(40.0);
         let mut text_ui = ui.new_child(
@@ -1522,11 +1561,6 @@ impl BlockDetail {
         }
     }
 
-    /// Shows the rendered skin of the gear in the tone view, when the app has one.
-    pub fn set_rendered(&mut self, rendered: bool) {
-        self.rendered = rendered;
-    }
-
     /// The GEAR tab of the light page: meters at the sides, the render (or the artwork) in the
     /// middle with its knobs or trims, and a row under it with the size and normalize toggles,
     /// the model picker and a note.
@@ -1562,7 +1596,11 @@ impl BlockDetail {
             .and_then(|skin| Some((skin, super::skins::textures(ui.ctx(), skin.id)?)));
         let gear = match &skin {
             Some((skin, textures)) => {
-                let body = textures.manifest.fit(stage, RENDER_HEIGHT);
+                let body = if skin.category == ronie_core::gear::GearCategory::Pedal {
+                    self.show_pedalboard(ui, stage, textures)
+                } else {
+                    textures.manifest.fit(stage, RENDER_HEIGHT)
+                };
                 self.show_render(ui, body, *skin, textures);
                 if textures.manifest.knobs.is_empty() {
                     self.show_trims_beside(ui, body, stage);
@@ -1631,6 +1669,112 @@ impl BlockDetail {
             let pos = egui::pos2(note_right - galley.size().x, cy - galley.size().y / 2.0);
             ui.painter().galley(pos, galley, look.text_muted);
         }
+    }
+
+    /// Lays the pedal and its neighbours out side by side at one height, draws the neighbours,
+    /// and returns where this pedal's body goes.
+    fn show_pedalboard(
+        &mut self,
+        ui: &mut egui::Ui,
+        stage: Rect,
+        textures: &super::skins::SkinTextures,
+    ) -> Rect {
+        let neighbour = |block: &ChainBlock| {
+            let skin = super::skins::skin_for(block)?;
+            Some((block.clone(), super::skins::textures(ui.ctx(), skin.id)?))
+        };
+        let before: Vec<_> = self.neighbours.0.iter().filter_map(neighbour).collect();
+        let after: Vec<_> = self.neighbours.1.iter().filter_map(neighbour).collect();
+        if before.is_empty() && after.is_empty() {
+            return textures.manifest.fit(stage, RENDER_HEIGHT);
+        }
+        let aspect = |manifest: &super::skins::SkinManifest| {
+            manifest.width as f32 / manifest.height.max(1) as f32
+        };
+        let count = before.len() + after.len() + 1;
+        let aspects: f32 = before
+            .iter()
+            .chain(&after)
+            .map(|(_, each)| aspect(&each.manifest))
+            .sum::<f32>()
+            + aspect(&textures.manifest);
+        let gaps = PEDAL_GAP * (count - 1) as f32;
+        let height = stage
+            .height()
+            .min(RENDER_HEIGHT)
+            .min((stage.width() - gaps) / aspects);
+        let total = aspects * height + gaps;
+        let mut x = stage.center().x - total / 2.0;
+        let top = stage.center().y - height / 2.0;
+        let mut place = |manifest: &super::skins::SkinManifest| {
+            let rect = Rect::from_min_size(
+                egui::pos2(x, top),
+                egui::vec2(aspect(manifest) * height, height),
+            );
+            x = rect.right() + PEDAL_GAP;
+            rect
+        };
+        let before_rects: Vec<_> = before
+            .iter()
+            .map(|(_, each)| place(&each.manifest))
+            .collect();
+        let own = place(&textures.manifest);
+        let after_rects: Vec<_> = after
+            .iter()
+            .map(|(_, each)| place(&each.manifest))
+            .collect();
+        for ((block, each), rect) in before
+            .iter()
+            .zip(before_rects)
+            .chain(after.iter().zip(after_rects))
+        {
+            self.show_neighbour(ui, rect, block, each);
+        }
+        own
+    }
+
+    /// A pedal next to the open one: drawn with its knobs where its settings put them, and
+    /// opened by a click.
+    fn show_neighbour(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        block: &ChainBlock,
+        textures: &super::skins::SkinTextures,
+    ) {
+        use super::skins::KnobControl;
+
+        let title = block.tone.as_ref().map_or("", |tone| tone.title.as_str());
+        let label = format!("Pedal render: {title}");
+        let response = ui.interact(
+            rect,
+            ui.scope_id().with(("neighbour", &block.id.0)),
+            Sense::click(),
+        );
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.clicked() {
+            self.select_request = Some(block.id.clone());
+        }
+        let gain = KnobSpec::block_gain();
+        let mix = KnobSpec::percent(BlockParams::default().mix);
+        let params = &block.params;
+        let tint = if params.enabled {
+            Color32::WHITE
+        } else {
+            BYPASSED_TINT
+        };
+        super::skins::paint(
+            ui.painter(),
+            textures,
+            rect,
+            |control| match control {
+                KnobControl::Gain => gain.position(params.input_gain) as f32,
+                KnobControl::Output => gain.position(params.output_gain) as f32,
+                KnobControl::Mix => mix.position(params.mix) as f32,
+            },
+            tint,
+        );
     }
 
     /// GAIN IN / OUTPUT / MIX trims in a column to the right of `gear`, for gear whose render

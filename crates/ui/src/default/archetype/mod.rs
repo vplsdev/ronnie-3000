@@ -75,10 +75,19 @@ pub(super) fn show(
     focus.store(ui.ctx());
     if let Some(detail) = chrome.detail_mut() {
         detail.set_back_link(false);
-        detail.set_rendered(true);
         detail.set_page(super::block::BlockPage::Archetype);
+        let (before, after) = pedal_run(state, detail.block_id());
+        detail.set_stage_neighbours(before, after);
     }
     show_stage(ui, chrome, now_ms);
+    if let Some(id) = chrome
+        .detail_mut()
+        .and_then(super::block::BlockDetail::take_select_request)
+    {
+        chrome.gallery_mut().activate(&id.0);
+        chrome.sync_detail();
+        ui.ctx().request_repaint();
+    }
 }
 
 /// The stage of a chain with no tone blocks: a prompt and a button that opens the browser.
@@ -241,4 +250,39 @@ fn place_of(state: &crate::backend::ChainViewState, id: &str) -> Option<(bool, u
         }
     }
     None
+}
+
+/// The pedals right before and right after `id` in its lane, when `id` is a pedal: the
+/// unbroken run of tone blocks around it whose render is a pedal.
+pub(super) fn pedal_run(
+    state: &crate::backend::ChainViewState,
+    id: &ronie_core::BlockId,
+) -> (Vec<ronie_core::ChainBlock>, Vec<ronie_core::ChainBlock>) {
+    let is_pedal = |block: &ronie_core::ChainBlock| {
+        !block.is_insert
+            && super::skins::skin_for(block)
+                .is_some_and(|skin| skin.category == ronie_core::gear::GearCategory::Pedal)
+    };
+    for lane in [&state.chain.left, &state.chain.right] {
+        let Some(index) = lane.iter().position(|block| &block.id == id) else {
+            continue;
+        };
+        if !is_pedal(&lane[index]) {
+            return (Vec::new(), Vec::new());
+        }
+        let mut before: Vec<_> = lane[..index]
+            .iter()
+            .rev()
+            .take_while(|block| is_pedal(block))
+            .cloned()
+            .collect();
+        before.reverse();
+        let after = lane[index + 1..]
+            .iter()
+            .take_while(|block| is_pedal(block))
+            .cloned()
+            .collect();
+        return (before, after);
+    }
+    (Vec::new(), Vec::new())
 }
