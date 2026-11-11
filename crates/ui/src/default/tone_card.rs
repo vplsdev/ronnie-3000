@@ -3,7 +3,7 @@
 use eframe::egui::{self, Color32, Rect, Sense, TextureHandle};
 use ronie_core::{Tone, ToneId};
 
-use super::tile::{cover_uv, draw_gear, gear_glyph};
+use super::tile::{cover_uv, draw_gear, tone_glyph};
 use crate::theme::palette;
 
 /// Side of the square that takes a click on the favorite heart.
@@ -81,12 +81,7 @@ pub(super) fn show_at(
             .corner_radius(8.0 * scale)
             .paint_at(ui, image_rect);
     } else {
-        let gear = tone
-            .raw
-            .get("gear")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        draw_gear(&painter, image_rect, gear_glyph(gear));
+        draw_gear(&painter, image_rect, tone_glyph(tone, None));
     }
 
     let text_x = rect.left() + 140.0 * scale;

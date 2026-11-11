@@ -24,7 +24,7 @@ use super::{
     chain::TileVisualState,
     eq::{EqEditor, EqViewMode},
     model_select::{ModelOption, ModelSelect},
-    tile::{draw_gear, gear_glyph},
+    tile::{block_glyph, draw_gear},
 };
 
 /// Detail body selected by the card header.
@@ -1084,14 +1084,7 @@ impl BlockDetail {
                 .corner_radius(8.0)
                 .paint_at(ui, rect);
         } else {
-            let gear = self
-                .block
-                .tone
-                .as_ref()
-                .and_then(|tone| tone.raw.get("gear"))
-                .and_then(|gear| gear.as_str())
-                .unwrap_or_default();
-            draw_gear(&painter, rect, gear_glyph(gear));
+            draw_gear(&painter, rect, block_glyph(&self.block));
             // A tile does the same, so that the icon does not show through a message.
             if self.load_state() != TileVisualState::Ready {
                 painter.rect_filled(rect, 8.0, crate::theme::palette::ART_SCRIM);
