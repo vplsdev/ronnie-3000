@@ -1603,3 +1603,40 @@ fn a_second_add_takes_over_a_download_in_progress() {
     assert_eq!(driver.chrome().loading_tone(), None);
     assert!(!driver.shows_text("DOWNLOADING"));
 }
+
+#[test]
+fn a_refused_library_load_shows_a_toast_and_keeps_the_menu_and_the_tone() {
+    let local = ronie_core::Tone::from_value(serde_json::json!({
+        "id": 0, "title": "Collected Stash", "format": "nam", "gear": "amp", "local": true,
+        "models": [{"id": 1, "name": "m", "model_url": "file:///stash/collected.nam"}]
+    }))
+    .expect("tone");
+    let (mut driver, backend) = menu_driver("main-mono", false, &[local]);
+    backend.refuse_tone_loads(true);
+    open_amp(&mut driver);
+    assert!(driver.shows_text("Local .nam file"));
+    let _ = driver.click("Collected Stash").expect("library row");
+    driver.settle();
+    assert!(
+        !lane_titles(&backend, false).contains(&"Collected Stash".to_owned()),
+        "the chain stays as it was"
+    );
+    assert!(
+        driver
+            .chrome()
+            .visible_toast()
+            .is_some_and(|text| text.contains("try again")),
+        "the player reads why: {:?}",
+        driver.chrome().visible_toast()
+    );
+    assert!(driver.is_visible("Collected Stash"), "the menu stays open");
+    assert!(
+        driver
+            .chrome()
+            .recent_tones()
+            .tones()
+            .iter()
+            .any(|tone| tone.title == "Collected Stash"),
+        "the tone stays in the library"
+    );
+}

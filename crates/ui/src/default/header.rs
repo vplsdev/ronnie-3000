@@ -39,6 +39,8 @@ use crate::services::{
 const HOME_LABEL: &str = "Back to main screen";
 /// What the user reads when the token store holds no usable session.
 const SESSION_ENDED: &str = "Your session ended. Sign in again to see your tones.";
+/// What the user reads when the backend refuses a tone that needs no download.
+const LOAD_REFUSED: &str = "The tone could not be loaded.";
 /// The card of a failed load takes a click again, so the user reads how to retry.
 const LOAD_RETRY_HINT: &str = "Select the tone to try again.";
 /// The picker takes the same choice again, so the user reads how to retry.
@@ -803,8 +805,13 @@ impl ChromeController {
     /// network and the tone lands at once.
     pub fn pick_tone(&mut self, tone: ronie_core::Tone) {
         if self.community.is_none() || tone.local {
-            if let Ok(generation) = self.load_flow.begin_load(tone.clone()) {
-                self.load_flow.complete_cached(generation, tone);
+            if let Ok(generation) = self.load_flow.begin_load(tone.clone())
+                && !self.load_flow.complete_cached(generation, tone)
+                && self.load_flow.phase() == LoadPhase::Failed
+            {
+                // A refused model, such as a local file that is gone, changes nothing in the chain.
+                self.hints
+                    .set_toast(Some(format!("{LOAD_REFUSED} {LOAD_RETRY_HINT}")));
             }
             return;
         }

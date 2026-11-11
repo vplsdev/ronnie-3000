@@ -162,9 +162,10 @@ fn show_add_menu(
                 if let Some(id) = insert {
                     chrome.add_tone(menu.lane, &id, tone);
                 }
-                // A download keeps the menu open, so that its row shows the load.
+                // A download keeps the menu open, so that its row shows the load, and a failed
+                // load keeps it open beside its toast, so that the player can try again.
                 menu.adding = chrome.load_flow_phase() == LoadPhase::Loading;
-                menu.open = menu.adding;
+                menu.open = chrome.load_flow_phase() != LoadPhase::Ready;
             }
             add_menu::AddMenuAction::SignIn => {
                 menu.open = false;

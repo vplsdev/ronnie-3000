@@ -842,12 +842,17 @@ struct MockState {
     effect_override: Option<UiEffect>,
     device_settings: Option<crate::default::SystemDeviceState>,
     chain_faults: Vec<ChainFault>,
+    /// Whether a tone load is refused, as a backend refuses a model it cannot read.
+    refuse_tone_loads: bool,
 }
 
 impl MockState {
     /// Carries out one action in the editor, and then in the device stub.
     fn dispatch(&mut self, action: UiAction) -> Result<UiReceipt, UiError> {
         self.actions.push(action.clone());
+        if self.refuse_tone_loads && matches!(action, UiAction::LoadTone { .. }) {
+            return Err(UiError::Control("the model file is missing".to_owned()));
+        }
         let device = match &action {
             UiAction::Device(device) => Some(device.clone()),
             _ => None,
@@ -1092,6 +1097,7 @@ impl MockBackend {
                     &fixture["device"],
                 ),
                 chain_faults: Vec::new(),
+                refuse_tone_loads: false,
             })),
             meters: fixture_meters(scenario),
         }
@@ -1134,6 +1140,13 @@ impl MockBackend {
     pub fn set_device_settings(&self, device: Option<crate::default::SystemDeviceState>) {
         if let Ok(mut state) = self.state.lock() {
             state.device_settings = device;
+        }
+    }
+
+    /// Makes each later tone load fail, or succeed again, for tests of a refused load.
+    pub fn refuse_tone_loads(&self, refuse: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.refuse_tone_loads = refuse;
         }
     }
 
