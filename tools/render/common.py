@@ -28,6 +28,11 @@ FEATHER = 0.12
 # Shadow-catcher haze below this alpha is dropped; alpha fades to 0 within EDGE_FADE px of the frame.
 ALPHA_FLOOR = 4.0 / 255.0
 EDGE_FADE = 12
+# Floor shadow (black, partly transparent) keeps this share of its alpha, so that it reads as a soft
+# contact shadow on the light stage rather than a grey slab.
+SHADOW_SCALE = 0.4
+SHADOW_MAX_ALPHA = 0.85
+SHADOW_MAX_RGB = 0.08
 # The body is trimmed to what has alpha above TRIM_ALPHA, plus TRIM_PAD px.
 TRIM_ALPHA = 8.0 / 255.0
 TRIM_PAD = 24
@@ -119,6 +124,8 @@ def clean_body(path):
     px = px[::-1].copy()  # top-down rows from here on
     a = px[..., 3]
     px[..., 3] = np.clip((a - ALPHA_FLOOR) / (1.0 - ALPHA_FLOOR), 0.0, 1.0)
+    shadow = (px[..., 3] < SHADOW_MAX_ALPHA) & (px[..., :3].max(axis=2) < SHADOW_MAX_RGB)
+    px[..., 3] = np.where(shadow, px[..., 3] * SHADOW_SCALE, px[..., 3])
     rows = np.where((px[..., 3] > TRIM_ALPHA).any(axis=1))[0]
     cols = np.where((px[..., 3] > TRIM_ALPHA).any(axis=0))[0]
     h, w = a.shape

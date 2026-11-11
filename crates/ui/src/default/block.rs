@@ -38,6 +38,16 @@ pub enum BlockView {
     Info,
 }
 
+/// How the detail page looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BlockPage {
+    /// The dark card of the reference layout.
+    #[default]
+    Reference,
+    /// The light Archetype page: a title row, GEAR / EQ / INFO tabs and a stage.
+    Archetype,
+}
+
 /// Tallest a rendered skin draws, in points (the design's stage height).
 const RENDER_HEIGHT: f32 = 300.0;
 
@@ -50,6 +60,8 @@ pub struct BlockDetail {
     /// Whether the tone view shows the rendered skin of the gear, with its knobs, in place of
     /// the artwork and the trims.
     rendered: bool,
+    /// Which page the detail draws.
+    page: BlockPage,
     block_id: BlockId,
     block: ChainBlock,
     calibrate_input: bool,
@@ -129,6 +141,7 @@ impl BlockDetail {
             backend,
             back_link: true,
             rendered: false,
+            page: BlockPage::Reference,
             block_id: id,
             block,
             calibrate_input,
@@ -769,6 +782,10 @@ impl BlockDetail {
             return;
         }
         self.sync_on_change();
+        if self.page == BlockPage::Archetype {
+            self.show_archetype_page(ui, session);
+            return;
+        }
         let bounds = ui.available_rect_before_wrap();
         let card_x = bounds.left() + (bounds.width() - 800.0) / 2.0;
         let back = Rect::from_min_size(
@@ -1342,6 +1359,157 @@ impl BlockDetail {
         self.back_link = shown;
     }
 
+    /// Chooses the page the detail draws.
+    pub fn set_page(&mut self, page: BlockPage) {
+        self.page = page;
+    }
+
+    /// The light Archetype page: title row, tabs, then the body of the open tab.
+    fn show_archetype_page(&mut self, ui: &mut egui::Ui, session: SessionStatus) {
+        let look = crate::theme::Look::get(ui.ctx());
+        let bounds = ui.available_rect_before_wrap();
+        let page = Rect::from_min_max(
+            bounds.min + egui::vec2(24.0, 12.0),
+            bounds.max - egui::vec2(24.0, 14.0),
+        );
+        let title_row = Rect::from_min_size(page.min, egui::vec2(page.width(), 36.0));
+        self.show_title_row(ui, title_row, look);
+        let tabs = Rect::from_min_size(title_row.left_bottom(), egui::vec2(page.width(), 30.0));
+        self.show_tabs(ui, tabs, look);
+        let body = Rect::from_min_max(tabs.left_bottom(), page.max);
+        match self.view {
+            BlockView::Tone => self.show_tone(ui, body, session),
+            BlockView::Eq => {
+                let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
+                self.eq.show(&mut body_ui);
+            }
+            BlockView::Info => self.show_info(ui, body, session),
+        }
+    }
+
+    /// "AMP · TITLE" over the source line, with BYPASS / REPLACE / REMOVE on the right.
+    fn show_title_row(&mut self, ui: &mut egui::Ui, rect: Rect, look: crate::theme::Look) {
+        let painter = ui.painter_at(rect);
+        let bold = egui::FontId::new(10.0, egui::FontFamily::Name("arimo-bold".into()));
+        let title = page_title(&self.block);
+        let right_reserve = 200.0;
+        let label_width = (rect.width() - right_reserve).max(40.0);
+        let mut text_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_size(
+                    rect.min,
+                    egui::vec2(label_width, rect.height()),
+                ))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        text_ui.spacing_mut().item_spacing.y = 2.0;
+        text_ui.add_space(3.0);
+        text_ui.add(
+            egui::Label::new(egui::RichText::new(title).font(bold).color(look.text))
+                .selectable(false)
+                .truncate(),
+        );
+        text_ui.add(
+            egui::Label::new(
+                egui::RichText::new(page_meta(&self.block))
+                    .size(11.0)
+                    .color(look.text_muted),
+            )
+            .selectable(false)
+            .truncate(),
+        );
+        let mut right = rect.right();
+        let cy = rect.center().y;
+        let actions: [(&'static str, bool); 3] = [
+            ("REMOVE", false),
+            ("REPLACE", false),
+            ("BYPASS", !self.block.params.enabled),
+        ];
+        for (index, (label, active)) in actions.into_iter().enumerate() {
+            if index > 0 {
+                painter.line_segment(
+                    [
+                        egui::pos2(right - 5.5, cy - 5.0),
+                        egui::pos2(right - 5.5, cy + 5.0),
+                    ],
+                    egui::Stroke::new(1.0, look.edge),
+                );
+                right -= 11.0;
+            }
+            let width = text_width(ui, label, 10.0) + 4.0;
+            let button = Rect::from_min_max(
+                egui::pos2(right - width, cy - 11.0),
+                egui::pos2(right, cy + 11.0),
+            );
+            right = button.left();
+            if page_text_button(ui, button, label, active, look).clicked() {
+                match label {
+                    "BYPASS" => {
+                        let _ = self.set_enabled(!self.block.params.enabled);
+                    }
+                    "REPLACE" => self.swap_requested = Some(self.block_id.clone()),
+                    _ => {
+                        let _ = self.remove();
+                    }
+                }
+            }
+        }
+    }
+
+    /// GEAR / EQ / INFO, with a line under the open tab.
+    fn show_tabs(&mut self, ui: &mut egui::Ui, rect: Rect, look: crate::theme::Look) {
+        let painter = ui.painter_at(rect.expand2(egui::vec2(0.0, 1.0)));
+        painter.line_segment(
+            [rect.left_bottom(), rect.right_bottom()],
+            egui::Stroke::new(1.0, look.edge),
+        );
+        let local = self.block.tone.as_ref().is_some_and(|tone| tone.local);
+        let mut tabs = vec![("GEAR", BlockView::Tone), ("EQ", BlockView::Eq)];
+        if !local {
+            tabs.push(("INFO", BlockView::Info));
+        }
+        let font = egui::FontId::new(10.0, egui::FontFamily::Name("arimo-bold".into()));
+        let mut x = rect.left();
+        for (label, view) in tabs {
+            let width = text_width(ui, label, 10.0) + 4.0;
+            let tab = Rect::from_min_max(
+                egui::pos2(x, rect.bottom() - 28.0),
+                egui::pos2(x + width, rect.bottom()),
+            );
+            x = tab.right() + 20.0;
+            let response =
+                ui.interact(tab, ui.scope_id().with(("page-tab", label)), Sense::click());
+            let open = self.view == view;
+            response
+                .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, open, label));
+            let color = if open || response.hovered() {
+                look.text
+            } else {
+                TAB_IDLE
+            };
+            painter.text(
+                tab.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                font.clone(),
+                color,
+            );
+            if open {
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        egui::pos2(tab.left(), tab.bottom() - 2.0),
+                        tab.right_bottom(),
+                    ),
+                    0.0,
+                    look.text,
+                );
+            }
+            if response.clicked() && !open {
+                self.set_view(view);
+            }
+        }
+    }
+
     /// Shows the rendered skin of the gear in the tone view, when the app has one.
     pub fn set_rendered(&mut self, rendered: bool) {
         self.rendered = rendered;
@@ -1464,6 +1632,91 @@ impl BlockDetail {
                 params: self.block.params.clone(),
             })
             .map(|_| ())
+    }
+}
+
+/// Colour of a tab that is not open.
+const TAB_IDLE: Color32 = Color32::from_rgb(0x6b, 0x6b, 0x68);
+
+/// A small uppercase text action of the light page, such as BYPASS.
+fn page_text_button(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    label: &'static str,
+    active: bool,
+    look: crate::theme::Look,
+) -> egui::Response {
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with(("page-action", label)),
+        Sense::click(),
+    );
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, active, label));
+    let color = if active {
+        look.accent
+    } else if response.hovered() {
+        look.text
+    } else {
+        Color32::from_rgb(0x33, 0x33, 0x33)
+    };
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::new(10.0, egui::FontFamily::Name("arimo-bold".into())),
+        color,
+    );
+    response
+}
+
+/// The category word of the light page title, from the gear the block models.
+fn page_category(block: &ChainBlock) -> &'static str {
+    use ronie_core::gear::{GearCategory, GearHints, identify};
+    let Some(tone) = block.tone.as_ref() else {
+        return "BLOCK";
+    };
+    let model = block
+        .active_model_id
+        .and_then(|id| tone.models.iter().find(|model| model.id == id));
+    match identify(&GearHints::from_tone(tone, model)).category {
+        GearCategory::Pedal => "PEDAL",
+        GearCategory::Amp => "AMP",
+        GearCategory::Cab => "CAB",
+        GearCategory::FullRig => "RIG",
+        GearCategory::Outboard => "OUTBOARD",
+        GearCategory::Space => "SPACE",
+        _ => "BLOCK",
+    }
+}
+
+/// "AMP · '02 VOX AC30/6 TOP BOOST".
+fn page_title(block: &ChainBlock) -> String {
+    let title = block.tone.as_ref().map_or("", |tone| tone.title.as_str());
+    format!("{} · {}", page_category(block), title.to_uppercase())
+}
+
+/// Where the block's sound comes from and how many captures its tone holds.
+fn page_meta(block: &ChainBlock) -> String {
+    let Some(tone) = block.tone.as_ref() else {
+        return String::new();
+    };
+    let ir = block.tone.as_ref().is_some_and(|tone| {
+        tone.raw.get("format").and_then(serde_json::Value::as_str) == Some("ir")
+    });
+    if tone.local {
+        return if ir {
+            "Local impulse response"
+        } else {
+            "Local NAM capture"
+        }
+        .to_owned();
+    }
+    let count = model_total(block);
+    match (ir, count) {
+        (true, 0 | 1) => "IR from TONE3000".to_owned(),
+        (true, n) => format!("IR pack from TONE3000 · {n} mic positions"),
+        (false, 0 | 1) => "NAM capture from TONE3000".to_owned(),
+        (false, n) => format!("NAM capture from TONE3000 · {n} captures in this tone"),
     }
 }
 

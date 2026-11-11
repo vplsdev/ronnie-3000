@@ -444,7 +444,7 @@ fn the_background_leaves_the_banner_visible() {
 #[test]
 fn removing_a_block_opens_its_neighbour_without_a_flash() {
     let (mut driver, _) = archetype_driver("main-mono");
-    let _ = driver.click("Remove block").expect("remove");
+    let _ = driver.click("REMOVE").expect("remove");
     driver.frame();
     assert!(
         !driver.is_visible("Add Tone"),
@@ -468,7 +468,7 @@ fn removing_the_last_block_opens_the_previous_one() {
         .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
         .expect("third block");
     driver.settle();
-    let _ = driver.click("Remove block").expect("remove");
+    let _ = driver.click("REMOVE").expect("remove");
     for _ in 0..3 {
         assert!(
             !driver.is_visible("Add Tone"),
@@ -775,4 +775,91 @@ fn first_tone_id(backend: &MockBackend) -> String {
         .id
         .0
         .clone()
+}
+
+// ---------------------------------------------------------------- Light block page
+
+use ronie_ui::default::block::BlockView;
+
+fn amp_page() -> (UiDriver, Arc<MockBackend>) {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    (driver, backend)
+}
+
+fn block_titled(backend: &MockBackend, needle: &str) -> Option<ronie_core::ChainBlock> {
+    let state = backend.chain_state(0);
+    state
+        .chain
+        .left
+        .iter()
+        .chain(state.chain.right.iter())
+        .find(|block| {
+            block
+                .tone
+                .as_ref()
+                .is_some_and(|tone| tone.title.contains(needle))
+        })
+        .cloned()
+}
+
+#[test]
+fn the_block_page_has_a_title_row_and_tabs() {
+    let (driver, _) = amp_page();
+    for label in ["GEAR", "EQ", "INFO", "BYPASS", "REPLACE", "REMOVE"] {
+        assert!(driver.is_visible(label), "{label} is on the page");
+    }
+    assert!(
+        driver.shows_text("AMP · '02 VOX AC30/6 TOP BOOST"),
+        "the title row names the block"
+    );
+    assert!(driver.shows_text("NAM capture from TONE3000 · 6 captures in this tone"));
+}
+
+#[test]
+fn the_eq_tab_opens_the_eq() {
+    let (mut driver, _) = amp_page();
+    let _ = driver.click("EQ").expect("EQ tab");
+    driver.settle();
+    assert_eq!(
+        driver.chrome().detail().map(|detail| detail.view()),
+        Some(BlockView::Eq)
+    );
+    let _ = driver.click("GEAR").expect("GEAR tab");
+    driver.settle();
+    assert_eq!(
+        driver.chrome().detail().map(|detail| detail.view()),
+        Some(BlockView::Tone)
+    );
+}
+
+#[test]
+fn bypass_toggles_the_block() {
+    let (mut driver, backend) = amp_page();
+    let _ = driver.click("BYPASS").expect("BYPASS");
+    driver.settle();
+    assert!(!block_titled(&backend, "AC30").expect("amp").params.enabled);
+}
+
+#[test]
+fn remove_removes_the_block() {
+    let (mut driver, backend) = amp_page();
+    let _ = driver.click("REMOVE").expect("REMOVE");
+    driver.settle();
+    assert!(block_titled(&backend, "AC30").is_none());
+}
+
+#[test]
+fn replace_opens_the_browser_for_the_block() {
+    let (mut driver, _) = amp_page();
+    let _ = driver.click("REPLACE").expect("REPLACE");
+    driver.settle();
+    assert!(
+        matches!(
+            driver.chrome().gallery().selection(),
+            GallerySelection::SelectTone { .. }
+        ) || driver.chrome_mut().browser_mut().is_some(),
+        "the browser opens to replace the block"
+    );
 }

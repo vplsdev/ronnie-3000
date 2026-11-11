@@ -76,6 +76,7 @@ pub(super) fn show(
     if let Some(detail) = chrome.detail_mut() {
         detail.set_back_link(false);
         detail.set_rendered(true);
+        detail.set_page(super::block::BlockPage::Archetype);
     }
     show_stage(ui, chrome, now_ms);
 }
