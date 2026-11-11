@@ -2055,7 +2055,10 @@ pub(super) fn show_stage(ui: &mut egui::Ui, chrome: &mut ChromeController, now_m
             chrome.sync_browser();
             if chrome.browser.is_none() {
                 if let Some(detail) = &mut chrome.detail {
-                    chrome.gallery.show_meters(ui);
+                    // The light page draws its own meters beside the stage.
+                    if detail.page() == super::block::BlockPage::Reference {
+                        chrome.gallery.show_meters(ui);
+                    }
                     detail.show(ui, session);
                     if detail.take_sign_in_request() {
                         let _ = chrome.sign_in();

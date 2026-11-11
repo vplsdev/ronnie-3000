@@ -48,6 +48,15 @@ pub enum BlockPage {
     Archetype,
 }
 
+/// Smallest hit square of a knob on a render, in points.
+const MIN_KNOB_TARGET: f32 = 28.0;
+
+/// Width of the model picker under the stage.
+const PICKER_WIDTH: f32 = 420.0;
+
+/// Tint of the render of a bypassed block.
+const BYPASSED_TINT: Color32 = Color32::from_rgb(0xb4, 0xb4, 0xb2);
+
 /// Tallest a rendered skin draws, in points (the design's stage height).
 const RENDER_HEIGHT: f32 = 300.0;
 
@@ -987,11 +996,8 @@ impl BlockDetail {
     }
 
     fn show_tone(&mut self, ui: &mut egui::Ui, rect: Rect, session: SessionStatus) {
-        if self.rendered
-            && let Some(skin) = super::skins::skin_for(&self.block)
-            && let Some(textures) = super::skins::textures(ui.ctx(), skin.id)
-        {
-            self.show_rendered_tone(ui, rect, session, skin, &textures);
+        if self.page == BlockPage::Archetype {
+            self.show_gear_stage(ui, rect, session);
             return;
         }
         let content = rect.shrink(16.0);
@@ -1359,6 +1365,12 @@ impl BlockDetail {
         self.back_link = shown;
     }
 
+    /// The page the detail draws.
+    #[must_use]
+    pub const fn page(&self) -> BlockPage {
+        self.page
+    }
+
     /// Chooses the page the detail draws.
     pub fn set_page(&mut self, page: BlockPage) {
         self.page = page;
@@ -1515,44 +1527,156 @@ impl BlockDetail {
         self.rendered = rendered;
     }
 
-    /// The tone view of a block with a rendered skin: meters at the sides, the render with its
-    /// live knobs in the centre, and the model picker below.
-    fn show_rendered_tone(
-        &mut self,
-        ui: &mut egui::Ui,
-        rect: Rect,
-        session: SessionStatus,
-        skin: super::skins::BlockSkin,
-        textures: &super::skins::SkinTextures,
-    ) {
-        use super::skins::KnobControl;
-
-        let content = rect.shrink(16.0);
-        let picker = Rect::from_min_size(
-            egui::pos2(content.left() + 60.0, content.bottom() - 36.0),
-            egui::vec2(content.width() - 120.0, 36.0),
+    /// The GEAR tab of the light page: meters at the sides, the render (or the artwork) in the
+    /// middle with its knobs or trims, and a row under it with the size and normalize toggles,
+    /// the model picker and a note.
+    fn show_gear_stage(&mut self, ui: &mut egui::Ui, rect: Rect, session: SessionStatus) {
+        let look = crate::theme::Look::get(ui.ctx());
+        let row = Rect::from_min_max(
+            egui::pos2(rect.left(), rect.bottom() - 36.0),
+            rect.right_bottom(),
         );
+        let meter_top = rect.top() + 14.0;
+        let meter_bottom = row.top() - 8.0;
         self.show_meter(
             ui,
             Rect::from_min_max(
-                content.left_top(),
-                egui::pos2(content.left() + 36.0, picker.top() - 12.0),
+                egui::pos2(rect.left(), meter_top),
+                egui::pos2(rect.left() + 36.0, meter_bottom),
             ),
             true,
         );
         self.show_meter(
             ui,
             Rect::from_min_max(
-                egui::pos2(content.right() - 36.0, content.top()),
-                egui::pos2(content.right(), picker.top() - 12.0),
+                egui::pos2(rect.right() - 36.0, meter_top),
+                egui::pos2(rect.right(), meter_bottom),
             ),
             false,
         );
         let stage = Rect::from_min_max(
-            egui::pos2(content.left() + 60.0, content.top() + 24.0),
-            egui::pos2(content.right() - 60.0, picker.top() - 16.0),
+            egui::pos2(rect.left() + 56.0, rect.top() + 6.0),
+            egui::pos2(rect.right() - 56.0, row.top() - 4.0),
         );
-        let body = textures.manifest.fit(stage, RENDER_HEIGHT);
+        let skin = super::skins::skin_for(&self.block)
+            .and_then(|skin| Some((skin, super::skins::textures(ui.ctx(), skin.id)?)));
+        let gear = match &skin {
+            Some((skin, textures)) => {
+                let body = textures.manifest.fit(stage, RENDER_HEIGHT);
+                self.show_render(ui, body, *skin, textures);
+                if textures.manifest.knobs.is_empty() {
+                    self.show_trims_beside(ui, body, stage);
+                }
+                body
+            }
+            None => {
+                let side = stage.height().min(200.0);
+                let artwork = Rect::from_center_size(stage.center(), egui::Vec2::splat(side));
+                self.show_artwork(ui, artwork);
+                self.show_trims_beside(ui, artwork, stage);
+                artwork
+            }
+        };
+        let _ = gear;
+
+        // The row under the stage.
+        let cy = row.center().y;
+        let mut x = stage.left();
+        if self.show_slim_size_control() {
+            let full = self.block.params.slim_size >= 0.5;
+            let label = if full { "FULL" } else { "LITE" };
+            let width = text_width(ui, label, 10.0) + 4.0;
+            let button =
+                Rect::from_min_max(egui::pos2(x, cy - 11.0), egui::pos2(x + width, cy + 11.0));
+            if page_text_button(ui, button, label, full, look).clicked() {
+                let _ = self.set_slim_full(!full);
+            }
+            x = button.right() + 16.0;
+        }
+        if self.show_normalize_control() {
+            let overridden = self.normalize_overridden();
+            let on = self.block.params.normalize && !overridden;
+            let width = text_width(ui, "NORMALIZE", 10.0) + 4.0;
+            let button =
+                Rect::from_min_max(egui::pos2(x, cy - 11.0), egui::pos2(x + width, cy + 11.0));
+            if page_text_button(ui, button, "NORMALIZE", on, look).clicked() && !overridden {
+                let _ = self.set_normalize(!self.block.params.normalize);
+            }
+        }
+        let picker = Rect::from_center_size(
+            row.center(),
+            egui::vec2(PICKER_WIDTH.min(row.width()), 36.0),
+        );
+        let mut picker_ui = ui.new_child(egui::UiBuilder::new().max_rect(picker));
+        if let Some(id) = self.models.show(&mut picker_ui, session) {
+            let _ = self.select_model(id, session);
+        }
+        let note_right = stage.right();
+        let note_width = (note_right - picker.right() - 24.0).clamp(0.0, 230.0);
+        if note_width > 80.0 {
+            let note = if skin
+                .as_ref()
+                .is_some_and(|(_, textures)| !textures.manifest.knobs.is_empty())
+            {
+                "Drag a knob on the render to turn it; its value shows while you drag."
+            } else {
+                "Drag a trim to set the level and the mix."
+            };
+            let galley = ui.painter().layout(
+                note.to_owned(),
+                egui::FontId::proportional(10.0),
+                look.text_muted,
+                note_width,
+            );
+            let pos = egui::pos2(note_right - galley.size().x, cy - galley.size().y / 2.0);
+            ui.painter().galley(pos, galley, look.text_muted);
+        }
+    }
+
+    /// GAIN IN / OUTPUT / MIX trims in a column to the right of `gear`, for gear whose render
+    /// has no knobs (cabs) or that has no render.
+    fn show_trims_beside(&mut self, ui: &mut egui::Ui, gear: Rect, stage: Rect) {
+        let gain = KnobSpec::block_gain();
+        let mix = KnobSpec::percent(BlockParams::default().mix);
+        let id = ui.scope_id().with(("trim", &self.block_id.0));
+        let pass = ui.ctx().cumulative_pass_nr();
+        let x = (gear.right() + 40.0).min(stage.right() - 36.0);
+        let height = 3.0 * 63.0 + 2.0 * 12.0;
+        let top = stage.center().y - height / 2.0;
+        let slot = |index: usize| {
+            Rect::from_min_size(
+                egui::pos2(x, top + index as f32 * 75.0),
+                egui::vec2(36.0, 63.0),
+            )
+        };
+        let edit = trim_knob(ui, id, slot(0), "In", &gain, self.block.params.input_gain);
+        if let Some(edit) = self.track_trim("In", pass, edit) {
+            self.block.params.input_gain = edit.value;
+            self.write_params_in_gesture(edit.phase);
+        }
+        let edit = trim_knob(ui, id, slot(1), "Mix", &mix, self.block.params.mix);
+        if let Some(edit) = self.track_trim("Mix", pass, edit) {
+            self.block.params.mix = edit.value;
+            self.write_params_in_gesture(edit.phase);
+        }
+        let edit = trim_knob(ui, id, slot(2), "Out", &gain, self.block.params.output_gain);
+        if let Some(edit) = self.track_trim("Out", pass, edit) {
+            self.block.params.output_gain = edit.value;
+            self.write_params_in_gesture(edit.phase);
+        }
+    }
+
+    /// Draws the render in `body` with its live knobs, and a value hint over the knob under the
+    /// pointer, being dragged, or holding keyboard focus.
+    fn show_render(
+        &mut self,
+        ui: &mut egui::Ui,
+        body: Rect,
+        skin: super::skins::BlockSkin,
+        textures: &super::skins::SkinTextures,
+    ) {
+        use super::skins::KnobControl;
+
         let render = ui.interact(
             body,
             ui.scope_id().with(("render", &self.block_id.0)),
@@ -1573,10 +1697,14 @@ impl BlockDetail {
                 KnobControl::Mix => ("MIX", &mix, self.block.params.mix),
             };
             let knob_rect = knob.rect_in(body, &textures.manifest);
-            let output =
-                crate::widgets::knob::show(ui, id.with(label), knob_rect, spec, label, value);
+            let hit = Rect::from_center_size(
+                knob_rect.center(),
+                knob_rect.size().max(egui::Vec2::splat(MIN_KNOB_TARGET)),
+            );
+            let output = crate::widgets::knob::show(ui, id.with(label), hit, spec, label, value);
             positions.push((knob.control, spec.position(output.shown) as f32));
-            if output.response.hovered() || output.response.dragged() {
+            let response = &output.response;
+            if response.hovered() || response.dragged() || response.has_focus() {
                 hint = Some((knob_rect, format!("{label}  {}", spec.format(output.shown))));
             }
             if let Some(edit) = self.track_trim(label, pass, output.edit) {
@@ -1589,10 +1717,12 @@ impl BlockDetail {
             }
         }
 
-        let tint = if self.load_state() == TileVisualState::Ready {
+        let tint = if self.load_state() != TileVisualState::Ready {
+            Color32::from_white_alpha(89)
+        } else if self.block.params.enabled {
             Color32::WHITE
         } else {
-            Color32::from_white_alpha(89)
+            BYPASSED_TINT
         };
         let painter = ui.painter().clone();
         super::skins::paint(
@@ -1609,18 +1739,15 @@ impl BlockDetail {
         );
         if let Some((knob_rect, text)) = hint {
             let galley =
-                painter.layout_no_wrap(text, egui::FontId::monospace(10.0), Color32::WHITE);
+                painter.layout_no_wrap(text.clone(), egui::FontId::monospace(10.0), Color32::WHITE);
             let bubble = Rect::from_center_size(
                 egui::pos2(knob_rect.center().x, knob_rect.top() - 14.0),
                 galley.size() + egui::vec2(16.0, 8.0),
             );
             painter.rect_filled(bubble, 4.0, Color32::from_rgb(0x11, 0x11, 0x11));
             painter.galley(bubble.min + egui::vec2(8.0, 4.0), galley, Color32::WHITE);
-        }
-
-        let mut picker_ui = ui.new_child(egui::UiBuilder::new().max_rect(picker));
-        if let Some(id) = self.models.show(&mut picker_ui, session) {
-            let _ = self.select_model(id, session);
+            ui.interact(bubble, id.with("hint"), Sense::hover())
+                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text.as_str()));
         }
     }
 

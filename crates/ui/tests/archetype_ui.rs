@@ -863,3 +863,93 @@ fn replace_opens_the_browser_for_the_block() {
         "the browser opens to replace the block"
     );
 }
+
+#[test]
+fn the_amp_render_fills_the_designed_stage_height() {
+    let (driver, _) = amp_page();
+    let render = rect_of(&driver, "Amp render").expect("render");
+    assert!(
+        (240.0..=300.0).contains(&render.height()),
+        "the render is {render:?}"
+    );
+}
+
+#[test]
+fn render_knobs_have_a_comfortable_hit_target() {
+    let (driver, _) = amp_page();
+    for prefix in ["GAIN IN:", "OUTPUT:", "MIX:"] {
+        let label = driver.label_starting_with(prefix).expect("knob");
+        let rect = rect_of(&driver, &label).expect("rect");
+        assert!(
+            rect.width() >= 28.0 && rect.height() >= 28.0,
+            "{prefix} is {rect:?}"
+        );
+    }
+}
+
+#[test]
+fn a_focused_render_knob_shows_its_value() {
+    let (mut driver, _) = amp_page();
+    for _ in 0..60 {
+        if driver
+            .focused()
+            .is_some_and(|label| label.starts_with("GAIN IN"))
+        {
+            break;
+        }
+        let _ = driver.press_key(eframe::egui::Key::Tab);
+    }
+    assert!(
+        driver
+            .focused()
+            .is_some_and(|label| label.starts_with("GAIN IN")),
+        "Tab reaches GAIN IN"
+    );
+    driver.unhover();
+    driver.settle();
+    assert!(
+        driver.shows_text("GAIN IN  0.0 dB"),
+        "the value hint shows for the focused knob"
+    );
+}
+
+#[test]
+fn a_cab_page_keeps_its_level_and_mix_trims() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver
+        .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
+        .expect("cab");
+    driver.settle();
+    for prefix in ["In:", "Mix:", "Out:"] {
+        assert!(
+            driver.label_starting_with(prefix).is_some(),
+            "{prefix} trim"
+        );
+    }
+}
+
+#[test]
+fn normalize_toggles_from_the_gear_page() {
+    let (mut driver, backend) = amp_page();
+    backend
+        .dispatch(ronie_ui::backend::UiAction::SetPreference {
+            key: "t3k.showBlockNormalizeControl".to_owned(),
+            value: true,
+        })
+        .expect("show normalize");
+    driver.settle();
+    assert!(
+        block_titled(&backend, "AC30")
+            .expect("amp")
+            .params
+            .normalize
+    );
+    let _ = driver.click("NORMALIZE").expect("NORMALIZE");
+    driver.settle();
+    assert!(
+        !block_titled(&backend, "AC30")
+            .expect("amp")
+            .params
+            .normalize
+    );
+}
