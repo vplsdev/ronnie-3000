@@ -5,6 +5,8 @@
 //! `BlockDetail`, `Faceplate`) and only places them differently.
 
 use crate::theme::Look;
+mod header;
+
 use eframe::egui;
 
 use super::header::{ChromeController, show_faceplate, show_overlay, show_stage};
@@ -18,7 +20,7 @@ pub(super) const UTILITY_HEIGHT: f32 = 36.0;
 pub(super) fn show(
     ui: &mut egui::Ui,
     chrome: &mut ChromeController,
-    _state: &crate::backend::ChainViewState,
+    state: &crate::backend::ChainViewState,
     now_ms: i64,
 ) {
     let look = Look::archetype();
@@ -29,14 +31,7 @@ pub(super) fn show(
     egui::Panel::top("archetype-header")
         .exact_size(HEADER_HEIGHT)
         .frame(egui::Frame::NONE.fill(look.background))
-        .show(ui, |ui| {
-            let rect = ui.max_rect();
-            ui.painter().hline(
-                rect.x_range(),
-                rect.bottom() - 0.5,
-                egui::Stroke::new(1.0, look.edge),
-            );
-        });
+        .show(ui, |ui| header::show_header(ui, chrome, state));
     show_overlay(ui, chrome);
     egui::Panel::bottom("archetype-utility")
         .exact_size(UTILITY_HEIGHT)

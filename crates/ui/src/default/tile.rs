@@ -660,10 +660,17 @@ fn rounded_rect_ring(rect: Rect, radius: f32) -> Vec<egui::Pos2> {
 
 /// Paints a gear glyph centred in `rect`, sized for a tile of that width.
 pub fn draw_gear(painter: &egui::Painter, rect: Rect, glyph: GearGlyph) {
-    let center = rect.center();
-    let scale = rect.width() / 224.0;
-    let color = palette::TEXT_MUTED;
-    let glyph_rect = Rect::from_center_size(center, egui::Vec2::splat(64.0 * scale));
+    let glyph_rect = Rect::from_center_size(
+        rect.center(),
+        egui::Vec2::splat(64.0 * rect.width() / 224.0),
+    );
+    draw_glyph(painter, glyph_rect, glyph, palette::TEXT_MUTED);
+}
+
+/// Paints a gear glyph filling `glyph_rect` in `color`.
+pub fn draw_glyph(painter: &egui::Painter, glyph_rect: Rect, glyph: GearGlyph, color: Color32) {
+    let center = glyph_rect.center();
+    let scale = glyph_rect.width() / 64.0;
     match glyph {
         GearGlyph::FullRig => super::gear::draw(painter, glyph_rect, "full-rig", color),
         GearGlyph::Amp => super::gear::draw(painter, glyph_rect, "amp", color),

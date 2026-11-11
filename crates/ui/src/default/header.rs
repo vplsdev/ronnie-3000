@@ -2459,7 +2459,7 @@ pub(super) fn draw_chevron(painter: &egui::Painter, rect: egui::Rect, right: boo
     ));
 }
 
-fn draw_plus(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
+pub(super) fn draw_plus(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
     let center = rect.center();
     let stroke = egui::Stroke::new(1.5, color);
     painter.line_segment(
