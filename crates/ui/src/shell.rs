@@ -263,6 +263,8 @@ pub struct NativeShellOptions {
     pub scale: Option<f32>,
     /// Optional initial window size in native points. This overrides `scale`.
     pub window_size: Option<[f32; 2]>,
+    /// Which layout draws the window.
+    pub view_mode: ViewMode,
     /// Real backend for interactive chrome, or `None` for the neutral baseline.
     pub backend: Option<Arc<dyn UiBackend>>,
     /// Whether the editor exposes standalone-only controls and settings tabs.
@@ -294,6 +296,7 @@ impl Default for NativeShellOptions {
             report: None,
             scale: None,
             window_size: None,
+            view_mode: ViewMode::ReferenceDefault,
             backend: None,
             standalone: true,
             presets: Vec::new(),
@@ -556,6 +559,7 @@ pub(crate) fn build_chrome(
         )
     };
     chrome.set_standalone(options.standalone);
+    chrome.set_view_mode(options.view_mode);
     if let Some(setup) = options.key_setup.take() {
         chrome.use_key_setup(setup);
     }
