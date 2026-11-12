@@ -4184,6 +4184,35 @@ fn placement_works_in_lane_b() {
 }
 
 #[test]
+fn a_pedal_run_slot_in_lane_b_stays_in_lane_b() {
+    let library = [library_pedal(), gear_tone(803, "Second Drive", "pedal")];
+    let (mut driver, backend) = slot_driver("main-stereo", false, &library, |_| {});
+    // A pedal goes before lane B's amp, through the + menu.
+    open_menu(&mut driver);
+    let _ = driver.click("LANE B").expect("lane B");
+    driver.settle();
+    let _ = driver.click("PEDAL").expect("PEDAL row");
+    driver.settle();
+    let _ = driver.click("Library Drive").expect("library row");
+    driver.settle();
+    let left = lane_titles(&backend, false);
+    assert_eq!(lane_titles(&backend, true)[0], "Library Drive");
+    let _ = driver
+        .click("Chain: Library Drive")
+        .expect("the lane B pedal");
+    driver.settle();
+    let _ = driver.click("Add a pedal after these").expect("the slot");
+    driver.settle();
+    let _ = driver.click("Second Drive").expect("library row");
+    driver.settle();
+    let right = lane_titles(&backend, true);
+    assert_eq!(right[0], "Library Drive", "{right:?}");
+    assert_eq!(right[1], "Second Drive", "{right:?}");
+    assert_eq!(right[2], "Roland JC-40", "{right:?}");
+    assert_eq!(lane_titles(&backend, false), left);
+}
+
+#[test]
 fn a_lane_without_gear_adds_at_the_end() {
     let keep_the_pedal = |chain: &mut Vec<serde_json::Value>| {
         chain.retain(|block| block["blockId"] != "blk-2" && block["blockId"] != "blk-3");
