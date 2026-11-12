@@ -4,6 +4,7 @@
 use eframe::egui::{self, Align, Color32, FontFamily, FontId, Layout, Rect, RichText, Stroke};
 use ronie_core::{ChainSide, ModelKind, Tone, ToneId, gear::GearCategory};
 
+use crate::default::Placement;
 use crate::services::{
     catalog::{CatalogStatus, CatalogStore},
     recent_tones::{RecentTones, same_tone},
@@ -35,6 +36,10 @@ const DIVIDER: f32 = 13.0;
 const LIBRARY_ROWS: usize = 3;
 const REMOTE_ROWS: usize = 4;
 const GAP_BELOW_ANCHOR: f32 = 6.0;
+/// The gap between a stage slot and the menu that it opened beside it.
+const GAP_BESIDE_ANCHOR: f32 = 10.0;
+/// The longest block title that the header of a slot's menu prints whole.
+const PLACE_TITLE_CHARS: usize = 18;
 
 const BACKGROUND: Color32 = Color32::from_rgb(0x0b, 0x0b, 0x0b);
 const TEXT: Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
@@ -79,6 +84,12 @@ pub(super) struct AddMenu {
     focus_search: bool,
     /// Whether a tone that the menu added is still downloading, so the menu stays open.
     pub(super) adding: bool,
+    /// Where an added block lands in its lane.
+    pub(super) placement: Placement,
+    /// The stage slot that opened the menu beside it, or `None` for the + button.
+    pub(super) anchor: Option<Rect>,
+    /// The kind of gear of the slot that opened the menu.
+    pub(super) slot: Option<GearCategory>,
 }
 
 impl Default for AddMenu {
@@ -90,6 +101,9 @@ impl Default for AddMenu {
             search: String::new(),
             focus_search: false,
             adding: false,
+            placement: Placement::End,
+            anchor: None,
+            slot: None,
         }
     }
 }
@@ -115,6 +129,37 @@ impl AddMenu {
         self.lane = lane;
         self.search.clear();
         self.adding = false;
+        self.placement = Placement::End;
+        self.anchor = None;
+        self.slot = None;
+    }
+
+    /// Opens the menu beside the stage slot `anchor` on the tones of `category`, for a block that
+    /// lands at `placement` in `lane`.
+    pub(super) fn open_at(
+        &mut self,
+        category: GearCategory,
+        placement: Placement,
+        anchor: Rect,
+        lane: ChainSide,
+    ) {
+        self.open = true;
+        self.lane = lane;
+        self.adding = false;
+        self.placement = placement;
+        self.anchor = Some(anchor);
+        self.slot = Some(category);
+        self.show_results(category);
+    }
+
+    /// The slot whose menu is open, which the stage draws solid.
+    pub(super) fn open_slot(&self) -> Option<GearCategory> {
+        self.slot.filter(|_| self.open)
+    }
+
+    /// Whether the + button opened the menu.
+    pub(super) fn opened_by_plus(&self) -> bool {
+        self.open && self.anchor.is_none()
     }
 
     /// Shows the tones of one category, with an empty search that takes the keyboard.
@@ -138,6 +183,67 @@ pub(super) struct MenuData<'a> {
     pub(super) results: Option<&'a CatalogStore>,
     /// The tone that a load is fetching now.
     pub(super) loading: Option<ToneId>,
+    /// Where a slot's menu puts the block, such as "after OD808".
+    pub(super) place: Option<String>,
+}
+
+/// What the header of a slot's menu says about where the block goes: "after" or "before" and
+/// the title of the block beside it, shortened with an ellipsis.
+pub(super) fn place_text(word: &str, title: &str) -> String {
+    let title = if title.chars().count() > PLACE_TITLE_CHARS {
+        let kept: String = title.chars().take(PLACE_TITLE_CHARS - 1).collect();
+        format!("{}\u{2026}", kept.trim_end())
+    } else {
+        title.to_owned()
+    };
+    format!("{word} {title}")
+}
+
+/// Where the caret of the menu sits: on its top edge at an x, or on its left or right edge at
+/// a y.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Caret {
+    Top(f32),
+    Left(f32),
+    Right(f32),
+}
+
+/// The menu's rect and caret: under the + button, or beside a stage slot (right of it when it
+/// fits in the window, else left of it), level with the slot inside the stage.
+fn place_menu(anchor: Rect, beside: bool, height: f32, screen: Rect, stage: Rect) -> (Rect, Caret) {
+    if !beside {
+        let left = (anchor.center().x - MENU_WIDTH / 2.0)
+            .clamp(screen.left() + 4.0, screen.right() - MENU_WIDTH - 4.0);
+        let rect = Rect::from_min_size(
+            egui::pos2(left, anchor.bottom() + GAP_BELOW_ANCHOR),
+            egui::vec2(MENU_WIDTH, height),
+        );
+        let tip = anchor
+            .center()
+            .x
+            .clamp(rect.left() + 20.0, rect.right() - 20.0);
+        return (rect, Caret::Top(tip));
+    }
+    let right_side = anchor.right() + GAP_BESIDE_ANCHOR + MENU_WIDTH <= screen.right() - 4.0;
+    let left = if right_side {
+        anchor.right() + GAP_BESIDE_ANCHOR
+    } else {
+        (anchor.left() - GAP_BESIDE_ANCHOR - MENU_WIDTH).max(screen.left() + 4.0)
+    };
+    let top = (anchor.center().y - height / 2.0)
+        .min(stage.bottom() - height)
+        .max(stage.top());
+    let rect = Rect::from_min_size(egui::pos2(left, top), egui::vec2(MENU_WIDTH, height));
+    let tip = anchor.center().y.clamp(
+        rect.top() + 20.0,
+        (rect.bottom() - 20.0).max(rect.top() + 20.0),
+    );
+    let caret = if right_side {
+        Caret::Left(tip)
+    } else {
+        Caret::Right(tip)
+    };
+    (rect, caret)
 }
 
 const CATEGORIES: [(GearCategory, GearGlyph, &str, &str); 6] = [
@@ -397,11 +503,13 @@ fn chevron(painter: &egui::Painter, center: egui::Pos2, left: bool, color: Color
     );
 }
 
-/// Draws the menu under `anchor` and returns what the player chose. The menu closes itself on
-/// Escape and on a click outside it and outside `anchor`.
+/// Draws the menu under the + button `anchor`, or beside the stage slot of a slot's menu inside
+/// `stage`, and returns what the player chose. The menu closes itself on Escape and on a click
+/// outside it and outside its anchor.
 pub(super) fn show(
     ui: &mut egui::Ui,
-    anchor: Rect,
+    plus: Rect,
+    stage: Rect,
     menu: &mut AddMenu,
     data: &MenuData<'_>,
 ) -> Option<AddMenuAction> {
@@ -417,12 +525,8 @@ pub(super) fn show(
                 results.height(data.signed_in)
             });
     let screen = ui.ctx().content_rect();
-    let left = (anchor.center().x - MENU_WIDTH / 2.0)
-        .clamp(screen.left() + 4.0, screen.right() - MENU_WIDTH - 4.0);
-    let rect = Rect::from_min_size(
-        egui::pos2(left, anchor.bottom() + GAP_BELOW_ANCHOR),
-        egui::vec2(MENU_WIDTH, height),
-    );
+    let anchor = menu.anchor.unwrap_or(plus);
+    let (rect, caret) = place_menu(anchor, menu.anchor.is_some(), height, screen, stage);
     let mut action = None;
     egui::Area::new(egui::Id::unique("archetype-add-menu-area"))
         .order(egui::Order::Foreground)
@@ -430,7 +534,7 @@ pub(super) fn show(
         .show(ui.ctx(), |ui| {
             ui.set_min_size(rect.size());
             ui.set_max_size(rect.size());
-            action = draw(ui, rect, anchor, menu, data, results.as_ref());
+            action = draw(ui, rect, caret, menu, data, results.as_ref());
         });
 
     let (escape, clicked_at) = ui.input(|input| {
@@ -452,7 +556,7 @@ pub(super) fn show(
 fn draw(
     ui: &mut egui::Ui,
     rect: Rect,
-    anchor: Rect,
+    caret: Caret,
     menu: &mut AddMenu,
     data: &MenuData<'_>,
     results: Option<&Results<'_>>,
@@ -471,16 +575,25 @@ fn draw(
         );
     }
     painter.rect_filled(rect, 8.0, BACKGROUND);
-    let tip = anchor
-        .center()
-        .x
-        .clamp(rect.left() + 20.0, rect.right() - 20.0);
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            egui::pos2(tip - 6.0, rect.top() + 0.5),
-            egui::pos2(tip, rect.top() - 6.0),
-            egui::pos2(tip + 6.0, rect.top() + 0.5),
+    let points = match caret {
+        Caret::Top(x) => [
+            egui::pos2(x - 6.0, rect.top() + 0.5),
+            egui::pos2(x, rect.top() - 6.0),
+            egui::pos2(x + 6.0, rect.top() + 0.5),
         ],
+        Caret::Left(y) => [
+            egui::pos2(rect.left() + 0.5, y + 6.0),
+            egui::pos2(rect.left() - 6.0, y),
+            egui::pos2(rect.left() + 0.5, y - 6.0),
+        ],
+        Caret::Right(y) => [
+            egui::pos2(rect.right() - 0.5, y - 6.0),
+            egui::pos2(rect.right() + 6.0, y),
+            egui::pos2(rect.right() - 0.5, y + 6.0),
+        ],
+    };
+    painter.add(egui::Shape::convex_polygon(
+        points.to_vec(),
         BACKGROUND,
         Stroke::NONE,
     ));
@@ -521,7 +634,7 @@ fn draw(
             }
         }
     }
-    lane_picker(ui, head, menu, data.stereo);
+    lane_picker(ui, head, menu, data);
 
     if let Some(results) = results
         && menu.view == MenuView::Results(results.category)
@@ -655,17 +768,23 @@ fn draw(
     action
 }
 
-/// The lane choice in the head row, or the line that says where a block goes in mono.
-fn lane_picker(ui: &mut egui::Ui, head: Rect, menu: &mut AddMenu, stereo: bool) {
+/// The lane choice in the head row, or the line that says where a block goes: in mono, and in
+/// a slot's menu, whose lane is the slot's.
+fn lane_picker(ui: &mut egui::Ui, head: Rect, menu: &mut AddMenu, data: &MenuData<'_>) {
     let right = head.right() - 6.0;
-    if !stereo {
+    let place = if menu.anchor.is_some() {
+        data.place.as_deref()
+    } else {
+        None
+    };
+    if !data.stereo || menu.anchor.is_some() {
         text_in(
             ui,
             Rect::from_min_max(
                 egui::pos2(right - 200.0, head.top()),
                 egui::pos2(right, head.bottom()),
             ),
-            RichText::new("to the end of the chain")
+            RichText::new(place.unwrap_or("to the end of the chain"))
                 .font(sans(10.0))
                 .color(MUTED),
             true,
@@ -1091,7 +1210,20 @@ fn sign_in_box(ui: &mut egui::Ui, painter: &egui::Painter, card: Rect) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::downloads;
+    use super::{downloads, place_text};
+
+    #[test]
+    fn a_long_title_shortens_to_eighteen_characters() {
+        assert_eq!(place_text("after", "OD808"), "after OD808");
+        assert_eq!(
+            place_text("after", "Exactly 18 chars!!"),
+            "after Exactly 18 chars!!"
+        );
+        assert_eq!(
+            place_text("before", "'02 Vox AC30/6 Top Boost"),
+            "before '02 Vox AC30/6 To\u{2026}"
+        );
+    }
 
     #[test]
     fn downloads_read_in_thousands_from_one_thousand() {

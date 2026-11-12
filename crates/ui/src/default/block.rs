@@ -117,6 +117,8 @@ pub struct BlockDetail {
     open_slot: Option<ronie_core::gear::GearCategory>,
     /// A slot that was clicked, for the layout to open its menu.
     slot_request: Option<SlotRequest>,
+    /// Where each slot was drawn on the latest frame, for an open menu to stay beside it.
+    slot_rects: Vec<(ronie_core::gear::GearCategory, Rect)>,
     block_id: BlockId,
     block: ChainBlock,
     calibrate_input: bool,
@@ -201,6 +203,7 @@ impl BlockDetail {
             slots: StageSlots::default(),
             open_slot: None,
             slot_request: None,
+            slot_rects: Vec::new(),
             block_id: id,
             block,
             calibrate_input,
@@ -1441,6 +1444,16 @@ impl BlockDetail {
     /// Sets where the stage offers a slot to add gear.
     pub fn set_stage_slots(&mut self, slots: StageSlots) {
         self.slots = slots;
+        self.slot_rects.clear();
+    }
+
+    /// Where the slot of `category` was drawn since the latest `set_stage_slots`, if it was.
+    #[must_use]
+    pub fn slot_rect(&self, category: ronie_core::gear::GearCategory) -> Option<Rect> {
+        self.slot_rects
+            .iter()
+            .find(|(each, _)| *each == category)
+            .map(|(_, rect)| *rect)
     }
 
     /// The slot the user clicked on the stage, once.
@@ -2107,6 +2120,7 @@ impl BlockDetail {
             Sense::click(),
         );
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, slot.name));
+        self.slot_rects.push((slot.category, rect));
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
         if response.clicked() {
             self.slot_request = Some(SlotRequest {

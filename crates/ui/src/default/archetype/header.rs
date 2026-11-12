@@ -317,9 +317,12 @@ fn show_plus(
         ui.scope_id().with("archetype-add"),
         egui::Sense::click(),
     );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Add a block"));
     let mut menu = AddMenu::load(ui.ctx());
-    if menu.open {
+    // A slot's menu leaves the + dashed: the + did not open it.
+    let solid = menu.opened_by_plus();
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, solid, "Add a block"));
+    if solid {
         painter.rect_filled(rect, 6.0, Color32::from_rgb(0x11, 0x11, 0x11));
         draw_plus(&painter, rect.shrink(10.0), Color32::WHITE);
     } else {
@@ -344,7 +347,7 @@ fn show_plus(
         draw_plus(&painter, rect.shrink(10.0), color);
     }
     if response.clicked() {
-        if menu.open {
+        if solid {
             menu.open = false;
         } else {
             let selected = match chrome.gallery().selection() {
@@ -358,7 +361,7 @@ fn show_plus(
 }
 
 /// The lane that holds the selected block: lane B when the block sits there, else lane A.
-fn lane_of(state: &ChainViewState, selected: Option<&ronie_core::BlockId>) -> ChainSide {
+pub(super) fn lane_of(state: &ChainViewState, selected: Option<&ronie_core::BlockId>) -> ChainSide {
     if selected.is_some_and(|id| state.chain.right.iter().any(|block| &block.id == id)) {
         ChainSide::Right
     } else {

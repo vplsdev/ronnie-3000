@@ -50,6 +50,8 @@ pub(super) fn show(
     if let Some(stereo) = chrome.faceplate_mut().take_lanes_request() {
         let _ = chrome.set_stereo(stereo);
     }
+    // What is left between the header and the global panel: the stage, which holds a slot's menu.
+    let stage = ui.available_rect_before_wrap();
 
     // Settle selection first, so that the stage decides on this frame's state and never falls
     // through to the reference chain gallery.
@@ -74,7 +76,7 @@ pub(super) fn show(
             None => {
                 focus.store(ui.ctx());
                 show_empty(ui, chrome, state, look);
-                show_add_menu(ui, chrome, state, header_bounds);
+                show_add_menu(ui, chrome, state, header_bounds, stage);
                 return;
             }
         }
@@ -87,6 +89,7 @@ pub(super) fn show(
         detail.set_stage_neighbours(before, after);
         let slots = stage_slots(state, detail.block_id());
         detail.set_stage_slots(slots);
+        detail.set_open_slot(add_menu::AddMenu::load(ui.ctx()).open_slot());
     }
     show_stage(ui, chrome, now_ms);
     if let Some(id) = chrome
@@ -97,7 +100,68 @@ pub(super) fn show(
         chrome.sync_detail();
         ui.ctx().request_repaint();
     }
-    show_add_menu(ui, chrome, state, header_bounds);
+    if let Some(request) = chrome
+        .detail_mut()
+        .and_then(super::block::BlockDetail::take_slot_request)
+    {
+        open_slot_menu(ui.ctx(), state, request);
+    }
+    follow_slot(ui.ctx(), chrome);
+    show_add_menu(ui, chrome, state, header_bounds, stage);
+}
+
+/// Opens the add menu beside the slot that the player clicked, or closes it when it is that
+/// slot's menu already.
+fn open_slot_menu(
+    ctx: &egui::Context,
+    state: &crate::backend::ChainViewState,
+    request: super::block::SlotRequest,
+) {
+    let mut menu = add_menu::AddMenu::load(ctx);
+    if menu.open_slot() == Some(request.category) && menu.placement == request.placement {
+        menu.open = false;
+    } else {
+        let lane = match &request.placement {
+            Placement::After(id) | Placement::Before(id) => header::lane_of(state, Some(id)),
+            Placement::End => ronie_core::ChainSide::Left,
+        };
+        menu.open_at(request.category, request.placement, request.anchor, lane);
+    }
+    menu.store(ctx);
+    ctx.request_repaint();
+}
+
+/// Keeps a slot's menu beside its slot when the stage lays out again, such as after a resize.
+fn follow_slot(ctx: &egui::Context, chrome: &mut ChromeController) {
+    let mut menu = add_menu::AddMenu::load(ctx);
+    let Some(category) = menu.open_slot() else {
+        return;
+    };
+    let drawn = chrome
+        .detail_mut()
+        .and_then(|detail| detail.slot_rect(category));
+    if let Some(rect) = drawn
+        && menu.anchor != Some(rect)
+    {
+        menu.anchor = Some(rect);
+        menu.store(ctx);
+    }
+}
+
+/// What the header of a slot's menu says about where the block lands, such as "after OD808".
+fn place_of_slot(state: &crate::backend::ChainViewState, placement: &Placement) -> Option<String> {
+    let (word, id) = match placement {
+        Placement::After(id) => ("after", id),
+        Placement::Before(id) => ("before", id),
+        Placement::End => return None,
+    };
+    let block = state
+        .chain
+        .left
+        .iter()
+        .chain(&state.chain.right)
+        .find(|block| &block.id == id)?;
+    Some(add_menu::place_text(word, &block.tone.as_ref()?.title))
 }
 
 /// Draws the add menu when it is open and carries out what the player chose.
@@ -106,6 +170,7 @@ fn show_add_menu(
     chrome: &mut ChromeController,
     state: &crate::backend::ChainViewState,
     header_bounds: egui::Rect,
+    stage: egui::Rect,
 ) {
     let mut menu = add_menu::AddMenu::load(ui.ctx());
     if menu.adding && chrome.load_flow_phase() != LoadPhase::Loading {
@@ -139,9 +204,10 @@ fn show_add_menu(
         catalog_downloads: chrome.can_download_catalog_tones(),
         results: chrome.add_store(),
         loading: chrome.loading_tone(),
+        place: place_of_slot(state, &menu.placement),
     };
-    let anchor = header::plus_rect(header_bounds);
-    let action = add_menu::show(ui, anchor, &mut menu, &data);
+    let plus = header::plus_rect(header_bounds);
+    let action = add_menu::show(ui, plus, stage, &mut menu, &data);
     if let Some(action) = action {
         let insert = header::insert_of(state, menu.lane);
         match action {
@@ -163,7 +229,7 @@ fn show_add_menu(
             }
             add_menu::AddMenuAction::Add(tone) => {
                 if let Some(id) = insert {
-                    chrome.add_tone(menu.lane, &id, tone, Placement::End);
+                    chrome.add_tone(menu.lane, &id, tone, menu.placement.clone());
                 }
                 // A download keeps the menu open, so that its row shows the load, and a failed
                 // load keeps it open beside its toast, so that the player can try again.
