@@ -301,7 +301,7 @@ fn stereo_menu_offers_lane_a_and_b() {
 fn mono_menu_adds_to_the_end_of_the_chain() {
     let (mut driver, _) = archetype_driver("main-mono");
     open_menu(&mut driver);
-    assert!(driver.shows_text("to the end of the chain"));
+    assert!(driver.shows_text("placed by type"));
     assert!(!driver.is_visible("LANE A") && !driver.is_visible("LANE B"));
 }
 
@@ -358,7 +358,7 @@ fn mono_falls_back_to_lane_a() {
     // A click on the switch would close the menu, so the chain changes behind it.
     let _ = driver.chrome_mut().set_stereo(false);
     driver.settle();
-    assert!(driver.shows_text("to the end of the chain"));
+    assert!(driver.shows_text("placed by type"));
     let _ = driver.click("OPEN THE TONE BROWSER").expect("link");
     driver.settle();
     assert!(driver.chrome_mut().browser_mut().is_some());
@@ -2034,7 +2034,7 @@ fn the_plus_takes_over_a_slot_menu() {
     driver.settle();
     open_menu(&mut driver);
     assert!(driver.is_visible("OPEN THE TONE BROWSER"), "the + menu");
-    assert!(driver.shows_text("to the end of the chain"));
+    assert!(driver.shows_text("placed by type"));
     assert!(plus_is_solid(&driver));
 }
 
@@ -4204,7 +4204,8 @@ fn a_lane_without_gear_adds_at_the_end() {
 fn the_menu_says_where_it_will_add() {
     let (mut driver, _) = slot_driver("main-mono", false, &[], |_| {});
     open_menu(&mut driver);
-    assert!(driver.shows_text("to the end of the chain"));
+    assert!(driver.shows_text("placed by type"));
+    assert!(!driver.shows_text("to the end of the chain"));
     for (row, text) in [
         ("PEDAL", "before '02 Vox AC30/6 To\u{2026}"),
         ("AMP", "before UK Greenback - Ma\u{2026}"),

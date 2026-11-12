@@ -874,7 +874,12 @@ fn lane_picker(ui: &mut egui::Ui, head: Rect, menu: &mut AddMenu, data: &MenuDat
                 egui::pos2(right - 200.0, head.top()),
                 egui::pos2(right, head.bottom()),
             ),
-            RichText::new(place.unwrap_or("to the end of the chain"))
+            RichText::new(place.unwrap_or(if menu.view == MenuView::Categories {
+                // The browser and file links here place by type, as a pedal may land before the amp.
+                "placed by type"
+            } else {
+                "to the end of the chain"
+            }))
                 .font(sans(10.0))
                 .color(MUTED),
             true,
