@@ -3532,7 +3532,7 @@ fn picking_a_skin_redraws_the_render_and_is_one_undo_step() {
 #[test]
 fn an_override_of_another_category_falls_back_to_auto() {
     for skin in ["od-green", "cab-412-modern", "no-such-skin"] {
-        let (mut driver, _) = edited_driver("main-mono", |chain| {
+        let (mut driver, backend) = edited_driver("main-mono", |chain| {
             chain["chain"][1]["skinOverride"] = skin.into();
         });
         let _ = driver.click(VOX).expect("amp");
@@ -3549,6 +3549,13 @@ fn an_override_of_another_category_falls_back_to_auto() {
                 .iter()
                 .any(|control| control.label == "Auto" && control.checked),
             "{skin}"
+        );
+        let _ = driver.click("Auto").expect("auto");
+        driver.settle();
+        assert_eq!(
+            block_skin(&backend, "blk-2"),
+            None,
+            "picking Auto clears the ignored {skin}"
         );
     }
     let (mut driver, _) = edited_driver("main-mono", |chain| {

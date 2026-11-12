@@ -2443,7 +2443,8 @@ impl BlockDetail {
             });
         if let Some(skin) = picked {
             self.skin_open = false;
-            if skin != chosen {
+            // Against the stored skin, so Auto also clears one the block ignores.
+            if skin != self.block.skin.as_deref() {
                 let _ = self.set_skin(skin.map(str::to_owned));
             }
             return;
