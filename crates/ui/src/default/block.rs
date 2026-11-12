@@ -95,6 +95,9 @@ const CAPTURE_PILL_HEIGHT: f32 = 26.0;
 const CAPTURE_TRACKING: f32 = 1.3;
 /// How many characters of the active capture's name the pill shows.
 const CAPTURE_NAME_CHARS: usize = 18;
+/// The pill of capture lights: the padding at its ends and the gap between its parts.
+const CAPTURE_PILL_PAD: f32 = 14.0;
+const CAPTURE_PILL_GAP: f32 = 12.0;
 
 /// Width of a cab's MICS panel, and the space between it and the render.
 const MICS_PANEL_WIDTH: f32 = 300.0;
@@ -2107,10 +2110,30 @@ impl BlockDetail {
         let lights = skin.as_ref().is_some_and(|(skin, _)| {
             skin.category == ronie_core::gear::GearCategory::Amp && self.models.options().len() >= 2
         });
-        // The SKIN chip sits at the bottom left of the stage, level with the lights.
-        let chip = skin
+        // The SKIN chip sits at the bottom left of the stage, level with the lights. When the
+        // pill of lights does not fit between it and the right of the stage, the pill drops
+        // its short name first (the picker shows it), and then the chip reads only "SKIN".
+        let mut chip = skin
             .as_ref()
-            .map(|(shown, _)| self.skin_chip_rect(ui, stage, *shown));
+            .map(|(shown, _)| self.skin_chip_rect(ui, stage, *shown, false));
+        let clear_of = |chip: &Option<(Rect, String)>| {
+            chip.as_ref()
+                .map_or(stage.left(), |(rect, _)| rect.right() + 12.0)
+        };
+        let mut light_name = true;
+        if lights {
+            let fits = |clear: f32, with_name: bool| {
+                clear + self.capture_pill_width(ui, with_name) <= stage.right()
+            };
+            if !fits(clear_of(&chip), true) {
+                light_name = false;
+                if !fits(clear_of(&chip), false) {
+                    chip = skin
+                        .as_ref()
+                        .map(|(shown, _)| self.skin_chip_rect(ui, stage, *shown, true));
+                }
+            }
+        }
         let gear = match &skin {
             Some((skin, textures)) => {
                 // The render leaves room under it for the chip and an amp's lights.
@@ -2128,10 +2151,15 @@ impl BlockDetail {
                 };
                 // The lights register first, so a knob keeps the clicks where they overlap.
                 if lights {
-                    let clear_of = chip
-                        .as_ref()
-                        .map_or(stage.left(), |(rect, _)| rect.right() + 12.0);
-                    self.show_capture_lights(ui, body, stage.bottom() - 2.0, clear_of, session);
+                    let room = (clear_of(&chip), stage.right());
+                    self.show_capture_lights(
+                        ui,
+                        body,
+                        stage.bottom() - 2.0,
+                        room,
+                        light_name,
+                        session,
+                    );
                 }
                 self.show_render(ui, body, *skin, textures, session);
                 if textures.manifest.knobs.is_empty() {
@@ -2217,14 +2245,17 @@ impl BlockDetail {
     }
 
     /// Where the SKIN chip goes at the bottom left of `stage`, and the choice it reads:
-    /// "Auto · <family>" or the chosen family.
+    /// "Auto · <family>" or the chosen family, or nothing when `compact`.
     fn skin_chip_rect(
         &self,
         ui: &egui::Ui,
         stage: Rect,
         shown: super::skins::BlockSkin,
+        compact: bool,
     ) -> (Rect, String) {
-        let value = if super::skins::auto_skin_for(&self.block)
+        let value = if compact {
+            String::new()
+        } else if super::skins::auto_skin_for(&self.block)
             .and_then(|auto| super::skins::chosen_skin(&self.block, auto))
             .is_some()
         {
@@ -2233,7 +2264,12 @@ impl BlockDetail {
             format!("Auto \u{b7} {}", super::skins::friendly_name(shown.id))
         };
         let caption = tracked_width(ui.painter(), "SKIN", &bold_font(9.5), SKIN_TRACKING);
-        let width = 10.0 + caption + 8.0 + text_width(ui, &value, 11.0) + 8.0 + 10.0 + 10.0;
+        let value_width = if value.is_empty() {
+            0.0
+        } else {
+            8.0 + text_width(ui, &value, 11.0)
+        };
+        let width = 10.0 + caption + value_width + 8.0 + 10.0 + 10.0;
         let rect = Rect::from_min_size(
             egui::pos2(stage.left(), stage.bottom() - 2.0 - SKIN_CHIP_HEIGHT),
             egui::vec2(width.min(stage.width()), SKIN_CHIP_HEIGHT),
@@ -2282,17 +2318,19 @@ impl BlockDetail {
             SKIN_TRACKING,
         );
         x += caption + 8.0;
-        let galley = clip.layout_no_wrap(
-            value.to_owned(),
-            egui::FontId::proportional(11.0),
-            Color32::from_rgb(0x33, 0x33, 0x33),
-        );
-        let value_rect = Rect::from_min_size(
-            egui::pos2(x, rect.center().y - galley.size().y / 2.0),
-            galley.size(),
-        );
-        clip.galley(value_rect.min, galley, look.text);
-        static_text(ui, value_rect, id.with("value"), value);
+        if !value.is_empty() {
+            let galley = clip.layout_no_wrap(
+                value.to_owned(),
+                egui::FontId::proportional(11.0),
+                Color32::from_rgb(0x33, 0x33, 0x33),
+            );
+            let value_rect = Rect::from_min_size(
+                egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+                galley.size(),
+            );
+            clip.galley(value_rect.min, galley, look.text);
+            static_text(ui, value_rect, id.with("value"), value);
+        }
         // The chevron points up, where the list opens.
         let chevron = Rect::from_center_size(
             egui::pos2(rect.right() - 15.0, rect.center().y),
@@ -3388,15 +3426,54 @@ impl BlockDetail {
         Some((glass.expand(4.0), format!("{place} \u{b7} click for next")))
     }
 
-    /// The pill of capture lights centred under the amp render `body`, its bottom at `bottom`:
-    /// a window of at most eight lights on the picker's captures, and arrows that move the
-    /// window when there are more. A click on a light selects its capture.
+    /// The width of the pill of capture lights, with or without the shown capture's short
+    /// name.
+    fn capture_pill_width(&self, ui: &egui::Ui, with_name: bool) -> f32 {
+        let count = self.models.options().len();
+        let visible = count.min(CAPTURE_LIGHT_COUNT);
+        let label_width = tracked_width(ui.painter(), "CAPTURE", &bold_font(9.5), CAPTURE_TRACKING);
+        let arrow = if count > visible { LIGHT_PITCH } else { 0.0 };
+        let lights_width = visible as f32 * LIGHT_PITCH - LIGHT_GAP / 2.0 + 2.0 * arrow;
+        let name = if with_name {
+            CAPTURE_PILL_GAP + self.capture_name_width(ui)
+        } else {
+            0.0
+        };
+        CAPTURE_PILL_PAD * 2.0 + label_width + CAPTURE_PILL_GAP + lights_width + name
+    }
+
+    /// The shown capture's short name in the pill.
+    fn capture_short_name(&self) -> String {
+        self.capture_shown()
+            .1
+            .chars()
+            .take(CAPTURE_NAME_CHARS)
+            .collect()
+    }
+
+    /// The width of the short name in the pill.
+    fn capture_name_width(&self, ui: &egui::Ui) -> f32 {
+        ui.painter()
+            .layout_no_wrap(
+                self.capture_short_name(),
+                egui::FontId::monospace(10.0),
+                Color32::BLACK,
+            )
+            .size()
+            .x
+    }
+
+    /// The pill of capture lights centred under the amp render `body`, its bottom at `bottom`,
+    /// kept inside `room` (left and right): a window of at most eight lights on the picker's
+    /// captures, and arrows that move the window when there are more, then the shown
+    /// capture's short name when `with_name`. A click on a light selects its capture.
     fn show_capture_lights(
         &mut self,
         ui: &mut egui::Ui,
         body: Rect,
         bottom: f32,
-        clear_of: f32,
+        room: (f32, f32),
+        with_name: bool,
         session: SessionStatus,
     ) {
         let look = crate::theme::Look::get(ui.ctx());
@@ -3428,25 +3505,19 @@ impl BlockDetail {
 
         let label_font = bold_font(9.5);
         let label_width = tracked_width(ui.painter(), "CAPTURE", &label_font, CAPTURE_TRACKING);
-        let name: String = self
-            .capture_shown()
-            .1
-            .chars()
-            .take(CAPTURE_NAME_CHARS)
-            .collect();
+        let name = self.capture_short_name();
         let name_font = egui::FontId::monospace(10.0);
-        let name_width = ui
-            .painter()
-            .layout_no_wrap(name.clone(), name_font.clone(), look.text)
-            .size()
-            .x;
-        let arrow = if paged { LIGHT_PITCH } else { 0.0 };
-        let lights_width = visible as f32 * LIGHT_PITCH - LIGHT_GAP / 2.0 + 2.0 * arrow;
-        let pad = 14.0;
-        let gap = 12.0;
-        let width = pad * 2.0 + label_width + gap + lights_width + gap + name_width;
-        // Centred under the render, unless that would put it over the SKIN chip at the left.
-        let center_x = body.center().x.max(clear_of + width / 2.0);
+        let name_width = self.capture_name_width(ui);
+        let pad = CAPTURE_PILL_PAD;
+        let gap = CAPTURE_PILL_GAP;
+        let width = self.capture_pill_width(ui, with_name);
+        // Centred under the render, unless that would put it over the SKIN chip at the left;
+        // and never past the right of the stage.
+        let center_x = body
+            .center()
+            .x
+            .max(room.0 + width / 2.0)
+            .min(room.1 - width / 2.0);
         let pill = Rect::from_center_size(
             egui::pos2(center_x, bottom - CAPTURE_PILL_HEIGHT / 2.0),
             egui::vec2(width, CAPTURE_PILL_HEIGHT),
@@ -3579,6 +3650,9 @@ impl BlockDetail {
         }
         if let Some(id) = picked {
             let _ = self.select_model(id, session);
+        }
+        if !with_name {
+            return;
         }
         let name_pos = egui::pos2(pill.right() - pad - name_width, pill.center().y);
         painter.text(

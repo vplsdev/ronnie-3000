@@ -3300,6 +3300,57 @@ fn eight_captures_need_no_paging() {
     assert!(!driver.is_visible("Previous captures"));
 }
 
+/// At 640 the pill only fits without its short name, and at 600 only beside a chip that reads
+/// just "SKIN"; nothing may run past the stage, whose right meter column is 80 pt wide.
+#[test]
+fn the_capture_pill_stays_inside_a_narrow_window() {
+    for width in [700.0, 640.0, 600.0] {
+        let (mut driver, _) = amp_driver(9);
+        driver.set_window_size(eframe::egui::vec2(width, 600.0));
+        let stage_right = width - 80.0;
+        let window = eframe::egui::Rect::from_min_size(
+            eframe::egui::Pos2::ZERO,
+            eframe::egui::vec2(width, 600.0),
+        );
+        let inside = |label: &str| {
+            let rect =
+                rect_of(&driver, label).unwrap_or_else(|| panic!("{label} is drawn at {width}"));
+            assert!(
+                rect.is_positive() && window.contains_rect(rect),
+                "{label} at {rect:?} in a window {width} wide"
+            );
+            rect
+        };
+        let next = inside("Next captures");
+        let previous = inside("Previous captures");
+        assert_eq!(
+            next.size(),
+            previous.size(),
+            "the next arrow is not clipped"
+        );
+        let chip = inside("Skin");
+        let pill = inside("Captures");
+        assert!(
+            pill.right() <= stage_right,
+            "the pill {pill:?} ends inside the stage at {width}"
+        );
+        assert!(
+            pill.left() >= chip.right(),
+            "the pill {pill:?} clears the chip {chip:?} at {width}"
+        );
+        assert!(next.right() <= pill.right(), "the arrow is inside the pill");
+        let shown = lights(&driver, 9);
+        assert_eq!(shown.len(), 8, "{:?}", driver.visible_labels());
+        for (label, _) in &shown {
+            let light = inside(label);
+            assert!(
+                pill.contains_rect(light.shrink(1.0)),
+                "{label} at {light:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_active_light_follows_a_capture_change_from_the_picker() {
     let (mut driver, backend) = amp_driver(6);

@@ -103,6 +103,8 @@ pub struct UiDriver {
     effects_seen: usize,
     opened_urls: Vec<String>,
     copied_text: Vec<String>,
+    /// A window size a test chose instead of the design size.
+    window: Option<egui::Vec2>,
 }
 
 impl UiDriver {
@@ -137,6 +139,7 @@ impl UiDriver {
             effects_seen,
             opened_urls: Vec::new(),
             copied_text: Vec::new(),
+            window: None,
         };
         driver.settle();
         driver
@@ -205,6 +208,12 @@ impl UiDriver {
     #[must_use]
     pub fn focused(&self) -> Option<&str> {
         self.focused.as_deref()
+    }
+
+    /// Draws in a window of `size` points from the next frame on, for a test of a small window.
+    pub fn set_window_size(&mut self, size: egui::Vec2) {
+        self.window = Some(size);
+        self.settle();
     }
 
     /// Runs one frame without input.
@@ -553,6 +562,9 @@ impl UiDriver {
     }
 
     fn screen_rect(&self) -> egui::Rect {
+        if let Some(size) = self.window {
+            return egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        }
         let height = self.chrome.window_chrome().design_height() as f32;
         egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(DESIGN_WIDTH, height))
     }
