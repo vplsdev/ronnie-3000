@@ -224,3 +224,30 @@ fn floor_shadows_stay_faint_on_the_light_stage() {
         );
     }
 }
+
+#[test]
+fn floor_shadows_fade_out_before_the_frame_edge() {
+    for family in FAMILIES {
+        let id = family.skin_id().unwrap();
+        let body = skins::body_image(id).unwrap();
+        let [w, h] = body.size;
+        let band = (w.min(h) as f32 * 0.02) as usize;
+        let mut strongest = 0;
+        for y in 0..h {
+            for x in 0..w {
+                let near_edge = x < band || y < band || x >= w - band || y >= h - band;
+                // Shadow pixels are black; the colour is read unmultiplied so that a dark,
+                // half-covered edge of the gear itself is not taken for shadow.
+                let [r, g, b, a] = body.pixels[y * w + x].to_srgba_unmultiplied();
+                let is_shadow = a < 200 && r.max(g).max(b) < 4;
+                if near_edge && is_shadow {
+                    strongest = strongest.max(a);
+                }
+            }
+        }
+        assert!(
+            strongest <= 32,
+            "{id} has a floor shadow of alpha {strongest} at its frame edge"
+        );
+    }
+}
