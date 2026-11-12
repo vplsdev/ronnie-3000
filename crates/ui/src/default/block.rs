@@ -114,11 +114,11 @@ pub struct BlockDetail {
     /// Where the stage offers a slot to add gear.
     slots: StageSlots,
     /// The slot whose menu is open, drawn solid.
-    open_slot: Option<ronie_core::gear::GearCategory>,
+    open_slot: Option<(ronie_core::gear::GearCategory, super::Placement)>,
     /// A slot that was clicked, for the layout to open its menu.
     slot_request: Option<SlotRequest>,
     /// Where each slot was drawn on the latest frame, for an open menu to stay beside it.
-    slot_rects: Vec<(ronie_core::gear::GearCategory, Rect)>,
+    slot_rects: Vec<(ronie_core::gear::GearCategory, super::Placement, Rect)>,
     block_id: BlockId,
     block: ChainBlock,
     calibrate_input: bool,
@@ -1447,13 +1447,18 @@ impl BlockDetail {
         self.slot_rects.clear();
     }
 
-    /// Where the slot of `category` was drawn since the latest `set_stage_slots`, if it was.
+    /// Where the slot of `category` that places a block at `placement` was drawn since the
+    /// latest `set_stage_slots`, if it was.
     #[must_use]
-    pub fn slot_rect(&self, category: ronie_core::gear::GearCategory) -> Option<Rect> {
+    pub fn slot_rect(
+        &self,
+        category: ronie_core::gear::GearCategory,
+        placement: &super::Placement,
+    ) -> Option<Rect> {
         self.slot_rects
             .iter()
-            .find(|(each, _)| *each == category)
-            .map(|(_, rect)| *rect)
+            .find(|(each, place, _)| *each == category && place == placement)
+            .map(|(_, _, rect)| *rect)
     }
 
     /// The slot the user clicked on the stage, once.
@@ -1461,9 +1466,12 @@ impl BlockDetail {
         self.slot_request.take()
     }
 
-    /// Draws the slot of `category` solid while its menu is open.
-    pub fn set_open_slot(&mut self, category: Option<ronie_core::gear::GearCategory>) {
-        self.open_slot = category;
+    /// Draws the slot of a kind of gear and a placement solid while its menu is open.
+    pub fn set_open_slot(
+        &mut self,
+        slot: Option<(ronie_core::gear::GearCategory, super::Placement)>,
+    ) {
+        self.open_slot = slot;
     }
 
     /// Chooses the page the detail draws.
@@ -2119,8 +2127,16 @@ impl BlockDetail {
             ui.scope_id().with(("slot", slot.name)),
             Sense::click(),
         );
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, slot.name));
-        self.slot_rects.push((slot.category, rect));
+        let open = self
+            .open_slot
+            .as_ref()
+            .is_some_and(|(category, placement)| {
+                *category == slot.category && *placement == slot.placement
+            });
+        response
+            .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, open, slot.name));
+        self.slot_rects
+            .push((slot.category, slot.placement.clone(), rect));
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
         if response.clicked() {
             self.slot_request = Some(SlotRequest {
@@ -2129,7 +2145,6 @@ impl BlockDetail {
                 anchor: rect,
             });
         }
-        let open = self.open_slot == Some(slot.category);
         let (fill, edge, content) = if open {
             (SLOT_INK, SLOT_INK, Color32::WHITE)
         } else {

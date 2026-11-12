@@ -2222,6 +2222,78 @@ fn a_slot_menu_takes_over_a_download_of_the_plus_menu() {
     assert!(!driver.shows_text("DOWNLOADING"));
 }
 
+/// The labels of the slots that read as selected, which the stage draws solid.
+fn solid_slots(driver: &UiDriver) -> Vec<String> {
+    driver
+        .controls()
+        .iter()
+        .filter(|control| control.label.starts_with("Add a ") && control.label != "Add a block")
+        .filter(|control| control.checked)
+        .map(|control| control.label.clone())
+        .collect()
+}
+
+#[test]
+fn the_open_slot_reads_as_selected() {
+    let (mut driver, _) = slot_driver("main-mono", false, &[], add_overdrive);
+    assert!(solid_slots(&driver).is_empty());
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    assert_eq!(solid_slots(&driver), ["Add a pedal after these"]);
+}
+
+#[test]
+fn a_slot_menu_closes_when_its_slot_leaves_the_stage() {
+    let (mut driver, backend) = slot_driver("main-mono", true, &[library_pedal()], add_overdrive);
+    open_menu(&mut driver);
+    let _ = driver.click("PEDAL").expect("PEDAL row");
+    driver.settle();
+    let slow = gear_tone(701, "Slow Download", "pedal");
+    answer_menu(&mut driver, vec![slow.clone()], 1);
+    // The + menu's pick is still downloading to the end of the lane.
+    let insert = last_insert(&backend);
+    let flow = driver.chrome_mut().load_flow_mut();
+    flow.select(ronie_core::ChainSide::Left, &insert);
+    let ticket = flow.begin_remote_load(slow.clone()).expect("load");
+    driver.settle();
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+    driver.settle();
+
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    assert!(driver.is_visible("Back to categories"), "the slot menu");
+    assert_eq!(solid_slots(&driver), ["Add a pedal after these"]);
+
+    // The download lands and its pedal opens on the stage, whose own pedal slot sits after it.
+    assert!(
+        ticket
+            .publish(slow, ronie_core::ModelId(7010), vec![1, 2, 3].into())
+            .expect("publish")
+    );
+    assert!(
+        driver
+            .chrome_mut()
+            .load_flow_mut()
+            .finish_remote(ticket.generation())
+    );
+    driver.chrome_mut().gallery_mut().activate(&insert);
+    driver.chrome_mut().sync_detail();
+    driver.settle();
+    assert!(
+        driver.is_visible("Add a pedal after these"),
+        "the new page has a pedal slot"
+    );
+    assert!(
+        !driver.is_visible("Back to categories"),
+        "the menu of the slot that left closes"
+    );
+    assert!(
+        solid_slots(&driver).is_empty(),
+        "{:?}",
+        solid_slots(&driver)
+    );
+}
+
 #[test]
 fn a_browser_pick_from_a_slot_lands_at_the_slot() {
     let (mut driver, backend) = slot_driver("main-mono", false, &[], add_overdrive);

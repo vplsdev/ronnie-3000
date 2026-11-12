@@ -152,9 +152,12 @@ impl AddMenu {
         self.show_results(category);
     }
 
-    /// The slot whose menu is open, which the stage draws solid.
-    pub(super) fn open_slot(&self) -> Option<GearCategory> {
-        self.slot.filter(|_| self.open)
+    /// The slot whose menu is open, by its kind of gear and its placement, which the stage
+    /// draws solid.
+    pub(super) fn open_slot(&self) -> Option<(GearCategory, Placement)> {
+        self.slot
+            .filter(|_| self.open)
+            .map(|category| (category, self.placement.clone()))
     }
 
     /// Whether the + button opened the menu.

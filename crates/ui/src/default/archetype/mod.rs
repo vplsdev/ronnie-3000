@@ -118,7 +118,7 @@ fn open_slot_menu(
     request: super::block::SlotRequest,
 ) {
     let mut menu = add_menu::AddMenu::load(ctx);
-    if menu.open_slot() == Some(request.category) && menu.placement == request.placement {
+    if menu.open_slot() == Some((request.category, request.placement.clone())) {
         menu.open = false;
     } else {
         let lane = match &request.placement {
@@ -131,21 +131,29 @@ fn open_slot_menu(
     ctx.request_repaint();
 }
 
-/// Keeps a slot's menu beside its slot when the stage lays out again, such as after a resize.
+/// Keeps a slot's menu beside its slot when the stage lays out again, such as after a resize,
+/// and closes it when its slot left the stage, such as when another block opened. Another slot
+/// of the same gear places the block elsewhere, so the menu follows only its own placement.
 fn follow_slot(ctx: &egui::Context, chrome: &mut ChromeController) {
     let mut menu = add_menu::AddMenu::load(ctx);
-    let Some(category) = menu.open_slot() else {
+    let Some((category, placement)) = menu.open_slot() else {
         return;
     };
     let drawn = chrome
         .detail_mut()
-        .and_then(|detail| detail.slot_rect(category));
-    if let Some(rect) = drawn
-        && menu.anchor != Some(rect)
-    {
-        menu.anchor = Some(rect);
-        menu.store(ctx);
+        .and_then(|detail| detail.slot_rect(category, &placement));
+    match drawn {
+        Some(rect) if menu.anchor == Some(rect) => return,
+        Some(rect) => menu.anchor = Some(rect),
+        None => {
+            menu.open = false;
+            if let Some(detail) = chrome.detail_mut() {
+                detail.set_open_slot(None);
+            }
+            ctx.request_repaint();
+        }
     }
+    menu.store(ctx);
 }
 
 /// What the header of a slot's menu says about where the block lands, such as "after OD808".
