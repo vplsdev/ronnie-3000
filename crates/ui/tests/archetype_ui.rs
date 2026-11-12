@@ -2384,8 +2384,23 @@ fn load_through_the_browser(driver: &mut UiDriver, insert: &str, tone: ronie_cor
     driver.settle();
 }
 
-/// A key setup that starts a service over no responses when a key is saved.
-struct KeyOnSave(tempfile::TempDir);
+/// A key setup that starts a service over `transport` when a key is saved.
+struct KeyOnSave(tempfile::TempDir, ronie_core::RecordedTransport);
+
+/// Saves a key, which starts a service over `transport` in place of none.
+fn start_a_service(driver: &mut UiDriver, transport: ronie_core::RecordedTransport) {
+    let chrome = driver.chrome_mut();
+    chrome.use_key_setup(Box::new(KeyOnSave(
+        tempfile::tempdir().expect("temporary settings"),
+        transport,
+    )));
+    chrome.open_key_page();
+    chrome
+        .key_page_mut()
+        .expect("key page")
+        .set_draft("t3k_pub_test_fake");
+    chrome.save_key().expect("the key saves");
+}
 
 impl ronie_ui::services::key_setup::KeySetup for KeyOnSave {
     fn origin(&self) -> String {
@@ -2408,7 +2423,7 @@ impl ronie_ui::services::key_setup::KeySetup for KeyOnSave {
             ronie_ui::services::community::CommunityService::new(
                 ronie_core::OAuthConfig::new(origin.clone(), key.to_owned()),
                 ronie_core::OriginPolicy::new(origin, []),
-                ronie_core::RecordedTransport::new(Vec::new()),
+                self.1.clone(),
                 ronie_core::SettingsStore::standalone(
                     self.0.path(),
                     ronie_core::UI_PREFERENCES_SETTINGS,
@@ -2434,16 +2449,7 @@ fn a_service_change_ends_the_place_of_a_browser_from_a_slot() {
     let insert = last_insert(&backend);
     open_browser_from_the_slot(&mut driver);
     // A saved key starts a service, whose views start again with no browser.
-    let chrome = driver.chrome_mut();
-    chrome.use_key_setup(Box::new(KeyOnSave(
-        tempfile::tempdir().expect("temporary settings"),
-    )));
-    chrome.open_key_page();
-    chrome
-        .key_page_mut()
-        .expect("key page")
-        .set_draft("t3k_pub_test_fake");
-    chrome.save_key().expect("the key saves");
+    start_a_service(&mut driver, ronie_core::RecordedTransport::new(Vec::new()));
     assert!(driver.chrome_mut().browser_mut().is_none());
 
     load_through_the_browser(&mut driver, &insert, local_pedal(901, "Later Drive"));
@@ -2478,4 +2484,71 @@ fn a_browser_from_a_slot_places_only_the_tone_of_its_insert() {
     let mut expected = file;
     expected.push("Next Drive".to_owned());
     assert_eq!(lane_titles(&backend, false), expected);
+}
+
+#[test]
+fn a_file_load_keeps_the_place_of_a_slot_download() {
+    let (mut driver, backend) = slot_driver("main-stereo", false, &[], |_| {});
+    // A service whose first request, the download, waits for good.
+    let held = Arc::new(tokio::sync::Notify::new());
+    start_a_service(
+        &mut driver,
+        ronie_core::RecordedTransport::gated(Vec::new(), held.clone(), held),
+    );
+    driver.chrome_mut().close_auth();
+    let chain = backend.chain_state(0).chain;
+    let first = chain.left[0].id.clone();
+    let insert = last_insert(&backend);
+    let lane_b_insert = chain
+        .right
+        .iter()
+        .rev()
+        .find(|block| block.is_insert)
+        .map(|block| block.id.0.clone())
+        .expect("lane B insert");
+
+    // A slot download before the first block of lane A starts and is held.
+    let pedal = gear_tone(704, "Slot Download", "pedal");
+    driver.chrome_mut().add_tone(
+        ronie_core::ChainSide::Left,
+        &insert,
+        pedal.clone(),
+        Placement::Before(first.clone()),
+    );
+    assert_eq!(
+        driver.chrome().loading_tone(),
+        Some(ronie_core::ToneId(704))
+    );
+
+    // A file lands at the end of lane B meanwhile.
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("closet-cab.wav");
+    write_ir(&path);
+    driver
+        .chrome_mut()
+        .drop_file_into(&lane_b_insert, &path, Placement::End)
+        .expect("the file loads");
+    assert_eq!(
+        lane_titles(&backend, true).last().map(String::as_str),
+        Some("closet-cab")
+    );
+
+    // The download lands in its insert, as the worker publishes it.
+    backend
+        .dispatch(ronie_ui::backend::UiAction::LoadTone {
+            target_insert_id: BlockId(insert.clone()),
+            tone: pedal,
+            model_id: ronie_core::ModelId(7040),
+        })
+        .expect("publish");
+    let flow = driver.chrome_mut().load_flow_mut();
+    let generation = flow.generation();
+    assert!(flow.finish_remote(generation));
+    driver.chrome_mut().sync_browser();
+    let left = lane_titles(&backend, false);
+    assert_eq!(
+        left.first().map(String::as_str),
+        Some("Slot Download"),
+        "{left:?}"
+    );
 }

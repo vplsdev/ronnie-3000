@@ -1168,6 +1168,7 @@ impl ChromeController {
     }
 
     /// Moves block `id`, which an add just filled, to `placement` in the lane that holds it.
+    /// The placement of a pending add from the menu stays as it is.
     fn place_block(&mut self, id: &str, placement: Placement) {
         let chain = self.backend.chain_state(0).chain;
         let holds = |lane: &[ronie_core::ChainBlock]| {
@@ -1181,16 +1182,14 @@ impl ChromeController {
         } else {
             return;
         };
-        self.placement = placement;
-        self.added_side = side;
-        self.place_added_block(id);
+        self.place_added_block(id, side, placement);
     }
 
-    /// Moves the block that an add filled to its placement, when that is not the end.
-    fn place_added_block(&mut self, id: &str) {
-        let placement = std::mem::replace(&mut self.placement, Placement::End);
+    /// Moves block `id`, which an add filled in lane `side`, to `placement`, when that is not
+    /// the end.
+    fn place_added_block(&self, id: &str, side: ronie_core::ChainSide, placement: Placement) {
         let chain = self.backend.chain_state(0).chain;
-        let lane = match self.added_side {
+        let lane = match side {
             ronie_core::ChainSide::Left => &chain.left,
             ronie_core::ChainSide::Right => &chain.right,
         };
@@ -1205,7 +1204,7 @@ impl ChromeController {
         };
         let _ = self.backend.dispatch(UiAction::PlaceAddedBlock {
             block_id: BlockId(id.to_owned()),
-            side: self.added_side,
+            side,
             index,
         });
     }
@@ -1225,7 +1224,8 @@ impl ChromeController {
             .block(&BlockId(id.clone()))
             .is_some_and(|block| !block.is_insert);
         if filled {
-            self.place_added_block(&id);
+            let placement = std::mem::replace(&mut self.placement, Placement::End);
+            self.place_added_block(&id, self.added_side, placement);
             self.gallery.activate(&id);
             self.sync_detail();
         }
