@@ -115,6 +115,11 @@ impl Default for BlockControls {
     }
 }
 
+/// A normalized pair level, with a non-finite level at unity (0.5).
+fn finite_level(level: f32) -> f32 {
+    if level.is_finite() { level } else { 0.5 }
+}
+
 impl BlockControls {
     pub(crate) fn with_params(mut self, params: &BlockParams) -> Self {
         self.input_gain = params.input_gain as f32;
@@ -134,8 +139,8 @@ impl BlockControls {
     fn pair_mix(&self) -> PairMix {
         PairMix {
             blend: self.ir_blend,
-            level_a: normalized_gain(self.ir_a_level),
-            level_b: normalized_gain(self.ir_b_level),
+            level_a: normalized_gain(finite_level(self.ir_a_level)),
+            level_b: normalized_gain(finite_level(self.ir_b_level)),
             invert_b: self.ir_b_invert,
         }
     }
@@ -569,5 +574,26 @@ impl PreparedBlock {
             self.spectrum.push_samples(left, right, dual_mono);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BlockControls;
+
+    #[test]
+    fn a_non_finite_pair_level_plays_at_unity() {
+        for level in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let controls = BlockControls {
+                ir_a_level: level,
+                ir_b_level: level,
+                ..BlockControls::default()
+            };
+            let mix = controls.pair_mix();
+            assert!(
+                (mix.level_a - 1.0).abs() < 1e-6 && (mix.level_b - 1.0).abs() < 1e-6,
+                "{level}: {mix:?}"
+            );
+        }
     }
 }
