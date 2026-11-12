@@ -126,10 +126,6 @@ const KNOB_INK: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 pub struct StageSlots {
     /// A pedal after this block (the last pedal of a run), on the pedals stage.
     pub pedal_after: Option<BlockId>,
-    /// A pedal before this block, on an amp's stage.
-    pub pedal_before: Option<BlockId>,
-    /// A cab after this block, on an amp's stage.
-    pub cab_after: Option<BlockId>,
 }
 
 /// A click on a slot of the stage.
@@ -3022,9 +3018,9 @@ impl BlockDetail {
         &self,
         category: ronie_core::gear::GearCategory,
     ) -> (Option<SlotSpec>, Option<SlotSpec>) {
-        use ronie_core::gear::GearCategory::{Amp, Cab, Pedal};
+        use ronie_core::gear::GearCategory::Pedal;
 
-        use super::Placement::{After, Before};
+        use super::Placement::After;
         match category {
             Pedal => (
                 None,
@@ -3034,22 +3030,6 @@ impl BlockDetail {
                     label: "PEDAL",
                     name: "Add a pedal after these",
                     size: egui::vec2(110.0, 176.0),
-                }),
-            ),
-            Amp => (
-                self.slots.pedal_before.clone().map(|id| SlotSpec {
-                    category: Pedal,
-                    placement: Before(id),
-                    label: "PEDAL",
-                    name: "Add a pedal before the amp",
-                    size: egui::vec2(96.0, 160.0),
-                }),
-                self.slots.cab_after.clone().map(|id| SlotSpec {
-                    category: Cab,
-                    placement: After(id),
-                    label: "CAB",
-                    name: "Add a cab after the amp",
-                    size: egui::vec2(96.0, 160.0),
                 }),
             ),
             _ => (None, None),

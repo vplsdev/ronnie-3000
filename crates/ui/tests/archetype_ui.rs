@@ -1342,43 +1342,6 @@ fn a_pedal_run_ends_with_a_pedal_slot() {
 }
 
 #[test]
-fn an_amp_has_a_pedal_slot_before_it() {
-    let (mut driver, _) = archetype_driver("main-mono");
-    let _ = driver.click(VOX).expect("amp");
-    driver.settle();
-    let slot = rect_of(&driver, "Add a pedal before the amp").expect("the slot");
-    let amp = rect_of(&driver, "Amp render").expect("amp");
-    assert!(slot.right() <= amp.left() - 17.9, "{slot:?} vs {amp:?}");
-    let scale = amp.height() / 300.0;
-    assert!((slot.width() - 96.0 * scale).abs() < 0.1, "{slot:?}");
-    assert!((slot.height() - 160.0 * scale).abs() < 0.1, "{slot:?}");
-    assert!(rect_of(&driver, "Add a pedal after these").is_none());
-}
-
-#[test]
-fn an_amp_followed_by_a_cab_has_no_cab_slot() {
-    let (mut driver, _) = archetype_driver("main-mono");
-    let _ = driver.click(VOX).expect("amp");
-    driver.settle();
-    assert!(rect_of(&driver, "Add a cab after the amp").is_none());
-}
-
-#[test]
-fn an_amp_with_no_cab_after_it_has_a_cab_slot() {
-    let (mut driver, _) = edited_driver("main-mono", |chain| {
-        chain["chain"].as_array_mut().expect("chain").remove(2);
-    });
-    let _ = driver.click(VOX).expect("amp");
-    driver.settle();
-    let slot = rect_of(&driver, "Add a cab after the amp").expect("the slot");
-    let amp = rect_of(&driver, "Amp render").expect("amp");
-    assert!(slot.left() >= amp.right() + 17.9, "{slot:?} vs {amp:?}");
-    let scale = amp.height() / 300.0;
-    assert!((slot.width() - 96.0 * scale).abs() < 0.1, "{slot:?}");
-    assert!((slot.height() - 160.0 * scale).abs() < 0.1, "{slot:?}");
-}
-
-#[test]
 fn a_cab_page_has_no_slots() {
     let (mut driver, _) = archetype_driver("main-mono");
     let _ = driver
@@ -1593,18 +1556,14 @@ fn tone3000_rows_come_from_the_menu_store() {
 }
 
 #[test]
-fn adding_a_library_tone_puts_it_at_the_end_of_the_lane() {
+fn adding_a_library_amp_puts_it_before_the_cab_and_opens_it() {
     let (mut driver, backend) = menu_driver("main-mono", false, &[amp_tone(601, "Plexi Lead")]);
     open_amp(&mut driver);
     assert!(driver.shows_text("Downloaded \u{b7} 1 capture"));
     let _ = driver.click("Plexi Lead").expect("library row");
     driver.settle();
     let titles = lane_titles(&backend, false);
-    assert_eq!(
-        titles.last().map(String::as_str),
-        Some("Plexi Lead"),
-        "{titles:?}"
-    );
+    assert_eq!(titles[2], "Plexi Lead", "{titles:?}");
     assert!(!driver.is_visible("Back to categories"), "the menu closed");
     let added = backend
         .chain_state(0)
@@ -2106,50 +2065,6 @@ fn adding_from_the_pedal_slot_puts_the_pedal_after_the_run() {
 }
 
 #[test]
-fn adding_from_the_amp_slot_puts_the_pedal_before_the_amp() {
-    let (mut driver, backend) = slot_driver("main-mono", false, &[library_pedal()], |_| {});
-    let _ = driver.click(VOX).expect("amp");
-    driver.settle();
-    let _ = driver.click("Add a pedal before the amp").expect("slot");
-    driver.settle();
-    assert!(driver.shows_text("before '02 Vox AC30/6 To\u{2026}"));
-    let _ = driver.click("Library Drive").expect("library row");
-    driver.settle();
-    let titles = lane_titles(&backend, false);
-    assert_eq!(titles.len(), 4, "{titles:?}");
-    assert_eq!(titles[1], "Library Drive", "{titles:?}");
-    assert!(titles[2].contains("AC30"), "{titles:?}");
-}
-
-#[test]
-fn the_cab_slot_adds_a_cab_after_the_amp() {
-    // A pedal after the amp in place of the cab, so the slot's place differs from the end.
-    let (mut driver, backend) = slot_driver(
-        "main-mono",
-        false,
-        &[gear_tone(802, "Library Cab", "cab")],
-        |chain| {
-            let mut late = chain[0].clone();
-            late["blockId"] = "blk-late".into();
-            late["tone"]["title"] = "Late Fuzz".into();
-            chain[2] = late;
-        },
-    );
-    let _ = driver.click(VOX).expect("amp");
-    driver.settle();
-    let _ = driver.click("Add a cab after the amp").expect("slot");
-    driver.settle();
-    assert!(driver.shows_text("after '02 Vox AC30/6 To\u{2026}"));
-    assert!(driver.shows_text("CAB"), "the header names the category");
-    let _ = driver.click("Library Cab").expect("library row");
-    driver.settle();
-    let titles = lane_titles(&backend, false);
-    assert_eq!(titles.len(), 4, "{titles:?}");
-    assert_eq!(titles[2], "Library Cab", "{titles:?}");
-    assert_eq!(titles[3], "Late Fuzz", "{titles:?}");
-}
-
-#[test]
 fn one_undo_removes_a_slot_add() {
     let (mut driver, backend) = slot_driver("main-mono", false, &[library_pedal()], add_overdrive);
     let before = lane_titles(&backend, false);
@@ -2181,32 +2096,6 @@ fn back_from_a_slot_menu_shows_categories_and_keeps_the_placement() {
     driver.settle();
     let titles = lane_titles(&backend, false);
     assert_eq!(titles[2], "Library Drive", "{titles:?}");
-}
-
-#[test]
-fn a_slot_add_in_lane_b_stays_in_lane_b() {
-    let (mut driver, backend) = slot_driver("main-stereo", false, &[library_pedal()], |_| {});
-    let _ = driver.click("Chain: Roland JC-40").expect("lane B amp");
-    driver.settle();
-    let left = lane_titles(&backend, false);
-    let _ = driver.click("Add a pedal before the amp").expect("slot");
-    driver.settle();
-    assert!(!driver.is_visible("LANE A") && !driver.is_visible("LANE B"));
-    assert!(driver.shows_text("before Roland JC-40"));
-    let _ = driver.click("Library Drive").expect("library row");
-    driver.settle();
-    let right = lane_titles(&backend, true);
-    assert_eq!(
-        right.first().map(String::as_str),
-        Some("Library Drive"),
-        "{right:?}"
-    );
-    assert_eq!(
-        right.get(1).map(String::as_str),
-        Some("Roland JC-40"),
-        "{right:?}"
-    );
-    assert_eq!(lane_titles(&backend, false), left);
 }
 
 #[test]
@@ -4208,4 +4097,178 @@ fn right_click_on_plus_or_an_empty_slot_opens_no_menu() {
         .expect("slot");
     driver.settle();
     assert!(!strip_menu_open(&driver), "a slot has no block menu");
+}
+
+// ---------------------------------------------------------------- Smart placement for +
+
+const MUFF: &str = "Green Russian Big Muff + BD-2";
+const GREENBACK: &str = "UK Greenback - Marshall 1960TV 4x12 M201";
+
+/// Adds `tone` from the + menu, through its category row.
+fn add_from_plus(driver: &mut UiDriver, row: &str, tone: &str) {
+    open_menu(driver);
+    let _ = driver.click(row).expect("category row");
+    driver.settle();
+    let _ = driver.click(tone).expect("library row");
+    driver.settle();
+}
+
+#[test]
+fn a_pedal_from_plus_lands_before_the_amp() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[library_pedal()], |_| {});
+    add_from_plus(&mut driver, "PEDAL", "Library Drive");
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles[0], MUFF, "{titles:?}");
+    assert_eq!(titles[1], "Library Drive", "{titles:?}");
+    assert!(titles[2].contains("AC30"), "{titles:?}");
+}
+
+#[test]
+fn an_amp_from_plus_lands_before_the_cab() {
+    let (mut driver, backend) =
+        slot_driver("main-mono", false, &[amp_tone(601, "Plexi Lead")], |_| {});
+    add_from_plus(&mut driver, "AMP", "Plexi Lead");
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles.len(), 4, "{titles:?}");
+    assert_eq!(titles[2], "Plexi Lead", "{titles:?}");
+    assert_eq!(titles[3], GREENBACK, "{titles:?}");
+}
+
+#[test]
+fn a_cab_from_plus_lands_after_the_amp() {
+    let (mut driver, backend) = slot_driver(
+        "main-mono",
+        false,
+        &[gear_tone(802, "Library Cab", "cab")],
+        |_| {},
+    );
+    add_from_plus(&mut driver, "CAB", "Library Cab");
+    let titles = lane_titles(&backend, false);
+    assert!(titles[1].contains("AC30"), "{titles:?}");
+    assert_eq!(titles[2], "Library Cab", "{titles:?}");
+    assert_eq!(titles[3], GREENBACK, "{titles:?}");
+}
+
+#[test]
+fn outboard_lands_at_the_end() {
+    let (mut driver, backend) = slot_driver(
+        "main-mono",
+        false,
+        &[gear_tone(803, "Library Comp", "outboard")],
+        |_| {},
+    );
+    add_from_plus(&mut driver, "OUTBOARD", "Library Comp");
+    let titles = lane_titles(&backend, false);
+    assert_eq!(
+        titles.last().map(String::as_str),
+        Some("Library Comp"),
+        "{titles:?}"
+    );
+}
+
+#[test]
+fn placement_works_in_lane_b() {
+    let (mut driver, backend) = slot_driver("main-stereo", false, &[library_pedal()], |_| {});
+    let left = lane_titles(&backend, false);
+    open_menu(&mut driver);
+    let _ = driver.click("LANE B").expect("lane B");
+    driver.settle();
+    let _ = driver.click("PEDAL").expect("PEDAL row");
+    driver.settle();
+    let _ = driver.click("Library Drive").expect("library row");
+    driver.settle();
+    let right = lane_titles(&backend, true);
+    assert_eq!(right[0], "Library Drive", "{right:?}");
+    assert_eq!(right[1], "Roland JC-40", "{right:?}");
+    assert_eq!(lane_titles(&backend, false), left);
+}
+
+#[test]
+fn a_lane_without_gear_adds_at_the_end() {
+    let keep_the_pedal = |chain: &mut Vec<serde_json::Value>| {
+        chain.retain(|block| block["blockId"] != "blk-2" && block["blockId"] != "blk-3");
+    };
+    let library = [library_pedal(), gear_tone(802, "Library Cab", "cab")];
+    for (row, title) in [("PEDAL", "Library Drive"), ("CAB", "Library Cab")] {
+        let (mut driver, backend) = slot_driver("main-mono", false, &library, keep_the_pedal);
+        assert_eq!(lane_titles(&backend, false), vec![MUFF.to_owned()]);
+        add_from_plus(&mut driver, row, title);
+        assert_eq!(
+            lane_titles(&backend, false),
+            vec![MUFF.to_owned(), title.to_owned()]
+        );
+    }
+}
+
+#[test]
+fn the_menu_says_where_it_will_add() {
+    let (mut driver, _) = slot_driver("main-mono", false, &[], |_| {});
+    open_menu(&mut driver);
+    assert!(driver.shows_text("to the end of the chain"));
+    for (row, text) in [
+        ("PEDAL", "before '02 Vox AC30/6 To\u{2026}"),
+        ("AMP", "before UK Greenback - Ma\u{2026}"),
+        ("CAB", "after '02 Vox AC30/6 To\u{2026}"),
+        ("OUTBOARD", "to the end of the chain"),
+    ] {
+        let _ = driver.click(row).expect("category row");
+        driver.settle();
+        assert!(driver.shows_text(text), "{row} should say {text}");
+        let _ = driver.click("Back to categories").expect("back");
+        driver.settle();
+    }
+}
+
+#[test]
+fn an_amp_page_has_no_side_slots() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    for name in ["Add a pedal before the amp", "Add a cab after the amp"] {
+        assert!(rect_of(&driver, name).is_none(), "{name}");
+    }
+    let (mut driver, _) = edited_driver("main-mono", |chain| {
+        chain["chain"].as_array_mut().expect("chain").remove(2);
+    });
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    for name in ["Add a pedal before the amp", "Add a cab after the amp"] {
+        assert!(rect_of(&driver, name).is_none(), "{name} with no cab");
+    }
+}
+
+#[test]
+fn a_pedal_run_still_ends_with_a_slot() {
+    let (driver, _) = pedalboard_driver();
+    assert!(rect_of(&driver, "Add a pedal after these").is_some());
+}
+
+#[test]
+fn the_browser_from_plus_places_by_the_tone_that_lands() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[], |_| {});
+    open_menu(&mut driver);
+    let _ = driver.click("PEDAL").expect("PEDAL row");
+    driver.settle();
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("browser link");
+    driver.settle();
+    let chrome = driver.chrome_mut();
+    chrome.pick_tone(local_pedal(905, "Browser Drive"));
+    chrome.sync_browser();
+    driver.settle();
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles[1], "Browser Drive", "{titles:?}");
+}
+
+#[test]
+fn a_replace_never_moves_the_block() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[library_pedal()], |_| {});
+    let before = lane_titles(&backend, false);
+    let id = block_titled(&backend, "AC30").expect("amp").id.0;
+    driver
+        .chrome_mut()
+        .replace_tone(&id, gear_tone(804, "Replacement Pedal", "pedal"));
+    driver.settle();
+    let after = lane_titles(&backend, false);
+    assert_eq!(after[1], "Replacement Pedal", "{after:?}");
+    assert_eq!(after.len(), before.len());
 }

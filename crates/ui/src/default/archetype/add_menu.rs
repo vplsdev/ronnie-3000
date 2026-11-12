@@ -862,7 +862,7 @@ fn lane_picker(ui: &mut egui::Ui, head: Rect, menu: &mut AddMenu, data: &MenuDat
     let right = head.right() - 6.0;
     let place = if menu.replacing.is_some() {
         Some("keeps trims, EQ and place")
-    } else if menu.anchor.is_some() {
+    } else if menu.anchor.is_some() || !data.stereo {
         data.place.as_deref()
     } else {
         None

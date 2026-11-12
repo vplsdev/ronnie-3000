@@ -335,6 +335,26 @@ pub fn auto_skin_for(block: &ChainBlock) -> Option<BlockSkin> {
     BlockSkin::of(asset(family.skin_id()?)?.id, family.category())
 }
 
+/// The kind of gear a tone block holds, by the same identification as its skin; `None` for an
+/// insert or an empty block.
+#[must_use]
+pub fn gear_category(block: &ChainBlock) -> Option<ronie_core::gear::GearCategory> {
+    use ronie_core::gear::{GearHints, identify};
+
+    if block.is_insert {
+        return None;
+    }
+    let tone = block.tone.as_ref()?;
+    let model = block
+        .active_model_id
+        .and_then(|id| tone.models.iter().find(|model| model.id == id));
+    Some(
+        identify(&GearHints::from_tone(tone, model))
+            .family
+            .category(),
+    )
+}
+
 /// The skin of a block's gear, when the app has a render for it: the block's chosen skin when
 /// it draws the same kind of gear as the automatic one, and otherwise the automatic one.
 #[must_use]

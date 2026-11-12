@@ -94,6 +94,42 @@ pub enum Placement {
     After(BlockId),
     /// Right before the block.
     Before(BlockId),
+    /// Where the kind of gear of the tone belongs, known when the tone lands: see
+    /// [`smart_placement`].
+    Smart,
+}
+
+/// Where a tone of `category` goes in `lane` when nothing else says: a pedal before the first
+/// amp, rig or cab; an amp or rig before the first cab; a cab after the last amp or rig; and
+/// anything else, or a lane with no such gear, at the end. `skip` is a block that does not
+/// count, such as the block that was just added.
+#[must_use]
+pub fn smart_placement(
+    lane: &[ronie_core::ChainBlock],
+    category: ronie_core::gear::GearCategory,
+    skip: Option<&BlockId>,
+) -> Placement {
+    use ronie_core::gear::GearCategory::{Amp, Cab, FullRig, Pedal};
+
+    let held = |block: &&ronie_core::ChainBlock| Some(&block.id) != skip;
+    let first = |kinds: &[ronie_core::gear::GearCategory]| {
+        lane.iter().filter(held).find(|block| {
+            super::skins::gear_category(block).is_some_and(|each| kinds.contains(&each))
+        })
+    };
+    match category {
+        Pedal => first(&[Amp, FullRig, Cab]).map(|block| Placement::Before(block.id.clone())),
+        Amp | FullRig => first(&[Cab]).map(|block| Placement::Before(block.id.clone())),
+        Cab => lane
+            .iter()
+            .filter(held)
+            .rfind(|block| {
+                super::skins::gear_category(block).is_some_and(|each| matches!(each, Amp | FullRig))
+            })
+            .map(|block| Placement::After(block.id.clone())),
+        _ => None,
+    }
+    .unwrap_or(Placement::End)
 }
 
 /// Complete Default chrome controller. Processor mutations go through `UiBackend`.
@@ -1286,8 +1322,22 @@ impl ChromeController {
             ronie_core::ChainSide::Right => &chain.right,
         };
         let position = |anchor: &BlockId| lane.iter().position(|block| block.id == *anchor);
+        let placement = match placement {
+            Placement::Smart => {
+                let own = BlockId(id.to_owned());
+                let Some(category) = lane
+                    .iter()
+                    .find(|block| block.id == own)
+                    .and_then(super::skins::gear_category)
+                else {
+                    return;
+                };
+                smart_placement(lane, category, Some(&own))
+            }
+            other => other,
+        };
         let index = match placement {
-            Placement::End => return,
+            Placement::End | Placement::Smart => return,
             Placement::After(anchor) => position(&anchor).map(|at| at + 1),
             Placement::Before(anchor) => position(&anchor),
         };

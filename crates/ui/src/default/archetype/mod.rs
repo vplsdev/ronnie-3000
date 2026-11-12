@@ -140,7 +140,7 @@ fn open_slot_menu(
     } else {
         let lane = match &request.placement {
             Placement::After(id) | Placement::Before(id) => header::lane_of(state, Some(id)),
-            Placement::End => ronie_core::ChainSide::Left,
+            Placement::End | Placement::Smart => ronie_core::ChainSide::Left,
         };
         menu.open_at(request.category, request.placement, request.anchor, lane);
     }
@@ -341,7 +341,7 @@ fn place_of_slot(state: &crate::backend::ChainViewState, placement: &Placement) 
     let (word, id) = match placement {
         Placement::After(id) => ("after", id),
         Placement::Before(id) => ("before", id),
-        Placement::End => return None,
+        Placement::End | Placement::Smart => return None,
     };
     let block = state
         .chain
@@ -350,6 +350,21 @@ fn place_of_slot(state: &crate::backend::ChainViewState, placement: &Placement) 
         .chain(&state.chain.right)
         .find(|block| &block.id == id)?;
     Some(add_menu::place_text(word, &block.tone.as_ref()?.title))
+}
+
+/// Where the menu's tone goes: the slot's place, and for the + menu, in the lane it shows, the
+/// place of the chosen category.
+fn menu_placement(state: &crate::backend::ChainViewState, menu: &add_menu::AddMenu) -> Placement {
+    match (&menu.placement, menu.view) {
+        (Placement::End, add_menu::MenuView::Results(category)) if menu.replacing.is_none() => {
+            let lane = match menu.lane {
+                ronie_core::ChainSide::Left => &state.chain.left,
+                ronie_core::ChainSide::Right => &state.chain.right,
+            };
+            super::header::smart_placement(lane, category, None)
+        }
+        (placement, _) => placement.clone(),
+    }
 }
 
 /// Draws the add menu when it is open and carries out what the player chose.
@@ -392,7 +407,7 @@ fn show_add_menu(
         catalog_downloads: chrome.can_download_catalog_tones(),
         results: chrome.add_store(),
         loading: chrome.loading_tone(),
-        place: place_of_slot(state, &menu.placement),
+        place: place_of_slot(state, &menu_placement(state, &menu)),
         replacing: menu.replacing.as_ref().and_then(|id| {
             state
                 .chain
@@ -430,11 +445,16 @@ fn add_from_menu(
     action: add_menu::AddMenuAction,
 ) {
     let insert = header::insert_of(state, menu.lane);
+    // A menu that no slot opened places the tone by its kind of gear, when it lands.
+    let placement = match &menu.placement {
+        Placement::End => Placement::Smart,
+        slot => slot.clone(),
+    };
     match action {
         add_menu::AddMenuAction::OpenBrowser(category) => {
             menu.open = false;
             if let Some(id) = insert {
-                chrome.open_browser_for(&id, category, &menu.search, menu.placement.clone());
+                chrome.open_browser_for(&id, category, &menu.search, placement);
             }
         }
         add_menu::AddMenuAction::LoadFile => {
@@ -444,12 +464,12 @@ fn add_from_menu(
                 .add_filter("Audio models", &["nam", "wav"])
                 .pick_file();
             if let (Some(path), Some(id)) = (picked, insert) {
-                let _ = chrome.drop_file_into(&id, &path, menu.placement.clone());
+                let _ = chrome.drop_file_into(&id, &path, placement);
             }
         }
         add_menu::AddMenuAction::Add(tone) => {
             if let Some(id) = insert {
-                chrome.add_tone(menu.lane, &id, tone, menu.placement.clone());
+                chrome.add_tone(menu.lane, &id, tone, placement);
             }
             // A download keeps the menu open, so that its row shows the load, and a failed
             // load keeps it open beside its toast, so that the player can try again.
@@ -696,13 +716,13 @@ pub(super) fn pedal_run(
     (Vec::new(), Vec::new())
 }
 
-/// Where the stage of block `id` offers a slot: a pedal after the last pedal of a run, and for
-/// an amp a pedal before it and, unless a cab follows it in its lane, a cab after it.
+/// Where the stage of block `id` offers a slot: a pedal after the last pedal of a run. Other
+/// gear is added from the + menu, which places it by its kind.
 pub(super) fn stage_slots(
     state: &crate::backend::ChainViewState,
     id: &ronie_core::BlockId,
 ) -> super::block::StageSlots {
-    use ronie_core::gear::GearCategory::{Amp, Cab, Pedal};
+    use ronie_core::gear::GearCategory::Pedal;
     let category = |block: &ronie_core::ChainBlock| {
         if block.is_insert {
             return None;
@@ -714,23 +734,13 @@ pub(super) fn stage_slots(
             continue;
         };
         let mut slots = super::block::StageSlots::default();
-        match category(&lane[index]) {
-            Some(Pedal) => {
-                let last = lane[index..]
-                    .iter()
-                    .take_while(|block| category(block) == Some(Pedal))
-                    .last()
-                    .unwrap_or(&lane[index]);
-                slots.pedal_after = Some(last.id.clone());
-            }
-            Some(Amp) => {
-                slots.pedal_before = Some(id.clone());
-                let next = lane[index + 1..].iter().find(|block| !block.is_insert);
-                if next.and_then(category) != Some(Cab) {
-                    slots.cab_after = Some(id.clone());
-                }
-            }
-            _ => {}
+        if category(&lane[index]) == Some(Pedal) {
+            let last = lane[index..]
+                .iter()
+                .take_while(|block| category(block) == Some(Pedal))
+                .last()
+                .unwrap_or(&lane[index]);
+            slots.pedal_after = Some(last.id.clone());
         }
         return slots;
     }
