@@ -5298,6 +5298,92 @@ fn a_late_answer_of_a_closed_category_does_not_fill_the_next_one() {
 }
 
 #[test]
+fn signed_out_a_downloaded_library_tone_asks_for_sign_in_and_a_local_one_adds() {
+    use ronie_ui::{services::RecentTones, shell::ViewMode};
+    let directory = tempfile::tempdir().expect("settings root");
+    let routes = Routes::default();
+    let downloaded = Tone::from_value(serde_json::json!({
+        "id": 5, "title": "Downloaded Plexi", "format": "nam", "gear": "amp",
+        "models": [{"id": 50, "name": "m", "model_url": PUBLIC_URL}]
+    }))
+    .expect("catalog tone");
+    let stashed = Tone::from_value(serde_json::json!({
+        "id": 0, "title": "Stashed Twin", "format": "nam", "gear": "amp", "local": true,
+        "models": [{"id": 1, "name": "m", "model_url": "file:///stash/twin.nam"}]
+    }))
+    .expect("local tone");
+    let mut recent = RecentTones::default();
+    recent.remember(downloaded);
+    recent.remember(stashed);
+    let inner = backend();
+    inner
+        .dispatch(UiAction::SetTextPreference {
+            key: RecentTones::KEY.to_owned(),
+            value: recent.to_text(),
+        })
+        .expect("seed");
+    let mut chrome = chrome_with(inner.clone(), &routes, &directory);
+    chrome.set_view_mode(ViewMode::RonieFlow);
+    let mut driver = UiDriver::new(chrome, (*inner).clone());
+    driver.settle();
+    assert!(!driver.chrome().session().signed_in());
+    let open_amps = |driver: &mut UiDriver| {
+        let _ = driver.click("Add a block").expect("plus");
+        driver.settle();
+        let _ = driver.click("AMP").expect("AMP row");
+        driver.settle();
+    };
+
+    open_amps(&mut driver);
+    assert!(driver.shows_text("ADD"), "the local row still adds");
+    assert!(
+        driver.shows_text("SIGN IN"),
+        "the downloaded row asks for a sign-in"
+    );
+    let _ = driver.click("Stashed Twin").expect("local row");
+    driver.settle();
+    let lane: Vec<String> = inner
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .filter(|block| !block.is_insert)
+        .filter_map(|block| block.tone.as_ref().map(|tone| tone.title.clone()))
+        .collect();
+    assert_eq!(
+        lane.last().map(String::as_str),
+        Some("Stashed Twin"),
+        "{lane:?}"
+    );
+
+    open_amps(&mut driver);
+    let _ = driver.click("Downloaded Plexi").expect("catalog row");
+    driver.settle();
+    let_tasks_finish();
+    driver.settle();
+
+    assert!(driver.chrome().auth_active(), "the sign-in starts");
+    assert!(
+        !driver
+            .chrome()
+            .toast()
+            .is_some_and(|text| text.contains("session ended")),
+        "{:?}",
+        driver.chrome().toast()
+    );
+    assert!(
+        !driver
+            .chrome()
+            .visible_toast()
+            .is_some_and(|text| text.contains("session ended")),
+        "{:?}",
+        driver.chrome().visible_toast()
+    );
+    assert_eq!(routes.count(TONE_FIVE), 0, "no load starts");
+    assert_eq!(driver.chrome().loading_tone(), None);
+}
+
+#[test]
 fn an_add_while_another_downloads_lands_only_the_newer_tone() {
     let directory = tempfile::tempdir().expect("settings root");
     let routes = signed_in_routes(&directory);

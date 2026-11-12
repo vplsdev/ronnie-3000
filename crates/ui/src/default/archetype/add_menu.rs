@@ -132,6 +132,8 @@ pub(super) struct MenuData<'a> {
     /// The tones of the chain, in both lanes.
     pub(super) in_chain: Vec<&'a Tone>,
     pub(super) signed_in: bool,
+    /// Whether a catalog tone can load, or the player signs in first.
+    pub(super) catalog_downloads: bool,
     /// The TONE3000 results of the category on show.
     pub(super) results: Option<&'a CatalogStore>,
     /// The tone that a load is fetching now.
@@ -214,6 +216,8 @@ fn grouped(value: u64) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowState {
     Add,
+    /// A catalog tone that loads only after a sign-in.
+    SignIn,
     InChain,
     Downloading,
 }
@@ -284,6 +288,8 @@ impl<'a> Results<'a> {
     fn state_of(tone: &Tone, data: &MenuData<'_>) -> RowState {
         if data.loading.is_some_and(|id| id == tone.id && !tone.local) {
             RowState::Downloading
+        } else if !tone.local && !data.catalog_downloads {
+            RowState::SignIn
         } else if data.in_chain.iter().any(|held| same_tone(held, tone)) {
             RowState::InChain
         } else {
@@ -798,7 +804,7 @@ fn draw_results(
             &library_line(tone),
             state,
         ) {
-            action = Some(AddMenuAction::Add((*tone).clone()));
+            action = Some(row_action(tone, state));
         }
     }
 
@@ -829,7 +835,7 @@ fn draw_results(
                 &remote_line(tone),
                 state,
             ) {
-                action = Some(AddMenuAction::Add((*tone).clone()));
+                action = Some(row_action(tone, state));
             }
         }
     } else {
@@ -958,8 +964,17 @@ fn note_line(ui: &mut egui::Ui, body: Rect, top: f32, text: &str) -> f32 {
     top + NOTE
 }
 
+/// What a click on a tone row asks for.
+fn row_action(tone: &Tone, state: RowState) -> AddMenuAction {
+    if state == RowState::SignIn {
+        AddMenuAction::SignIn
+    } else {
+        AddMenuAction::Add(tone.clone())
+    }
+}
+
 /// One tone row: its icon, title, line, and what a click does. Returns whether it was clicked
-/// to add the tone.
+/// to add the tone, or to sign in first.
 fn tone_row(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
@@ -1001,6 +1016,8 @@ fn tone_row(
     let (label, color) = match state {
         RowState::Add if response.hovered() => ("ADD", ACCENT),
         RowState::Add => ("ADD", MUTED),
+        RowState::SignIn if response.hovered() => ("SIGN IN", ACCENT),
+        RowState::SignIn => ("SIGN IN", MUTED),
         RowState::InChain => ("IN CHAIN", MUTED),
         RowState::Downloading => ("DOWNLOADING", MUTED),
     };

@@ -134,6 +134,7 @@ fn show_add_menu(
             .filter_map(|block| block.tone.as_ref())
             .collect(),
         signed_in: chrome.session().signed_in(),
+        catalog_downloads: chrome.can_download_catalog_tones(),
         results: chrome.add_store(),
         loading: chrome.loading_tone(),
     };

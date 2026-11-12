@@ -1085,6 +1085,13 @@ impl ChromeController {
         }
     }
 
+    /// Whether a catalog tone can load now. A catalog load asks the service for the tone as the
+    /// user, so a signed-out user signs in first; with no service, a load needs no network.
+    #[must_use]
+    pub fn can_download_catalog_tones(&self) -> bool {
+        self.community.is_none() || self.session.status().signed_in()
+    }
+
     /// The tone that a load is fetching now.
     #[must_use]
     pub fn loading_tone(&self) -> Option<ronie_core::ToneId> {
