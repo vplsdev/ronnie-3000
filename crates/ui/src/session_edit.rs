@@ -936,8 +936,11 @@ impl SessionEditor {
                     ));
                 }
                 self.change_block(block_id, |block| {
+                    // Re-picking the current B brings no bytes, so a missing B stays missing.
+                    if block.ir_b.map(|ir_b| ir_b.model_id) != Some(model_id) {
+                        block.ir_b_missing = false;
+                    }
                     block.ir_b = Some(IrB { model_id });
-                    block.ir_b_missing = false;
                 })?;
             }
         }
@@ -3407,5 +3410,49 @@ mod tests {
                 .expect("change B");
             assert!(!cab_block(&editor, &slot).ir_b_missing, "{model_id:?}");
         }
+    }
+
+    #[test]
+    fn re_picking_a_missing_b_without_bytes_keeps_it_missing() {
+        let mut editor = editor();
+        let slot = editor.view(0).chain.left[0].id.clone();
+        editor
+            .apply_alone(UiAction::LoadTone {
+                target_insert_id: slot.clone(),
+                tone: stored_cab(71),
+                model_id: ModelId(71),
+            })
+            .expect("load");
+        // A restore found B 72 with no bytes.
+        {
+            let block = editor
+                .current
+                .session
+                .chain
+                .block_mut(&slot)
+                .expect("block");
+            block.tone = Some(
+                cab_pack()
+                    .for_storage(ModelId(71), &[ModelId(72)])
+                    .expect("tone"),
+            );
+            block.ir_b = Some(ronie_core::IrB {
+                model_id: ModelId(72),
+            });
+            block.ir_b_missing = true;
+        }
+
+        editor
+            .apply_alone(UiAction::SelectSecondModel {
+                block_id: slot.clone(),
+                model_id: Some(ModelId(72)),
+            })
+            .expect("re-pick B");
+        let block = cab_block(&editor, &slot);
+        assert_eq!(block.ir_b.map(|ir_b| ir_b.model_id), Some(ModelId(72)));
+        assert!(
+            block.ir_b_missing,
+            "no bytes arrived, so B is still not loaded"
+        );
     }
 }
