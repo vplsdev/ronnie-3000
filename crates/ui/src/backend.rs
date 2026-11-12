@@ -295,6 +295,28 @@ pub enum UiAction {
         /// Destination zero-based index, clamped before the trailing insert.
         index: usize,
     },
+    /// Replace the tone of a tone block in place, as one undo step. The block keeps its id, its
+    /// place, and its params, and loses the second IR and the skin of the old tone.
+    ReplaceTone {
+        /// The tone block to replace.
+        target_block_id: BlockId,
+        /// Tone metadata.
+        tone: Tone,
+        /// Selected model.
+        model_id: ModelId,
+        /// Complete model bytes that a background worker downloaded, or `None` for a tone whose
+        /// bytes the backend already holds. With bytes, the running audio chain follows when the
+        /// same thread calls [`UiBackend::settle_audio`], as for [`UiAction::LoadToneWithBytes`].
+        bytes: Option<ModelBytes>,
+    },
+    /// Replace the tone of a tone block in place with a local file, as [`UiAction::ReplaceTone`]
+    /// does.
+    ReplaceWithFile {
+        /// The tone block to replace.
+        target_block_id: BlockId,
+        /// User-selected file or directory.
+        path: PathBuf,
+    },
     /// Load and stash a local file or folder into one insert.
     DropFile {
         /// Destination insert.
@@ -897,7 +919,12 @@ impl MockState {
     /// Carries out one action in the editor, and then in the device stub.
     fn dispatch(&mut self, action: UiAction) -> Result<UiReceipt, UiError> {
         self.actions.push(action.clone());
-        if self.refuse_tone_loads && matches!(action, UiAction::LoadTone { .. }) {
+        if self.refuse_tone_loads
+            && matches!(
+                action,
+                UiAction::LoadTone { .. } | UiAction::ReplaceTone { bytes: None, .. }
+            )
+        {
             return Err(UiError::Control("the model file is missing".to_owned()));
         }
         let device = match &action {

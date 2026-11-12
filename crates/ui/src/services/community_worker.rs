@@ -78,6 +78,8 @@ const MODEL_ADDRESS_REFUSED: &str = "The model is not on an approved address.";
 const MODEL_EMPTY: &str = "The model download was empty.";
 const MODEL_TOO_LARGE: &str = "The model is larger than the limit.";
 const MODEL_UNUSABLE: &str = "The model could not be prepared.";
+/// The block that a load was for is gone, so the load ends with nothing to say.
+pub const TARGET_GONE: &str = "The block is gone.";
 
 /// Fields of a user that are public. The cache and the events keep no other field.
 const PUBLIC_USER_FIELDS: [&str; 5] = ["id", "username", "display_name", "name", "avatar_url"];
@@ -906,7 +908,13 @@ async fn publish_with_one_compile(
     })
     .await
     .map_err(|_| CommunityFailure::Failed(WORK_FAILED))?
-    .map_err(|_| CommunityFailure::Failed(MODEL_UNUSABLE))?;
+    .map_err(|error| {
+        CommunityFailure::Failed(if matches!(error, UiError::UnknownTarget(_)) {
+            TARGET_GONE
+        } else {
+            MODEL_UNUSABLE
+        })
+    })?;
     if published {
         Ok(())
     } else {

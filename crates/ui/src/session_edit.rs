@@ -494,6 +494,16 @@ impl SessionEditor {
                 side,
                 index,
             } => self.place_added_block(&block_id, side, index),
+            UiAction::ReplaceTone {
+                target_block_id,
+                tone,
+                model_id,
+                bytes,
+            } => self.replace_tone(&target_block_id, tone, model_id, bytes, storage),
+            UiAction::ReplaceWithFile {
+                target_block_id,
+                path,
+            } => self.replace_with_file(&target_block_id, &path, storage),
             UiAction::RetryModelLoad(block_id) => self.retry_model_load(&block_id),
             UiAction::SetBlockParamsGesture {
                 block_id,
@@ -673,6 +683,56 @@ impl SessionEditor {
         let id = target.0.clone();
         self.change_block(target, |block| {
             *block = ChainBlock::tone(id, tone, model_id);
+        })?;
+        Ok(self.chain_changed())
+    }
+
+    /// Replaces the tone of tone block `target` in place, as one undo step: the block keeps its
+    /// id, its place, and its params, and loses the second IR and the skin of the old tone.
+    fn replace_tone(
+        &mut self,
+        target: &BlockId,
+        tone: Tone,
+        model_id: ModelId,
+        bytes: Option<ModelBytes>,
+        storage: &mut impl SessionStorage,
+    ) -> Result<UiEffect, UiError> {
+        self.tone_block(target)?;
+        if let Some(bytes) = bytes {
+            check_downloaded_model(&tone, model_id, &bytes)?;
+            storage.keep_model_bytes(target, model_id, bytes)?;
+        }
+        self.swap_tone(target, tone, model_id)
+    }
+
+    fn replace_with_file(
+        &mut self,
+        target: &BlockId,
+        path: &Path,
+        storage: &mut impl SessionStorage,
+    ) -> Result<UiEffect, UiError> {
+        self.tone_block(target)?;
+        let tone = storage.load_local(path)?;
+        let model_id = tone
+            .models
+            .first()
+            .ok_or_else(|| UiError::Control("local load has no models".to_owned()))?
+            .id;
+        self.swap_tone(target, tone, model_id)
+    }
+
+    /// Puts a new tone into tone block `target` and keeps the block's params, as one undo step.
+    fn swap_tone(
+        &mut self,
+        target: &BlockId,
+        tone: Tone,
+        model_id: ModelId,
+    ) -> Result<UiEffect, UiError> {
+        let id = target.0.clone();
+        self.change_block(target, |block| {
+            let params = std::mem::take(&mut block.params);
+            *block = ChainBlock::tone(id, tone, model_id);
+            block.params = params;
         })?;
         Ok(self.chain_changed())
     }
@@ -1864,6 +1924,102 @@ mod tests {
         assert_eq!(editor.view(0).chain.left[0].id, slot);
         editor.apply_alone(UiAction::Undo).expect("undo");
         assert_eq!(editor.view(0).chain.left, before);
+    }
+
+    /// An IR tone with two captures, so that a block of it can hold a second IR.
+    fn two_irs(id: i64) -> Tone {
+        Tone::from_value(serde_json::json!({
+            "id": id,
+            "title": format!("Tone {id}"),
+            "format": "ir",
+            "models": [
+                {"id": id * 10, "name": "First", "model_url": "https://models.example/a.wav"},
+                {"id": id * 10 + 1, "name": "Second", "model_url": "https://models.example/b.wav"},
+            ],
+        }))
+        .expect("tone")
+    }
+
+    #[test]
+    fn a_replace_keeps_the_params_and_one_undo_restores_the_old_block() {
+        let mut editor = editor();
+        let slot = editor.view(0).chain.left[0].id.clone();
+        editor
+            .apply_alone(UiAction::LoadTone {
+                target_insert_id: slot.clone(),
+                tone: two_irs(1),
+                model_id: ModelId(10),
+            })
+            .expect("load");
+        let mut params = editor.view(0).chain.left[0].params.clone();
+        params.enabled = false;
+        params.input_gain = 0.8;
+        params.mix = 0.4;
+        params.eq.enabled = !params.eq.enabled;
+        params.ir_blend = 0.2;
+        for action in [
+            UiAction::SetBlockParams {
+                block_id: slot.clone(),
+                params: params.clone(),
+            },
+            UiAction::SelectSecondModel {
+                block_id: slot.clone(),
+                model_id: Some(ModelId(11)),
+            },
+            UiAction::SetBlockSkin {
+                block_id: slot.clone(),
+                skin: Some("british".to_owned()),
+            },
+        ] {
+            editor.apply_alone(action).expect("edit");
+        }
+        let old = editor.view(0).chain.left[0].clone();
+        assert!(old.ir_b.is_some() && old.skin.is_some());
+
+        editor
+            .apply_alone(UiAction::ReplaceTone {
+                target_block_id: slot.clone(),
+                tone: tone(2),
+                model_id: ModelId(20),
+                bytes: None,
+            })
+            .expect("replace");
+
+        let replaced = editor.view(0).chain.left[0].clone();
+        assert_eq!(replaced.id, slot, "the block keeps its id and place");
+        assert_eq!(replaced.tone.as_ref().map(|tone| tone.id.0), Some(2));
+        assert_eq!(replaced.params, old.params, "the params stay");
+        assert_eq!(
+            replaced.ir_b, None,
+            "the second IR belonged to the old tone"
+        );
+        assert_eq!(replaced.skin, None, "the skin belonged to the old tone");
+
+        editor.apply_alone(UiAction::Undo).expect("undo");
+        assert_eq!(
+            editor.view(0).chain.left[0],
+            old,
+            "one undo restores the old block"
+        );
+    }
+
+    #[test]
+    fn replacing_an_insert_is_refused() {
+        let mut editor = editor();
+        let slot = editor.view(0).chain.left[0].id.clone();
+        let before = editor.view(0);
+        assert!(
+            editor
+                .apply_alone(UiAction::ReplaceTone {
+                    target_block_id: slot,
+                    tone: tone(2),
+                    model_id: ModelId(20),
+                    bytes: None,
+                })
+                .is_err(),
+            "an insert has no tone to replace"
+        );
+        assert_eq!(editor.view(0).revision, before.revision);
     }
 
     #[test]

@@ -6,6 +6,7 @@
 
 use crate::theme::Look;
 mod add_menu;
+mod block_menu;
 mod header;
 mod utility;
 
@@ -40,6 +41,7 @@ pub(super) fn show(
         .exact_size(HEADER_HEIGHT)
         .frame(egui::Frame::NONE.fill(look.background))
         .show(ui, |ui| header::show_header(ui, chrome, state));
+    show_block_menu(ui, chrome, state);
     show_overlay(ui, chrome);
     egui::Panel::bottom("archetype-utility")
         .exact_size(UTILITY_HEIGHT)
@@ -53,6 +55,7 @@ pub(super) fn show(
     // What is left between the header and the global panel: the stage, which holds a slot's menu.
     let stage = ui.available_rect_before_wrap();
 
+    delete_on_key(ui.ctx(), chrome);
     // Settle selection first, so that the stage decides on this frame's state and never falls
     // through to the reference chain gallery.
     chrome.sync_detail();
@@ -89,7 +92,9 @@ pub(super) fn show(
         detail.set_stage_neighbours(before, after);
         let slots = stage_slots(state, detail.block_id());
         detail.set_stage_slots(slots);
-        detail.set_open_slot(add_menu::AddMenu::load(ui.ctx()).open_slot());
+        let menu = add_menu::AddMenu::load(ui.ctx());
+        detail.set_open_slot(menu.open_slot());
+        detail.set_replace_open(menu.replaced_block() == Some(detail.block_id()));
     }
     show_stage(ui, chrome, now_ms);
     if let Some(id) = chrome
@@ -106,7 +111,19 @@ pub(super) fn show(
     {
         open_slot_menu(ui.ctx(), state, request);
     }
+    let page_replace = chrome.detail_mut().and_then(|detail| {
+        let anchor = detail.take_replace_request()?;
+        Some((detail.block_id().clone(), anchor))
+    });
+    if let Some((id, anchor)) = &page_replace {
+        chrome.open_replace(id.clone(), *anchor);
+    }
+    if let Some((id, anchor)) = chrome.take_replace_request() {
+        let on_page = page_replace.is_some_and(|(page, _)| page == id);
+        open_replace_menu(ui.ctx(), state, id, anchor, on_page);
+    }
     follow_slot(ui.ctx(), chrome);
+    follow_replace(ui.ctx(), chrome, state);
     show_add_menu(ui, chrome, state, header_bounds, stage);
 }
 
@@ -123,12 +140,170 @@ fn open_slot_menu(
     } else {
         let lane = match &request.placement {
             Placement::After(id) | Placement::Before(id) => header::lane_of(state, Some(id)),
-            Placement::End => ronie_core::ChainSide::Left,
+            Placement::End | Placement::Smart => ronie_core::ChainSide::Left,
         };
         menu.open_at(request.category, request.placement, request.anchor, lane);
     }
     menu.store(ctx);
     ctx.request_repaint();
+}
+
+/// Opens the add menu under `anchor` to replace the tone of block `id`, on the block's kind of
+/// gear, or closes it when it is that block's replace menu already.
+fn open_replace_menu(
+    ctx: &egui::Context,
+    state: &crate::backend::ChainViewState,
+    id: ronie_core::BlockId,
+    anchor: egui::Rect,
+    on_page: bool,
+) {
+    let mut menu = add_menu::AddMenu::load(ctx);
+    if menu.replaced_block() == Some(&id) {
+        menu.open = false;
+    } else {
+        let category = state
+            .chain
+            .left
+            .iter()
+            .chain(&state.chain.right)
+            .find(|block| block.id == id)
+            .and_then(gear_of);
+        menu.open_replace(id, category, anchor);
+        menu.on_page_button = on_page;
+        // The click that asked for the menu may land where it opens, such as on a row of the
+        // block menu, and must not close it again.
+        menu.fresh = true;
+    }
+    menu.store(ctx);
+    ctx.request_repaint();
+}
+
+/// Draws the block menu of the chain strip when it is open and carries out its row.
+fn show_block_menu(
+    ui: &mut egui::Ui,
+    chrome: &mut ChromeController,
+    state: &crate::backend::ChainViewState,
+) {
+    let mut menu = block_menu::BlockMenu::load(ui.ctx());
+    if !menu.is_open() {
+        return;
+    }
+    let block = |id: &ronie_core::BlockId| {
+        state
+            .chain
+            .left
+            .iter()
+            .chain(&state.chain.right)
+            .find(|block| block.id == *id && !block.is_insert)
+    };
+    menu.retain(|id| block(id).is_some());
+    let chosen = block_menu::show(ui, &mut menu);
+    menu.store(ui.ctx());
+    let Some((id, anchor, action)) = chosen else {
+        return;
+    };
+    match action {
+        block_menu::BlockMenuAction::Bypass => {
+            if let Some(block) = block(&id) {
+                let _ = chrome
+                    .gallery_mut()
+                    .set_enabled(&id.0, !block.params.enabled);
+            }
+        }
+        block_menu::BlockMenuAction::Replace => chrome.open_replace(id, anchor),
+        block_menu::BlockMenuAction::Duplicate => {
+            let _ = chrome.gallery_mut().duplicate(&id.0);
+        }
+        block_menu::BlockMenuAction::Remove => remove_block(chrome, &id),
+    }
+    ui.ctx().request_repaint();
+}
+
+/// Removes block `id` as REMOVE of its page does: through the page when the block is open, so
+/// that the stage moves on to a neighbour, else from the chain.
+fn remove_block(chrome: &mut ChromeController, id: &ronie_core::BlockId) {
+    match chrome.detail_mut().filter(|detail| detail.block_id() == id) {
+        Some(detail) => {
+            let _ = detail.remove();
+        }
+        None => {
+            let _ = chrome.gallery_mut().remove(&id.0);
+        }
+    }
+}
+
+/// Delete or Backspace removes the open block, unless a text field takes the keys or a menu,
+/// popup, overlay or other surface is open.
+fn delete_on_key(ctx: &egui::Context, chrome: &mut ChromeController) {
+    let busy = ctx.text_edit_focused()
+        || egui::Popup::is_any_open(ctx)
+        || add_menu::AddMenu::load(ctx).open
+        || block_menu::BlockMenu::load(ctx).is_open()
+        || chrome.overlay() != super::overlays::Overlay::None
+        || chrome.tuner_visible()
+        || chrome.auth_active()
+        || chrome.browser_mut().is_some();
+    if busy {
+        return;
+    }
+    let pressed = ctx.input_mut(|input| {
+        let delete = input.consume_key(egui::Modifiers::NONE, egui::Key::Delete);
+        let backspace = input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace);
+        delete || backspace
+    });
+    if !pressed {
+        return;
+    }
+    let selected = match chrome.gallery().selection() {
+        super::chain::GallerySelection::BlockDetail(id) => id.clone(),
+        _ => return,
+    };
+    remove_block(chrome, &selected);
+    ctx.request_repaint();
+}
+
+/// The kind of gear that a block models, when it is known.
+fn gear_of(block: &ronie_core::ChainBlock) -> Option<ronie_core::gear::GearCategory> {
+    super::skins::gear_category(block)
+        .filter(|category| *category != ronie_core::gear::GearCategory::Unknown)
+}
+
+/// Keeps a replace menu under the REPLACE button that opened it when the page lays out again,
+/// and closes it when its block is gone.
+fn follow_replace(
+    ctx: &egui::Context,
+    chrome: &mut ChromeController,
+    state: &crate::backend::ChainViewState,
+) {
+    let mut menu = add_menu::AddMenu::load(ctx);
+    let Some(id) = menu.replaced_block().cloned() else {
+        return;
+    };
+    let exists = state
+        .chain
+        .left
+        .iter()
+        .chain(&state.chain.right)
+        .any(|block| block.id == id && !block.is_insert);
+    if !exists {
+        menu.open = false;
+        menu.store(ctx);
+        ctx.request_repaint();
+        return;
+    }
+    if !menu.on_page_button {
+        return;
+    }
+    let drawn = chrome
+        .detail_mut()
+        .filter(|detail| *detail.block_id() == id)
+        .and_then(|detail| detail.replace_rect());
+    if let Some(rect) = drawn
+        && menu.anchor != Some(rect)
+    {
+        menu.anchor = Some(rect);
+        menu.store(ctx);
+    }
 }
 
 /// Keeps a slot's menu beside its slot when the stage lays out again, such as after a resize,
@@ -161,7 +336,7 @@ fn place_of_slot(state: &crate::backend::ChainViewState, placement: &Placement) 
     let (word, id) = match placement {
         Placement::After(id) => ("after", id),
         Placement::Before(id) => ("before", id),
-        Placement::End => return None,
+        Placement::End | Placement::Smart => return None,
     };
     let block = state
         .chain
@@ -170,6 +345,21 @@ fn place_of_slot(state: &crate::backend::ChainViewState, placement: &Placement) 
         .chain(&state.chain.right)
         .find(|block| &block.id == id)?;
     Some(add_menu::place_text(word, &block.tone.as_ref()?.title))
+}
+
+/// Where the menu's tone goes: the slot's place, and for the + menu, in the lane it shows, the
+/// place of the chosen category.
+fn menu_placement(state: &crate::backend::ChainViewState, menu: &add_menu::AddMenu) -> Placement {
+    match (&menu.placement, menu.view) {
+        (Placement::End, add_menu::MenuView::Results(category)) if menu.replacing.is_none() => {
+            let lane = match menu.lane {
+                ronie_core::ChainSide::Left => &state.chain.left,
+                ronie_core::ChainSide::Right => &state.chain.right,
+            };
+            super::header::smart_placement(lane, category, None)
+        }
+        (placement, _) => placement.clone(),
+    }
 }
 
 /// Draws the add menu when it is open and carries out what the player chose.
@@ -212,42 +402,24 @@ fn show_add_menu(
         catalog_downloads: chrome.can_download_catalog_tones(),
         results: chrome.add_store(),
         loading: chrome.loading_tone(),
-        place: place_of_slot(state, &menu.placement),
+        place: place_of_slot(state, &menu_placement(state, &menu)),
+        replacing: menu.replacing.as_ref().and_then(|id| {
+            state
+                .chain
+                .left
+                .iter()
+                .chain(&state.chain.right)
+                .find(|block| block.id == *id)
+                .and_then(|block| block.tone.as_ref())
+        }),
     };
     let plus = header::plus_rect(header_bounds);
     let action = add_menu::show(ui, plus, stage, &mut menu, &data);
     if let Some(action) = action {
-        let insert = header::insert_of(state, menu.lane);
-        match action {
-            add_menu::AddMenuAction::OpenBrowser(category) => {
-                menu.open = false;
-                if let Some(id) = insert {
-                    chrome.open_browser_for(&id, category, &menu.search, menu.placement.clone());
-                }
-            }
-            add_menu::AddMenuAction::LoadFile => {
-                menu.open = false;
-                let picked = rfd::FileDialog::new()
-                    .set_title("Open a Ronnie model")
-                    .add_filter("Audio models", &["nam", "wav"])
-                    .pick_file();
-                if let (Some(path), Some(id)) = (picked, insert) {
-                    let _ = chrome.drop_file_into(&id, &path, menu.placement.clone());
-                }
-            }
-            add_menu::AddMenuAction::Add(tone) => {
-                if let Some(id) = insert {
-                    chrome.add_tone(menu.lane, &id, tone, menu.placement.clone());
-                }
-                // A download keeps the menu open, so that its row shows the load, and a failed
-                // load keeps it open beside its toast, so that the player can try again.
-                menu.adding = chrome.load_flow_phase() == LoadPhase::Loading;
-                menu.open = chrome.load_flow_phase() != LoadPhase::Ready;
-            }
-            add_menu::AddMenuAction::SignIn => {
-                menu.open = false;
-                let _ = chrome.sign_in();
-            }
+        if let Some(id) = menu.replacing.clone() {
+            replace_from_menu(chrome, &mut menu, &id.0, action);
+        } else {
+            add_from_menu(chrome, &mut menu, state, action);
         }
     }
     match menu.view {
@@ -258,6 +430,88 @@ fn show_add_menu(
     }
     menu.store(ui.ctx());
     ui.ctx().request_repaint();
+}
+
+/// Carries out what the player chose in the menu of an add.
+fn add_from_menu(
+    chrome: &mut ChromeController,
+    menu: &mut add_menu::AddMenu,
+    state: &crate::backend::ChainViewState,
+    action: add_menu::AddMenuAction,
+) {
+    let insert = header::insert_of(state, menu.lane);
+    // A menu that no slot opened places the tone by its kind of gear, when it lands.
+    let placement = match &menu.placement {
+        Placement::End => Placement::Smart,
+        slot => slot.clone(),
+    };
+    match action {
+        add_menu::AddMenuAction::OpenBrowser(category) => {
+            menu.open = false;
+            if let Some(id) = insert {
+                chrome.open_browser_for(&id, category, &menu.search, placement);
+            }
+        }
+        add_menu::AddMenuAction::LoadFile => {
+            menu.open = false;
+            let picked = rfd::FileDialog::new()
+                .set_title("Open a Ronnie model")
+                .add_filter("Audio models", &["nam", "wav"])
+                .pick_file();
+            if let (Some(path), Some(id)) = (picked, insert) {
+                let _ = chrome.drop_file_into(&id, &path, placement);
+            }
+        }
+        add_menu::AddMenuAction::Add(tone) => {
+            if let Some(id) = insert {
+                chrome.add_tone(menu.lane, &id, tone, placement);
+            }
+            // A download keeps the menu open, so that its row shows the load, and a failed
+            // load keeps it open beside its toast, so that the player can try again.
+            menu.adding = chrome.load_flow_phase() == LoadPhase::Loading;
+            menu.open = chrome.load_flow_phase() != LoadPhase::Ready;
+        }
+        add_menu::AddMenuAction::SignIn => {
+            menu.open = false;
+            let _ = chrome.sign_in();
+        }
+    }
+}
+
+/// Carries out what the player chose in a replace menu, for block `id`.
+fn replace_from_menu(
+    chrome: &mut ChromeController,
+    menu: &mut add_menu::AddMenu,
+    id: &str,
+    action: add_menu::AddMenuAction,
+) {
+    match action {
+        add_menu::AddMenuAction::OpenBrowser(category) => {
+            menu.open = false;
+            chrome.open_replace_browser(id, category, &menu.search);
+        }
+        add_menu::AddMenuAction::LoadFile => {
+            menu.open = false;
+            let picked = rfd::FileDialog::new()
+                .set_title("Open a Ronnie model")
+                .add_filter("Audio models", &["nam", "wav"])
+                .pick_file();
+            if let Some(path) = picked {
+                let _ = chrome.replace_with_file(id, &path);
+            }
+        }
+        add_menu::AddMenuAction::Add(tone) => {
+            chrome.replace_tone(id, tone);
+            // As with an add, a download keeps the menu open on its row, and a failure keeps it
+            // open beside its toast.
+            menu.adding = chrome.load_flow_phase() == LoadPhase::Loading;
+            menu.open = chrome.load_flow_phase() != LoadPhase::Ready;
+        }
+        add_menu::AddMenuAction::SignIn => {
+            menu.open = false;
+            let _ = chrome.sign_in();
+        }
+    }
 }
 
 /// The stage of a chain with no tone blocks: a prompt and a button that opens the browser.
@@ -457,13 +711,13 @@ pub(super) fn pedal_run(
     (Vec::new(), Vec::new())
 }
 
-/// Where the stage of block `id` offers a slot: a pedal after the last pedal of a run, and for
-/// an amp a pedal before it and, unless a cab follows it in its lane, a cab after it.
+/// Where the stage of block `id` offers a slot: a pedal after the last pedal of a run. Other
+/// gear is added from the + menu, which places it by its kind.
 pub(super) fn stage_slots(
     state: &crate::backend::ChainViewState,
     id: &ronie_core::BlockId,
 ) -> super::block::StageSlots {
-    use ronie_core::gear::GearCategory::{Amp, Cab, Pedal};
+    use ronie_core::gear::GearCategory::Pedal;
     let category = |block: &ronie_core::ChainBlock| {
         if block.is_insert {
             return None;
@@ -475,23 +729,13 @@ pub(super) fn stage_slots(
             continue;
         };
         let mut slots = super::block::StageSlots::default();
-        match category(&lane[index]) {
-            Some(Pedal) => {
-                let last = lane[index..]
-                    .iter()
-                    .take_while(|block| category(block) == Some(Pedal))
-                    .last()
-                    .unwrap_or(&lane[index]);
-                slots.pedal_after = Some(last.id.clone());
-            }
-            Some(Amp) => {
-                slots.pedal_before = Some(id.clone());
-                let next = lane[index + 1..].iter().find(|block| !block.is_insert);
-                if next.and_then(category) != Some(Cab) {
-                    slots.cab_after = Some(id.clone());
-                }
-            }
-            _ => {}
+        if category(&lane[index]) == Some(Pedal) {
+            let last = lane[index..]
+                .iter()
+                .take_while(|block| category(block) == Some(Pedal))
+                .last()
+                .unwrap_or(&lane[index]);
+            slots.pedal_after = Some(last.id.clone());
         }
         return slots;
     }

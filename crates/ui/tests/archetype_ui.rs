@@ -153,13 +153,52 @@ fn clicking_a_block_opens_it() {
     );
 }
 
+const STRIP_MENU_ROWS: [&str; 4] = ["BYPASS", "REPLACE\u{2026}", "DUPLICATE", "REMOVE"];
+
+fn strip_menu_open(driver: &UiDriver) -> bool {
+    STRIP_MENU_ROWS.iter().any(|row| driver.is_visible(row))
+}
+
 #[test]
-fn right_clicking_a_block_bypasses_it() {
+fn right_clicking_a_block_opens_its_menu() {
     let (mut driver, backend) = archetype_driver("main-mono");
     let _ = driver.secondary_click(VOX).expect("block button");
     driver.settle();
-    let enabled = backend.chain_state(0).chain.left[1].params.enabled;
-    assert!(!enabled, "the block is bypassed");
+    assert!(
+        backend.chain_state(0).chain.left[1].params.enabled,
+        "a right-click no longer bypasses"
+    );
+    for row in STRIP_MENU_ROWS {
+        assert!(driver.is_visible(row), "{row} is missing");
+    }
+    assert!(
+        driver.shows_text("'02 VOX AC30/6 TOP BOOST"),
+        "the menu names the block"
+    );
+    assert!(
+        driver.shows_text("double-click"),
+        "BYPASS hints the shortcut"
+    );
+    let icon = rect_of(&driver, VOX).expect("the icon");
+    let bypass = rect_of(&driver, "BYPASS").expect("the row");
+    assert!(
+        bypass.top() > icon.bottom(),
+        "the menu opens under the icon"
+    );
+    assert!(
+        (bypass.left()..=bypass.right()).contains(&icon.center().x),
+        "the menu sits under the icon"
+    );
+
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+    assert!(!strip_menu_open(&driver), "Escape closes the menu");
+
+    let _ = driver.secondary_click(VOX).expect("block button");
+    driver.settle();
+    assert!(strip_menu_open(&driver));
+    let _ = driver.click_empty_space();
+    driver.settle();
+    assert!(!strip_menu_open(&driver), "a click outside closes the menu");
 }
 
 const CATEGORY_ROWS: [&str; 6] = ["PEDAL", "AMP", "AMP + CAB", "CAB", "OUTBOARD", "SPACE"];
@@ -262,7 +301,7 @@ fn stereo_menu_offers_lane_a_and_b() {
 fn mono_menu_adds_to_the_end_of_the_chain() {
     let (mut driver, _) = archetype_driver("main-mono");
     open_menu(&mut driver);
-    assert!(driver.shows_text("to the end of the chain"));
+    assert!(driver.shows_text("placed by type"));
     assert!(!driver.is_visible("LANE A") && !driver.is_visible("LANE B"));
 }
 
@@ -319,7 +358,7 @@ fn mono_falls_back_to_lane_a() {
     // A click on the switch would close the menu, so the chain changes behind it.
     let _ = driver.chrome_mut().set_stereo(false);
     driver.settle();
-    assert!(driver.shows_text("to the end of the chain"));
+    assert!(driver.shows_text("placed by type"));
     let _ = driver.click("OPEN THE TONE BROWSER").expect("link");
     driver.settle();
     assert!(driver.chrome_mut().browser_mut().is_some());
@@ -529,7 +568,9 @@ fn utility_mono_stereo_switch_modes() {
 #[test]
 fn utility_undo_redo_follow_history() {
     let (mut driver, backend) = archetype_driver("main-mono");
-    let _ = driver.secondary_click(VOX).expect("bypass a block");
+    let _ = driver.secondary_click(VOX).expect("the block menu");
+    driver.settle();
+    let _ = driver.click("BYPASS").expect("bypass a block");
     driver.settle();
     assert!(!backend.chain_state(0).chain.left[1].params.enabled);
     let _ = driver.click("Undo").expect("undo");
@@ -627,7 +668,7 @@ fn the_background_leaves_the_banner_visible() {
 #[test]
 fn removing_a_block_opens_its_neighbour_without_a_flash() {
     let (mut driver, _) = archetype_driver("main-mono");
-    let _ = driver.click("REMOVE").expect("remove");
+    let _ = driver.click("Remove").expect("remove");
     driver.frame();
     assert!(
         !driver.is_visible("Add Tone"),
@@ -651,7 +692,7 @@ fn removing_the_last_block_opens_the_previous_one() {
         .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
         .expect("third block");
     driver.settle();
-    let _ = driver.click("REMOVE").expect("remove");
+    let _ = driver.click("Remove").expect("remove");
     for _ in 0..3 {
         assert!(
             !driver.is_visible("Add Tone"),
@@ -1021,7 +1062,7 @@ fn block_titled(backend: &MockBackend, needle: &str) -> Option<ronie_core::Chain
 #[test]
 fn the_block_page_has_a_title_row_and_tabs() {
     let (driver, _) = amp_page();
-    for label in ["GEAR", "EQ", "INFO", "BYPASS", "REPLACE", "REMOVE"] {
+    for label in ["GEAR", "EQ", "INFO", "Bypass", "Replace", "Remove"] {
         assert!(driver.is_visible(label), "{label} is on the page");
     }
     assert!(
@@ -1051,7 +1092,7 @@ fn the_eq_tab_opens_the_eq() {
 #[test]
 fn bypass_toggles_the_block() {
     let (mut driver, backend) = amp_page();
-    let _ = driver.click("BYPASS").expect("BYPASS");
+    let _ = driver.click("Bypass").expect("Bypass");
     driver.settle();
     assert!(!block_titled(&backend, "AC30").expect("amp").params.enabled);
 }
@@ -1059,23 +1100,9 @@ fn bypass_toggles_the_block() {
 #[test]
 fn remove_removes_the_block() {
     let (mut driver, backend) = amp_page();
-    let _ = driver.click("REMOVE").expect("REMOVE");
+    let _ = driver.click("Remove").expect("Remove");
     driver.settle();
     assert!(block_titled(&backend, "AC30").is_none());
-}
-
-#[test]
-fn replace_opens_the_browser_for_the_block() {
-    let (mut driver, _) = amp_page();
-    let _ = driver.click("REPLACE").expect("REPLACE");
-    driver.settle();
-    assert!(
-        matches!(
-            driver.chrome().gallery().selection(),
-            GallerySelection::SelectTone { .. }
-        ) || driver.chrome_mut().browser_mut().is_some(),
-        "the browser opens to replace the block"
-    );
 }
 
 #[test]
@@ -1315,43 +1342,6 @@ fn a_pedal_run_ends_with_a_pedal_slot() {
 }
 
 #[test]
-fn an_amp_has_a_pedal_slot_before_it() {
-    let (mut driver, _) = archetype_driver("main-mono");
-    let _ = driver.click(VOX).expect("amp");
-    driver.settle();
-    let slot = rect_of(&driver, "Add a pedal before the amp").expect("the slot");
-    let amp = rect_of(&driver, "Amp render").expect("amp");
-    assert!(slot.right() <= amp.left() - 17.9, "{slot:?} vs {amp:?}");
-    let scale = amp.height() / 300.0;
-    assert!((slot.width() - 96.0 * scale).abs() < 0.1, "{slot:?}");
-    assert!((slot.height() - 160.0 * scale).abs() < 0.1, "{slot:?}");
-    assert!(rect_of(&driver, "Add a pedal after these").is_none());
-}
-
-#[test]
-fn an_amp_followed_by_a_cab_has_no_cab_slot() {
-    let (mut driver, _) = archetype_driver("main-mono");
-    let _ = driver.click(VOX).expect("amp");
-    driver.settle();
-    assert!(rect_of(&driver, "Add a cab after the amp").is_none());
-}
-
-#[test]
-fn an_amp_with_no_cab_after_it_has_a_cab_slot() {
-    let (mut driver, _) = edited_driver("main-mono", |chain| {
-        chain["chain"].as_array_mut().expect("chain").remove(2);
-    });
-    let _ = driver.click(VOX).expect("amp");
-    driver.settle();
-    let slot = rect_of(&driver, "Add a cab after the amp").expect("the slot");
-    let amp = rect_of(&driver, "Amp render").expect("amp");
-    assert!(slot.left() >= amp.right() + 17.9, "{slot:?} vs {amp:?}");
-    let scale = amp.height() / 300.0;
-    assert!((slot.width() - 96.0 * scale).abs() < 0.1, "{slot:?}");
-    assert!((slot.height() - 160.0 * scale).abs() < 0.1, "{slot:?}");
-}
-
-#[test]
 fn a_cab_page_has_no_slots() {
     let (mut driver, _) = archetype_driver("main-mono");
     let _ = driver
@@ -1566,18 +1556,14 @@ fn tone3000_rows_come_from_the_menu_store() {
 }
 
 #[test]
-fn adding_a_library_tone_puts_it_at_the_end_of_the_lane() {
+fn adding_a_library_amp_puts_it_before_the_cab_and_opens_it() {
     let (mut driver, backend) = menu_driver("main-mono", false, &[amp_tone(601, "Plexi Lead")]);
     open_amp(&mut driver);
     assert!(driver.shows_text("Downloaded \u{b7} 1 capture"));
     let _ = driver.click("Plexi Lead").expect("library row");
     driver.settle();
     let titles = lane_titles(&backend, false);
-    assert_eq!(
-        titles.last().map(String::as_str),
-        Some("Plexi Lead"),
-        "{titles:?}"
-    );
+    assert_eq!(titles[2], "Plexi Lead", "{titles:?}");
     assert!(!driver.is_visible("Back to categories"), "the menu closed");
     let added = backend
         .chain_state(0)
@@ -2048,7 +2034,7 @@ fn the_plus_takes_over_a_slot_menu() {
     driver.settle();
     open_menu(&mut driver);
     assert!(driver.is_visible("OPEN THE TONE BROWSER"), "the + menu");
-    assert!(driver.shows_text("to the end of the chain"));
+    assert!(driver.shows_text("placed by type"));
     assert!(plus_is_solid(&driver));
 }
 
@@ -2076,50 +2062,6 @@ fn adding_from_the_pedal_slot_puts_the_pedal_after_the_run() {
         "the new block is on the stage: {:?}",
         driver.chrome().gallery().selection()
     );
-}
-
-#[test]
-fn adding_from_the_amp_slot_puts_the_pedal_before_the_amp() {
-    let (mut driver, backend) = slot_driver("main-mono", false, &[library_pedal()], |_| {});
-    let _ = driver.click(VOX).expect("amp");
-    driver.settle();
-    let _ = driver.click("Add a pedal before the amp").expect("slot");
-    driver.settle();
-    assert!(driver.shows_text("before '02 Vox AC30/6 To\u{2026}"));
-    let _ = driver.click("Library Drive").expect("library row");
-    driver.settle();
-    let titles = lane_titles(&backend, false);
-    assert_eq!(titles.len(), 4, "{titles:?}");
-    assert_eq!(titles[1], "Library Drive", "{titles:?}");
-    assert!(titles[2].contains("AC30"), "{titles:?}");
-}
-
-#[test]
-fn the_cab_slot_adds_a_cab_after_the_amp() {
-    // A pedal after the amp in place of the cab, so the slot's place differs from the end.
-    let (mut driver, backend) = slot_driver(
-        "main-mono",
-        false,
-        &[gear_tone(802, "Library Cab", "cab")],
-        |chain| {
-            let mut late = chain[0].clone();
-            late["blockId"] = "blk-late".into();
-            late["tone"]["title"] = "Late Fuzz".into();
-            chain[2] = late;
-        },
-    );
-    let _ = driver.click(VOX).expect("amp");
-    driver.settle();
-    let _ = driver.click("Add a cab after the amp").expect("slot");
-    driver.settle();
-    assert!(driver.shows_text("after '02 Vox AC30/6 To\u{2026}"));
-    assert!(driver.shows_text("CAB"), "the header names the category");
-    let _ = driver.click("Library Cab").expect("library row");
-    driver.settle();
-    let titles = lane_titles(&backend, false);
-    assert_eq!(titles.len(), 4, "{titles:?}");
-    assert_eq!(titles[2], "Library Cab", "{titles:?}");
-    assert_eq!(titles[3], "Late Fuzz", "{titles:?}");
 }
 
 #[test]
@@ -2154,32 +2096,6 @@ fn back_from_a_slot_menu_shows_categories_and_keeps_the_placement() {
     driver.settle();
     let titles = lane_titles(&backend, false);
     assert_eq!(titles[2], "Library Drive", "{titles:?}");
-}
-
-#[test]
-fn a_slot_add_in_lane_b_stays_in_lane_b() {
-    let (mut driver, backend) = slot_driver("main-stereo", false, &[library_pedal()], |_| {});
-    let _ = driver.click("Chain: Roland JC-40").expect("lane B amp");
-    driver.settle();
-    let left = lane_titles(&backend, false);
-    let _ = driver.click("Add a pedal before the amp").expect("slot");
-    driver.settle();
-    assert!(!driver.is_visible("LANE A") && !driver.is_visible("LANE B"));
-    assert!(driver.shows_text("before Roland JC-40"));
-    let _ = driver.click("Library Drive").expect("library row");
-    driver.settle();
-    let right = lane_titles(&backend, true);
-    assert_eq!(
-        right.first().map(String::as_str),
-        Some("Library Drive"),
-        "{right:?}"
-    );
-    assert_eq!(
-        right.get(1).map(String::as_str),
-        Some("Roland JC-40"),
-        "{right:?}"
-    );
-    assert_eq!(lane_titles(&backend, false), left);
 }
 
 #[test]
@@ -3634,4 +3550,755 @@ fn an_override_of_another_category_falls_back_to_auto() {
     let _ = driver.click(VOX).expect("amp");
     driver.settle();
     assert!(driver.shows_text("British head"), "an amp skin is honoured");
+}
+
+// ---------------------------------------------------------------- Replace in place
+
+const VOX_TITLE: &str = "'02 Vox AC30/6 Top Boost";
+
+/// The Vox block as the backend holds it.
+fn vox(backend: &MockBackend) -> ronie_core::ChainBlock {
+    block_titled(backend, "AC30").expect("the Vox block")
+}
+
+/// The Vox tone of the fixture chain.
+fn vox_tone() -> ronie_core::Tone {
+    vox(&MockBackend::from_scenario(&scenario("main-mono")))
+        .tone
+        .expect("the Vox tone")
+}
+
+/// A signed-out driver over `library` with the Vox page on the stage, whose params changed
+/// from the defaults: bypassed, more gain in, less mix, and its EQ on.
+fn tuned_vox_page(library: &[ronie_core::Tone]) -> (UiDriver, Arc<MockBackend>) {
+    use ronie_ui::backend::UiAction;
+    let (mut driver, backend) = menu_driver("main-mono", false, library);
+    let block = vox(&backend);
+    let mut params = block.params.clone();
+    params.enabled = false;
+    params.input_gain = 0.8;
+    params.output_gain = 0.3;
+    params.mix = 0.6;
+    params.eq.enabled = true;
+    backend
+        .dispatch(UiAction::SetBlockParams {
+            block_id: block.id.clone(),
+            params,
+        })
+        .expect("tune the Vox");
+    driver.settle();
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    (driver, backend)
+}
+
+fn open_replace(driver: &mut UiDriver) {
+    let _ = driver.click("Replace").expect("Replace");
+    driver.settle();
+}
+
+/// The position of block `id` in the left lane.
+fn index_of(backend: &MockBackend, id: &BlockId) -> Option<usize> {
+    backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .position(|block| block.id == *id)
+}
+
+#[test]
+fn replace_opens_the_menu_on_the_blocks_category() {
+    let (mut driver, _) = amp_page();
+    open_replace(&mut driver);
+    assert!(
+        driver.shows_text("REPLACE \u{b7} AMP"),
+        "the menu opens on the amps"
+    );
+    assert!(driver.shows_text("keeps trims, EQ and place"));
+    assert!(driver.is_visible("Search amps in your library"));
+    assert!(!driver.is_visible("LANE A"), "a replace keeps the lane");
+    assert!(
+        driver.chrome_mut().browser_mut().is_none(),
+        "the tone browser stays closed"
+    );
+    assert!(
+        matches!(
+            driver.chrome().gallery().selection(),
+            GallerySelection::BlockDetail(_)
+        ),
+        "the block stays on the stage"
+    );
+    let replace = rect_of(&driver, "Replace").expect("the button");
+    let search = rect_of(&driver, "Search amps in your library").expect("the field");
+    assert!(
+        search.top() > replace.bottom(),
+        "the menu opens under the button"
+    );
+
+    open_replace(&mut driver);
+    assert!(
+        !driver.shows_text("keeps trims, EQ and place"),
+        "a second click closes the menu"
+    );
+}
+
+#[test]
+fn back_keeps_replacing_the_block() {
+    let (mut driver, _) = amp_page();
+    open_replace(&mut driver);
+    let _ = driver.click("Back to categories").expect("back");
+    driver.settle();
+    assert!(driver.is_visible("CAB"), "the categories show");
+    assert!(driver.shows_text("keeps trims, EQ and place"));
+    let _ = driver.click("CAB").expect("CAB");
+    driver.settle();
+    assert!(driver.shows_text("REPLACE \u{b7} CAB"));
+}
+
+#[test]
+fn swapping_a_head_keeps_its_place_and_settings() {
+    let (mut driver, backend) = tuned_vox_page(&[amp_tone(601, "Plexi Lead")]);
+    let old = vox(&backend);
+    let place = index_of(&backend, &old.id);
+    open_replace(&mut driver);
+    assert!(driver.shows_text("SWAP"));
+    let _ = driver.click("Plexi Lead").expect("library row");
+    driver.settle();
+
+    let block = backend
+        .chain_state(0)
+        .chain
+        .block(&old.id)
+        .cloned()
+        .expect("the block keeps its id");
+    assert_eq!(
+        block.tone.as_ref().map(|tone| tone.title.as_str()),
+        Some("Plexi Lead")
+    );
+    assert_eq!(block.params, old.params, "trims, EQ and bypass stay");
+    assert_eq!(
+        index_of(&backend, &old.id),
+        place,
+        "the block keeps its place"
+    );
+    assert_eq!(lane_titles(&backend, false).len(), 3, "no block was added");
+    assert!(
+        !driver.shows_text("keeps trims, EQ and place"),
+        "the menu closed"
+    );
+    assert!(
+        matches!(driver.chrome().gallery().selection(), GallerySelection::BlockDetail(id) if *id == old.id),
+        "the block stays on the stage"
+    );
+}
+
+#[test]
+fn one_undo_restores_the_replaced_block() {
+    let (mut driver, backend) = tuned_vox_page(&[amp_tone(601, "Plexi Lead")]);
+    let old = vox(&backend);
+    open_replace(&mut driver);
+    let _ = driver.click("Plexi Lead").expect("library row");
+    driver.settle();
+    driver.chrome_mut().undo().expect("undo");
+    driver.settle();
+    assert_eq!(
+        backend.chain_state(0).chain.block(&old.id),
+        Some(&old),
+        "one undo brings back the old tone and its params"
+    );
+}
+
+#[test]
+fn the_current_tone_reads_current() {
+    use ronie_ui::backend::UiAction;
+    let (mut driver, backend) = tuned_vox_page(&[vox_tone(), amp_tone(603, "Not Loaded")]);
+    open_replace(&mut driver);
+    assert!(driver.shows_text("CURRENT"));
+    assert!(driver.shows_text("SWAP"));
+    assert!(!driver.shows_text("IN CHAIN") && !driver.shows_text("ADD"));
+    let before = backend.actions().len();
+    let _ = driver.click(VOX_TITLE).expect("the current row");
+    driver.settle();
+    assert!(
+        !backend.actions()[before..]
+            .iter()
+            .any(|action| matches!(action, UiAction::LoadTone { .. })),
+        "the current tone loads nothing"
+    );
+    assert!(
+        driver.shows_text("keeps trims, EQ and place"),
+        "the menu stays open"
+    );
+}
+
+#[test]
+fn replace_via_the_browser_and_a_file_keeps_settings() {
+    let (mut driver, backend) = tuned_vox_page(&[]);
+    let old = vox(&backend);
+    open_replace(&mut driver);
+    let _ = driver
+        .click("OPEN THE TONE BROWSER")
+        .expect("the browser link");
+    driver.settle();
+    assert!(
+        driver.chrome_mut().browser_mut().is_some(),
+        "the browser opened"
+    );
+    driver.chrome_mut().pick_tone(amp_tone(611, "Browsed Amp"));
+    for _ in 0..4 {
+        driver.settle();
+    }
+    let block = backend
+        .chain_state(0)
+        .chain
+        .block(&old.id)
+        .cloned()
+        .expect("the block keeps its id");
+    assert_eq!(
+        block.tone.as_ref().map(|tone| tone.title.as_str()),
+        Some("Browsed Amp")
+    );
+    assert_eq!(block.params, old.params, "the browser keeps the settings");
+    assert_eq!(lane_titles(&backend, false).len(), 3, "no block was added");
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("closet-cab.wav");
+    write_ir(&path);
+    driver
+        .chrome_mut()
+        .replace_with_file(&old.id.0, &path)
+        .expect("the file loads");
+    driver.settle();
+    let block = backend
+        .chain_state(0)
+        .chain
+        .block(&old.id)
+        .cloned()
+        .expect("the block keeps its id");
+    assert!(block.tone.as_ref().is_some_and(|tone| tone.local));
+    assert_eq!(block.params, old.params, "a file keeps the settings");
+    assert_eq!(index_of(&backend, &old.id), Some(1));
+}
+
+#[test]
+fn a_replace_drops_the_skin_override_and_ir_b() {
+    use ronie_ui::backend::UiAction;
+    let (mut driver, backend) = edited_driver("main-mono", |chain| {
+        chain["chain"][2]["tone"]["models"] = serde_json::json!([
+            { "id": 1103, "name": "M201" },
+            { "id": 1105, "name": "SM57" },
+        ]);
+    });
+    let cab = block_titled(&backend, "Greenback").expect("the cab");
+    for action in [
+        UiAction::SelectSecondModel {
+            block_id: cab.id.clone(),
+            model_id: Some(ronie_core::ModelId(1105)),
+        },
+        UiAction::SetBlockSkin {
+            block_id: cab.id.clone(),
+            skin: Some("cab-212-chime".to_owned()),
+        },
+    ] {
+        backend.dispatch(action).expect("edit the cab");
+    }
+    let old = backend
+        .chain_state(0)
+        .chain
+        .block(&cab.id)
+        .cloned()
+        .expect("cab");
+    assert!(old.ir_b.is_some() && old.skin.is_some());
+    driver.settle();
+    let _ = driver
+        .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
+        .expect("the cab");
+    driver.settle();
+    open_replace(&mut driver);
+    assert!(driver.shows_text("REPLACE \u{b7} CAB"));
+    let cab_tone = ronie_core::Tone::from_value(serde_json::json!({
+        "id": 621, "title": "Closet 1x12", "format": "ir", "gear": "ir",
+        "models": [{"id": 6210, "name": "m", "model_url": "https://fixtures.invalid/m/621.wav"}]
+    }))
+    .expect("tone");
+    driver.chrome_mut().replace_tone(&cab.id.0, cab_tone);
+    driver.settle();
+    let block = backend
+        .chain_state(0)
+        .chain
+        .block(&cab.id)
+        .cloned()
+        .expect("cab");
+    assert_eq!(
+        block.tone.as_ref().map(|tone| tone.title.as_str()),
+        Some("Closet 1x12")
+    );
+    assert_eq!(block.ir_b, None, "the second IR belonged to the old tone");
+    assert_eq!(block.skin, None, "the skin belonged to the old tone");
+    assert_eq!(block.params, old.params);
+    driver.chrome_mut().undo().expect("undo");
+    driver.settle();
+    assert_eq!(backend.chain_state(0).chain.block(&cab.id), Some(&old));
+}
+
+// ---------------------------------------------------------------- Visible block actions
+
+/// Plays a double-click on a control.
+fn double_click(driver: &mut UiDriver, label: &str) {
+    let at = rect_of(driver, label)
+        .unwrap_or_else(|| panic!("{label} is missing"))
+        .center();
+    let button = |pressed| eframe::egui::Event::PointerButton {
+        pos: at,
+        button: eframe::egui::PointerButton::Primary,
+        pressed,
+        modifiers: eframe::egui::Modifiers::NONE,
+    };
+    driver.play(vec![eframe::egui::Event::PointerMoved(at)]);
+    for _ in 0..2 {
+        driver.play(vec![button(true)]);
+        driver.play(vec![button(false)]);
+    }
+    driver.settle();
+}
+
+fn checked(driver: &UiDriver, label: &str) -> bool {
+    driver
+        .controls()
+        .iter()
+        .find(|control| control.label == label)
+        .unwrap_or_else(|| panic!("{label} is missing"))
+        .checked
+}
+
+#[test]
+fn the_page_shows_bypass_replace_and_remove_buttons() {
+    let (mut driver, backend) = amp_page();
+    let rects: Vec<_> = ["Bypass", "Replace", "Remove"]
+        .into_iter()
+        .map(|label| rect_of(&driver, label).unwrap_or_else(|| panic!("{label} is missing")))
+        .collect();
+    for rect in &rects {
+        assert!(
+            (rect.height() - 28.0).abs() < 0.5,
+            "a pill is 28 pt tall: {rect:?}"
+        );
+    }
+    assert!(
+        rects[0].right() < rects[1].left() && rects[1].right() < rects[2].left(),
+        "BYPASS, REPLACE, REMOVE from left to right"
+    );
+    assert!(
+        (rects[1].left() - rects[0].right() - 8.0).abs() < 0.5,
+        "8 pt between the pills"
+    );
+    for text in ["BYPASS", "REPLACE", "REMOVE"] {
+        assert!(driver.shows_text(text), "the pill reads {text}");
+    }
+    assert!(
+        !checked(&driver, "Bypass"),
+        "an active block is not bypassed"
+    );
+    let _ = driver.click("Bypass").expect("Bypass");
+    driver.settle();
+    assert!(!vox(&backend).params.enabled);
+    assert!(checked(&driver, "Bypass"), "BYPASS reads as selected");
+    let _ = driver.click("Bypass").expect("Bypass");
+    driver.settle();
+    assert!(vox(&backend).params.enabled);
+    assert!(!checked(&driver, "Bypass"));
+}
+
+#[test]
+fn the_strip_menu_bypasses_replaces_duplicates_and_removes() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let count = |backend: &MockBackend, needle: &str| {
+        backend
+            .chain_state(0)
+            .chain
+            .left
+            .iter()
+            .filter(|block| {
+                block
+                    .tone
+                    .as_ref()
+                    .is_some_and(|tone| tone.title.contains(needle))
+            })
+            .count()
+    };
+    let strip_action = |driver: &mut UiDriver, row: &str| {
+        let _ = driver.secondary_click(VOX).expect("block button");
+        driver.settle();
+        let _ = driver.click(row).expect("menu row");
+        driver.settle();
+        assert!(!strip_menu_open(driver), "{row} closes the menu");
+    };
+
+    strip_action(&mut driver, "BYPASS");
+    assert!(!vox(&backend).params.enabled, "BYPASS bypasses");
+    strip_action(&mut driver, "BYPASS");
+    assert!(vox(&backend).params.enabled, "BYPASS toggles");
+
+    strip_action(&mut driver, "REPLACE\u{2026}");
+    assert!(
+        driver.shows_text("REPLACE \u{b7} AMP"),
+        "REPLACE opens the replace menu on the amps"
+    );
+    assert!(driver.shows_text("keeps trims, EQ and place"));
+    let icon = rect_of(&driver, VOX).expect("the icon");
+    let search = rect_of(&driver, "Search amps in your library").expect("the field");
+    assert!(
+        search.top() > icon.bottom(),
+        "the menu opens under the icon"
+    );
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+    assert!(!driver.shows_text("keeps trims, EQ and place"));
+
+    strip_action(&mut driver, "REMOVE");
+    assert_eq!(count(&backend, "AC30"), 0, "REMOVE removes the block");
+    driver.chrome_mut().undo().expect("undo");
+    driver.settle();
+    assert_eq!(count(&backend, "AC30"), 1, "one undo brings it back");
+
+    strip_action(&mut driver, "DUPLICATE");
+    assert_eq!(count(&backend, "AC30"), 2, "DUPLICATE copies the block");
+}
+
+#[test]
+fn removing_the_open_block_from_the_strip_opens_its_neighbour() {
+    let (mut driver, backend) = amp_page();
+    let _ = driver.secondary_click(VOX).expect("block button");
+    driver.settle();
+    let _ = driver.click("REMOVE").expect("REMOVE");
+    driver.settle();
+    assert!(block_titled(&backend, "AC30").is_none());
+    assert!(
+        matches!(
+            driver.chrome().gallery().selection(),
+            GallerySelection::BlockDetail(_)
+        ),
+        "a neighbour opens: {:?}",
+        driver.chrome().gallery().selection()
+    );
+}
+
+#[test]
+fn double_click_still_bypasses() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    double_click(&mut driver, VOX);
+    assert!(!vox(&backend).params.enabled, "a double-click bypasses");
+    assert!(!strip_menu_open(&driver), "a double-click opens no menu");
+    // Half a second later, so that egui counts a new double-click and not a triple one.
+    for _ in 0..30 {
+        driver.frame();
+    }
+    double_click(&mut driver, VOX);
+    assert!(
+        vox(&backend).params.enabled,
+        "a second double-click turns it on"
+    );
+}
+
+#[test]
+fn delete_removes_the_selected_block_and_undo_brings_it_back() {
+    for key in [eframe::egui::Key::Delete, eframe::egui::Key::Backspace] {
+        let (mut driver, backend) = amp_page();
+        let old = vox(&backend);
+        let _ = driver.press_key(key);
+        assert!(
+            block_titled(&backend, "AC30").is_none(),
+            "{key:?} removes the open block"
+        );
+        assert!(
+            matches!(
+                driver.chrome().gallery().selection(),
+                GallerySelection::BlockDetail(_)
+            ),
+            "a neighbour opens"
+        );
+        let others = backend.chain_state(0).chain.left.len();
+        driver.chrome_mut().undo().expect("undo");
+        driver.settle();
+        assert_eq!(
+            backend.chain_state(0).chain.block(&old.id),
+            Some(&old),
+            "one undo brings it back"
+        );
+        assert!(backend.chain_state(0).chain.left.len() >= others);
+    }
+}
+
+#[test]
+fn delete_while_typing_removes_nothing() {
+    let (mut driver, backend) = menu_driver("main-mono", false, &[]);
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    let blocks = |backend: &MockBackend| backend.chain_state(0).chain.left.clone();
+    let before = blocks(&backend);
+
+    // The add menu's search field.
+    open_amp(&mut driver);
+    let _ = driver
+        .fill("Search amps in your library", "vox")
+        .expect("search");
+    for key in [eframe::egui::Key::Backspace, eframe::egui::Key::Delete] {
+        let _ = driver.press_key(key);
+    }
+    assert_eq!(
+        blocks(&backend),
+        before,
+        "typing in the search removes nothing"
+    );
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+
+    // The preset name.
+    let _ = driver.click("Save preset").expect("save");
+    driver.settle();
+    let _ = driver.fill("Name", "Lead").expect("the name field");
+    for key in [eframe::egui::Key::Backspace, eframe::egui::Key::Delete] {
+        let _ = driver.press_key(key);
+    }
+    assert_eq!(
+        blocks(&backend),
+        before,
+        "typing a preset name removes nothing"
+    );
+}
+
+#[test]
+fn delete_with_a_menu_open_removes_nothing() {
+    let (mut driver, backend) = amp_page();
+    open_menu(&mut driver);
+    let _ = driver.press_key(eframe::egui::Key::Delete);
+    assert!(
+        block_titled(&backend, "AC30").is_some(),
+        "the add menu is open"
+    );
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+    let _ = driver.secondary_click(VOX).expect("block button");
+    driver.settle();
+    let _ = driver.press_key(eframe::egui::Key::Delete);
+    assert!(
+        block_titled(&backend, "AC30").is_some(),
+        "the strip menu is open"
+    );
+}
+
+#[test]
+fn right_click_on_plus_or_an_empty_slot_opens_no_menu() {
+    let (mut driver, _) = slot_driver("main-mono", false, &[], add_overdrive);
+    let _ = driver.secondary_click("Add a block").expect("plus");
+    driver.settle();
+    assert!(!strip_menu_open(&driver), "the + has no block menu");
+    let _ = driver
+        .secondary_click("Add a pedal after these")
+        .expect("slot");
+    driver.settle();
+    assert!(!strip_menu_open(&driver), "a slot has no block menu");
+}
+
+// ---------------------------------------------------------------- Smart placement for +
+
+const MUFF: &str = "Green Russian Big Muff + BD-2";
+const GREENBACK: &str = "UK Greenback - Marshall 1960TV 4x12 M201";
+
+/// Adds `tone` from the + menu, through its category row.
+fn add_from_plus(driver: &mut UiDriver, row: &str, tone: &str) {
+    open_menu(driver);
+    let _ = driver.click(row).expect("category row");
+    driver.settle();
+    let _ = driver.click(tone).expect("library row");
+    driver.settle();
+}
+
+#[test]
+fn a_pedal_from_plus_lands_before_the_amp() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[library_pedal()], |_| {});
+    add_from_plus(&mut driver, "PEDAL", "Library Drive");
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles[0], MUFF, "{titles:?}");
+    assert_eq!(titles[1], "Library Drive", "{titles:?}");
+    assert!(titles[2].contains("AC30"), "{titles:?}");
+}
+
+#[test]
+fn an_amp_from_plus_lands_before_the_cab() {
+    let (mut driver, backend) =
+        slot_driver("main-mono", false, &[amp_tone(601, "Plexi Lead")], |_| {});
+    add_from_plus(&mut driver, "AMP", "Plexi Lead");
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles.len(), 4, "{titles:?}");
+    assert_eq!(titles[2], "Plexi Lead", "{titles:?}");
+    assert_eq!(titles[3], GREENBACK, "{titles:?}");
+}
+
+#[test]
+fn a_cab_from_plus_lands_after_the_amp() {
+    let (mut driver, backend) = slot_driver(
+        "main-mono",
+        false,
+        &[gear_tone(802, "Library Cab", "cab")],
+        |_| {},
+    );
+    add_from_plus(&mut driver, "CAB", "Library Cab");
+    let titles = lane_titles(&backend, false);
+    assert!(titles[1].contains("AC30"), "{titles:?}");
+    assert_eq!(titles[2], "Library Cab", "{titles:?}");
+    assert_eq!(titles[3], GREENBACK, "{titles:?}");
+}
+
+#[test]
+fn outboard_lands_at_the_end() {
+    let (mut driver, backend) = slot_driver(
+        "main-mono",
+        false,
+        &[gear_tone(803, "Library Comp", "outboard")],
+        |_| {},
+    );
+    add_from_plus(&mut driver, "OUTBOARD", "Library Comp");
+    let titles = lane_titles(&backend, false);
+    assert_eq!(
+        titles.last().map(String::as_str),
+        Some("Library Comp"),
+        "{titles:?}"
+    );
+}
+
+#[test]
+fn placement_works_in_lane_b() {
+    let (mut driver, backend) = slot_driver("main-stereo", false, &[library_pedal()], |_| {});
+    let left = lane_titles(&backend, false);
+    open_menu(&mut driver);
+    let _ = driver.click("LANE B").expect("lane B");
+    driver.settle();
+    let _ = driver.click("PEDAL").expect("PEDAL row");
+    driver.settle();
+    let _ = driver.click("Library Drive").expect("library row");
+    driver.settle();
+    let right = lane_titles(&backend, true);
+    assert_eq!(right[0], "Library Drive", "{right:?}");
+    assert_eq!(right[1], "Roland JC-40", "{right:?}");
+    assert_eq!(lane_titles(&backend, false), left);
+}
+
+#[test]
+fn a_pedal_run_slot_in_lane_b_stays_in_lane_b() {
+    let library = [library_pedal(), gear_tone(803, "Second Drive", "pedal")];
+    let (mut driver, backend) = slot_driver("main-stereo", false, &library, |_| {});
+    // A pedal goes before lane B's amp, through the + menu.
+    open_menu(&mut driver);
+    let _ = driver.click("LANE B").expect("lane B");
+    driver.settle();
+    let _ = driver.click("PEDAL").expect("PEDAL row");
+    driver.settle();
+    let _ = driver.click("Library Drive").expect("library row");
+    driver.settle();
+    let left = lane_titles(&backend, false);
+    assert_eq!(lane_titles(&backend, true)[0], "Library Drive");
+    let _ = driver
+        .click("Chain: Library Drive")
+        .expect("the lane B pedal");
+    driver.settle();
+    let _ = driver.click("Add a pedal after these").expect("the slot");
+    driver.settle();
+    let _ = driver.click("Second Drive").expect("library row");
+    driver.settle();
+    let right = lane_titles(&backend, true);
+    assert_eq!(right[0], "Library Drive", "{right:?}");
+    assert_eq!(right[1], "Second Drive", "{right:?}");
+    assert_eq!(right[2], "Roland JC-40", "{right:?}");
+    assert_eq!(lane_titles(&backend, false), left);
+}
+
+#[test]
+fn a_lane_without_gear_adds_at_the_end() {
+    let keep_the_pedal = |chain: &mut Vec<serde_json::Value>| {
+        chain.retain(|block| block["blockId"] != "blk-2" && block["blockId"] != "blk-3");
+    };
+    let library = [library_pedal(), gear_tone(802, "Library Cab", "cab")];
+    for (row, title) in [("PEDAL", "Library Drive"), ("CAB", "Library Cab")] {
+        let (mut driver, backend) = slot_driver("main-mono", false, &library, keep_the_pedal);
+        assert_eq!(lane_titles(&backend, false), vec![MUFF.to_owned()]);
+        add_from_plus(&mut driver, row, title);
+        assert_eq!(
+            lane_titles(&backend, false),
+            vec![MUFF.to_owned(), title.to_owned()]
+        );
+    }
+}
+
+#[test]
+fn the_menu_says_where_it_will_add() {
+    let (mut driver, _) = slot_driver("main-mono", false, &[], |_| {});
+    open_menu(&mut driver);
+    assert!(driver.shows_text("placed by type"));
+    assert!(!driver.shows_text("to the end of the chain"));
+    for (row, text) in [
+        ("PEDAL", "before '02 Vox AC30/6 To\u{2026}"),
+        ("AMP", "before UK Greenback - Ma\u{2026}"),
+        ("CAB", "after '02 Vox AC30/6 To\u{2026}"),
+        ("OUTBOARD", "to the end of the chain"),
+    ] {
+        let _ = driver.click(row).expect("category row");
+        driver.settle();
+        assert!(driver.shows_text(text), "{row} should say {text}");
+        let _ = driver.click("Back to categories").expect("back");
+        driver.settle();
+    }
+}
+
+#[test]
+fn an_amp_page_has_no_side_slots() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    for name in ["Add a pedal before the amp", "Add a cab after the amp"] {
+        assert!(rect_of(&driver, name).is_none(), "{name}");
+    }
+    let (mut driver, _) = edited_driver("main-mono", |chain| {
+        chain["chain"].as_array_mut().expect("chain").remove(2);
+    });
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    for name in ["Add a pedal before the amp", "Add a cab after the amp"] {
+        assert!(rect_of(&driver, name).is_none(), "{name} with no cab");
+    }
+}
+
+#[test]
+fn a_pedal_run_still_ends_with_a_slot() {
+    let (driver, _) = pedalboard_driver();
+    assert!(rect_of(&driver, "Add a pedal after these").is_some());
+}
+
+#[test]
+fn the_browser_from_plus_places_by_the_tone_that_lands() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[], |_| {});
+    open_menu(&mut driver);
+    let _ = driver.click("PEDAL").expect("PEDAL row");
+    driver.settle();
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("browser link");
+    driver.settle();
+    let chrome = driver.chrome_mut();
+    chrome.pick_tone(local_pedal(905, "Browser Drive"));
+    chrome.sync_browser();
+    driver.settle();
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles[1], "Browser Drive", "{titles:?}");
+}
+
+#[test]
+fn a_replace_never_moves_the_block() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[library_pedal()], |_| {});
+    let before = lane_titles(&backend, false);
+    let id = block_titled(&backend, "AC30").expect("amp").id.0;
+    driver
+        .chrome_mut()
+        .replace_tone(&id, gear_tone(804, "Replacement Pedal", "pedal"));
+    driver.settle();
+    let after = lane_titles(&backend, false);
+    assert_eq!(after[1], "Replacement Pedal", "{after:?}");
+    assert_eq!(after.len(), before.len());
 }
