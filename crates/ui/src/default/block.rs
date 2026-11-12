@@ -2361,12 +2361,14 @@ impl BlockDetail {
                         .map(|id| (Some(id), super::skins::friendly_name(id), "")),
                 )
                 .collect();
-        let height = 2.0 * SKIN_LIST_PAD + rows.len() as f32 * SKIN_ROW;
+        // The list ends above the chip, and its rows scroll when the window is too short for
+        // all of them, so the list never covers the chip that closes it.
+        let full = 2.0 * SKIN_LIST_PAD + rows.len() as f32 * SKIN_ROW;
         let screen = ui.ctx().content_rect();
         let bottom = rect.top() - SKIN_LIST_GAP;
-        let top = (bottom - height).max(screen.top() + 4.0);
+        let height = full.min(bottom - (screen.top() + 4.0)).max(0.0);
         let list = Rect::from_min_size(
-            egui::pos2(rect.left(), top),
+            egui::pos2(rect.left(), bottom - height),
             egui::vec2(SKIN_LIST_WIDTH, height),
         );
         let mut picked = None;
@@ -2395,51 +2397,63 @@ impl BlockDetail {
                 );
                 let group = ui.interact(list, id.with("list-group"), Sense::hover());
                 group.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ListBox, true, "Skins"));
-                for (index, (skin, name, note)) in rows.iter().enumerate() {
-                    let row = Rect::from_min_size(
-                        egui::pos2(
-                            list.left() + SKIN_LIST_PAD,
-                            list.top() + SKIN_LIST_PAD + index as f32 * SKIN_ROW,
-                        ),
-                        egui::vec2(list.width() - 2.0 * SKIN_LIST_PAD, SKIN_ROW),
-                    );
-                    let selected = *skin == chosen;
-                    let response = ui.interact(row, id.with(("row", index)), Sense::click());
-                    response.widget_info(|| {
-                        egui::WidgetInfo::selected(egui::Role::ListBoxOption, true, selected, *name)
+                let inner = list.shrink(SKIN_LIST_PAD);
+                let mut rows_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+                egui::ScrollArea::vertical()
+                    .id_salt(id.with("list-scroll"))
+                    .auto_shrink(false)
+                    .max_height(inner.height())
+                    .show(&mut rows_ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for (index, (skin, name, note)) in rows.iter().enumerate() {
+                            let (row, _) = ui.allocate_exact_size(
+                                egui::vec2(inner.width(), SKIN_ROW),
+                                Sense::hover(),
+                            );
+                            let selected = *skin == chosen;
+                            let response =
+                                ui.interact(row, id.with(("row", index)), Sense::click());
+                            response.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::Role::ListBoxOption,
+                                    true,
+                                    selected,
+                                    *name,
+                                )
+                            });
+                            let painter = ui.painter();
+                            if selected {
+                                painter.rect_filled(row, 5.0, SKIN_CHOSEN);
+                            } else if response.hovered() {
+                                painter.rect_filled(row, 5.0, SKIN_HOVER);
+                            }
+                            let font = if selected {
+                                bold_font(11.5)
+                            } else {
+                                egui::FontId::proportional(11.5)
+                            };
+                            painter.text(
+                                egui::pos2(row.left() + 10.0, row.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                *name,
+                                font,
+                                look.text,
+                            );
+                            if !note.is_empty() {
+                                let note_rect = painter.text(
+                                    egui::pos2(row.right() - 10.0, row.center().y),
+                                    egui::Align2::RIGHT_CENTER,
+                                    *note,
+                                    egui::FontId::proportional(10.0),
+                                    SKIN_MUTED,
+                                );
+                                static_text(ui, note_rect, id.with(("note", index)), note);
+                            }
+                            if response.clicked() {
+                                picked = Some(*skin);
+                            }
+                        }
                     });
-                    let painter = ui.painter();
-                    if selected {
-                        painter.rect_filled(row, 5.0, SKIN_CHOSEN);
-                    } else if response.hovered() {
-                        painter.rect_filled(row, 5.0, SKIN_HOVER);
-                    }
-                    let font = if selected {
-                        bold_font(11.5)
-                    } else {
-                        egui::FontId::proportional(11.5)
-                    };
-                    painter.text(
-                        egui::pos2(row.left() + 10.0, row.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        *name,
-                        font,
-                        look.text,
-                    );
-                    if !note.is_empty() {
-                        let note_rect = painter.text(
-                            egui::pos2(row.right() - 10.0, row.center().y),
-                            egui::Align2::RIGHT_CENTER,
-                            *note,
-                            egui::FontId::proportional(10.0),
-                            SKIN_MUTED,
-                        );
-                        static_text(ui, note_rect, id.with(("note", index)), note);
-                    }
-                    if response.clicked() {
-                        picked = Some(*skin);
-                    }
-                }
             });
         if let Some(skin) = picked {
             self.skin_open = false;

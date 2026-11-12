@@ -3486,6 +3486,45 @@ fn the_skin_chip_lists_the_category_and_auto() {
     assert!(!driver.is_visible("Auto"), "a second click closes it");
 }
 
+/// In a short window the list of ten amp skins ends above its chip and scrolls, so a click on
+/// the chip still closes it.
+#[test]
+fn the_skin_list_ends_above_its_chip_in_a_short_window() {
+    let (mut driver, backend) = amp_page();
+    driver.set_window_size(eframe::egui::vec2(1024.0, 400.0));
+    open_skin_list(&mut driver);
+    let chip = rect_of(&driver, "Skin").expect("chip");
+    let list = rect_of(&driver, "Skins").expect("the list is open");
+    assert!(
+        !list.intersects(chip) && list.bottom() < chip.top(),
+        "the list {list:?} ends above the chip {chip:?}"
+    );
+    let last = |driver: &UiDriver| {
+        rect_of(driver, "Hi-gain amp")
+            .filter(|rect| list.contains_rect(*rect) && rect.height() > 20.0)
+    };
+    assert!(last(&driver).is_none(), "the last row starts out of view");
+    driver.play(vec![
+        eframe::egui::Event::PointerMoved(list.center()),
+        eframe::egui::Event::MouseWheel {
+            unit: eframe::egui::MouseWheelUnit::Point,
+            delta: eframe::egui::vec2(0.0, -400.0),
+            phase: eframe::egui::TouchPhase::Move,
+            source: eframe::egui::MouseWheelSource::Wheel,
+            modifiers: eframe::egui::Modifiers::NONE,
+        },
+    ]);
+    driver.settle();
+    assert!(last(&driver).is_some(), "the rows scroll to the last one");
+    let _ = driver.click("Skin").expect("close");
+    driver.settle();
+    assert!(
+        !driver.is_visible("Skins"),
+        "the click on the chip closed it"
+    );
+    assert_eq!(block_skin(&backend, "blk-2"), None, "and picked nothing");
+}
+
 #[test]
 fn picking_a_skin_redraws_the_render_and_is_one_undo_step() {
     let (mut driver, backend) = amp_page();
