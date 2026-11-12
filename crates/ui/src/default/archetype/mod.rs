@@ -6,6 +6,7 @@
 
 use crate::theme::Look;
 mod add_menu;
+mod block_menu;
 mod header;
 mod utility;
 
@@ -40,6 +41,7 @@ pub(super) fn show(
         .exact_size(HEADER_HEIGHT)
         .frame(egui::Frame::NONE.fill(look.background))
         .show(ui, |ui| header::show_header(ui, chrome, state));
+    show_block_menu(ui, chrome, state);
     show_overlay(ui, chrome);
     egui::Panel::bottom("archetype-utility")
         .exact_size(UTILITY_HEIGHT)
@@ -53,6 +55,7 @@ pub(super) fn show(
     // What is left between the header and the global panel: the stage, which holds a slot's menu.
     let stage = ui.available_rect_before_wrap();
 
+    delete_on_key(ui.ctx(), chrome);
     // Settle selection first, so that the stage decides on this frame's state and never falls
     // through to the reference chain gallery.
     chrome.sync_detail();
@@ -167,8 +170,95 @@ fn open_replace_menu(
             .and_then(gear_of);
         menu.open_replace(id, category, anchor);
         menu.on_page_button = on_page;
+        // The click that asked for the menu may land where it opens, such as on a row of the
+        // block menu, and must not close it again.
+        menu.fresh = true;
     }
     menu.store(ctx);
+    ctx.request_repaint();
+}
+
+/// Draws the block menu of the chain strip when it is open and carries out its row.
+fn show_block_menu(
+    ui: &mut egui::Ui,
+    chrome: &mut ChromeController,
+    state: &crate::backend::ChainViewState,
+) {
+    let mut menu = block_menu::BlockMenu::load(ui.ctx());
+    if !menu.is_open() {
+        return;
+    }
+    let block = |id: &ronie_core::BlockId| {
+        state
+            .chain
+            .left
+            .iter()
+            .chain(&state.chain.right)
+            .find(|block| block.id == *id && !block.is_insert)
+    };
+    menu.retain(|id| block(id).is_some());
+    let chosen = block_menu::show(ui, &mut menu);
+    menu.store(ui.ctx());
+    let Some((id, anchor, action)) = chosen else {
+        return;
+    };
+    match action {
+        block_menu::BlockMenuAction::Bypass => {
+            if let Some(block) = block(&id) {
+                let _ = chrome
+                    .gallery_mut()
+                    .set_enabled(&id.0, !block.params.enabled);
+            }
+        }
+        block_menu::BlockMenuAction::Replace => chrome.open_replace(id, anchor),
+        block_menu::BlockMenuAction::Duplicate => {
+            let _ = chrome.gallery_mut().duplicate(&id.0);
+        }
+        block_menu::BlockMenuAction::Remove => remove_block(chrome, &id),
+    }
+    ui.ctx().request_repaint();
+}
+
+/// Removes block `id` as REMOVE of its page does: through the page when the block is open, so
+/// that the stage moves on to a neighbour, else from the chain.
+fn remove_block(chrome: &mut ChromeController, id: &ronie_core::BlockId) {
+    match chrome.detail_mut().filter(|detail| detail.block_id() == id) {
+        Some(detail) => {
+            let _ = detail.remove();
+        }
+        None => {
+            let _ = chrome.gallery_mut().remove(&id.0);
+        }
+    }
+}
+
+/// Delete or Backspace removes the open block, unless a text field takes the keys or a menu,
+/// popup, overlay or other surface is open.
+fn delete_on_key(ctx: &egui::Context, chrome: &mut ChromeController) {
+    let busy = ctx.text_edit_focused()
+        || egui::Popup::is_any_open(ctx)
+        || add_menu::AddMenu::load(ctx).open
+        || block_menu::BlockMenu::load(ctx).is_open()
+        || chrome.overlay() != super::overlays::Overlay::None
+        || chrome.tuner_visible()
+        || chrome.auth_active()
+        || chrome.browser_mut().is_some();
+    if busy {
+        return;
+    }
+    let pressed = ctx.input_mut(|input| {
+        let delete = input.consume_key(egui::Modifiers::NONE, egui::Key::Delete);
+        let backspace = input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace);
+        delete || backspace
+    });
+    if !pressed {
+        return;
+    }
+    let selected = match chrome.gallery().selection() {
+        super::chain::GallerySelection::BlockDetail(id) => id.clone(),
+        _ => return,
+    };
+    remove_block(chrome, &selected);
     ctx.request_repaint();
 }
 

@@ -1951,7 +1951,6 @@ impl BlockDetail {
 
     /// "AMP · TITLE" over the source line, with BYPASS / REPLACE / REMOVE on the right.
     fn show_title_row(&mut self, ui: &mut egui::Ui, rect: Rect, look: crate::theme::Look) {
-        let painter = ui.painter_at(rect);
         let bold = egui::FontId::new(10.0, egui::FontFamily::Name("arimo-bold".into()));
         let title = if self.neighbours.0.is_empty() && self.neighbours.1.is_empty() {
             page_title(&self.block)
@@ -1971,7 +1970,11 @@ impl BlockDetail {
                 .collect();
             format!("PEDALS · {}", titles.join(" → "))
         };
-        let right_reserve = 200.0;
+        let right_reserve = [PageAction::Bypass, PageAction::Replace, PageAction::Remove]
+            .into_iter()
+            .map(|action| page_action_width(ui, action) + PAGE_ACTION_GAP)
+            .sum::<f32>()
+            + 8.0;
         let label_width = (rect.width() - right_reserve).max(40.0);
         let mut text_ui = ui.new_child(
             egui::UiBuilder::new()
@@ -1999,41 +2002,32 @@ impl BlockDetail {
         );
         let mut right = rect.right();
         let cy = rect.center().y;
-        let actions: [(&'static str, bool); 3] = [
-            ("REMOVE", false),
-            ("REPLACE", false),
-            ("BYPASS", !self.block.params.enabled),
-        ];
-        for (index, (label, active)) in actions.into_iter().enumerate() {
+        let actions = [PageAction::Remove, PageAction::Replace, PageAction::Bypass];
+        for (index, action) in actions.into_iter().enumerate() {
             if index > 0 {
-                painter.line_segment(
-                    [
-                        egui::pos2(right - 5.5, cy - 5.0),
-                        egui::pos2(right - 5.5, cy + 5.0),
-                    ],
-                    egui::Stroke::new(1.0, look.edge),
-                );
-                right -= 11.0;
+                right -= PAGE_ACTION_GAP;
             }
-            let width = text_width(ui, label, 10.0) + 4.0;
+            let width = page_action_width(ui, action);
             let button = Rect::from_min_max(
-                egui::pos2(right - width, cy - 11.0),
-                egui::pos2(right, cy + 11.0),
+                egui::pos2(right - width, cy - PAGE_ACTION_HEIGHT / 2.0),
+                egui::pos2(right, cy + PAGE_ACTION_HEIGHT / 2.0),
             );
             right = button.left();
-            let response = if label == "REPLACE" {
-                self.replace_rect = Some(button);
-                replace_button(ui, button, self.replace_open, look)
-            } else {
-                page_text_button(ui, button, label, active, look)
+            let selected = match action {
+                PageAction::Bypass => !self.block.params.enabled,
+                PageAction::Replace => self.replace_open,
+                PageAction::Remove => false,
             };
-            if response.clicked() {
-                match label {
-                    "BYPASS" => {
+            if action == PageAction::Replace {
+                self.replace_rect = Some(button);
+            }
+            if page_action_button(ui, button, action, selected).clicked() {
+                match action {
+                    PageAction::Bypass => {
                         let _ = self.set_enabled(!self.block.params.enabled);
                     }
-                    "REPLACE" => self.replace_request = Some(button),
-                    _ => {
+                    PageAction::Replace => self.replace_request = Some(button),
+                    PageAction::Remove => {
                         let _ = self.remove();
                     }
                 }
@@ -3966,36 +3960,173 @@ fn page_text_button(
     page_toggle(ui, rect, label, label, active, look)
 }
 
-/// REPLACE of the light page, drawn solid while its menu is open.
-fn replace_button(
+/// Height of an action pill in the title row of the light page.
+const PAGE_ACTION_HEIGHT: f32 = 28.0;
+/// Space between two action pills.
+const PAGE_ACTION_GAP: f32 = 8.0;
+/// Space between the icon and the label inside a pill, and its side padding.
+const PAGE_ACTION_ICON_GAP: f32 = 6.0;
+const PAGE_ACTION_PADDING: f32 = 12.0;
+/// Side of the icon of a pill.
+const PAGE_ACTION_ICON: f32 = 12.0;
+/// Letter spacing of a pill label: 0.08 em of 10 pt.
+const PAGE_ACTION_TRACKING: f32 = 0.8;
+
+/// One action pill in the title row of the light page.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PageAction {
+    Bypass,
+    Replace,
+    Remove,
+}
+
+impl PageAction {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Bypass => "BYPASS",
+            Self::Replace => "REPLACE",
+            Self::Remove => "REMOVE",
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Bypass => "Bypass",
+            Self::Replace => "Replace",
+            Self::Remove => "Remove",
+        }
+    }
+}
+
+fn page_action_font() -> egui::FontId {
+    bold_font(10.0)
+}
+
+/// The width of an action pill: padding, icon, gap, tracked label, padding.
+fn page_action_width(ui: &egui::Ui, action: PageAction) -> f32 {
+    let label = tracked_width(
+        ui.painter(),
+        action.label(),
+        &page_action_font(),
+        PAGE_ACTION_TRACKING,
+    );
+    (PAGE_ACTION_PADDING * 2.0 + PAGE_ACTION_ICON + PAGE_ACTION_ICON_GAP + label).round()
+}
+
+/// An action pill of the light page: an outlined pill with a 12 pt icon and a tracked label,
+/// drawn solid #111 with white content while `selected` (a bypassed block, or an open replace
+/// menu). REMOVE is red.
+fn page_action_button(
     ui: &mut egui::Ui,
     rect: Rect,
-    open: bool,
-    look: crate::theme::Look,
+    action: PageAction,
+    selected: bool,
 ) -> egui::Response {
-    if !open {
-        return page_text_button(ui, rect, "REPLACE", false, look);
-    }
-    let response = ui.interact(
+    const INK: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
+    const FILL: Color32 = Color32::from_rgb(0xfb, 0xfb, 0xfa);
+    const EDGE: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcc);
+    const RED: Color32 = Color32::from_rgb(0xb3, 0x26, 0x1e);
+    const RED_EDGE: Color32 = Color32::from_rgb(0xe4, 0xb4, 0xad);
+    // The label first, so that the button above it takes the clicks.
+    static_text(
+        ui,
         rect,
-        ui.scope_id().with(("page-action", "REPLACE")),
-        Sense::click(),
+        ui.scope_id().with(("page-action-text", action.name())),
+        action.label(),
     );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "REPLACE"));
-    ui.painter().rect_filled(
-        // Short of the dividers that sit 5.5 points away on each side.
-        rect.expand2(egui::vec2(4.0, 0.0)),
-        11.0,
-        Color32::from_rgb(0x11, 0x11, 0x11),
+    let response = ui
+        .interact(
+            rect,
+            ui.scope_id().with(("page-action", action.name())),
+            Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| match action {
+        PageAction::Bypass => {
+            egui::WidgetInfo::selected(egui::Role::Button, true, selected, action.name())
+        }
+        _ => egui::WidgetInfo::labeled(egui::Role::Button, true, action.name()),
+    });
+    let (fill, edge, content) = if selected {
+        (INK, INK, Color32::WHITE)
+    } else {
+        let fill = if response.hovered() {
+            Color32::WHITE
+        } else {
+            FILL
+        };
+        match action {
+            PageAction::Remove => (fill, RED_EDGE, RED),
+            _ => (fill, if response.hovered() { INK } else { EDGE }, INK),
+        }
+    };
+    let painter = ui.painter();
+    let radius = PAGE_ACTION_HEIGHT / 2.0;
+    painter.rect_filled(rect, radius, fill);
+    painter.rect_stroke(
+        rect,
+        radius,
+        egui::Stroke::new(1.0, edge),
+        egui::StrokeKind::Inside,
     );
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "REPLACE",
-        egui::FontId::new(10.0, egui::FontFamily::Name("arimo-bold".into())),
-        Color32::WHITE,
+    let icon = Rect::from_min_size(
+        egui::pos2(
+            rect.left() + PAGE_ACTION_PADDING,
+            rect.center().y - PAGE_ACTION_ICON / 2.0,
+        ),
+        egui::Vec2::splat(PAGE_ACTION_ICON),
+    );
+    draw_page_action_icon(painter, icon, action, content);
+    paint_tracked(
+        painter,
+        egui::pos2(icon.right() + PAGE_ACTION_ICON_GAP, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        action.label(),
+        &page_action_font(),
+        content,
+        PAGE_ACTION_TRACKING,
     );
     response
+}
+
+/// The 12 pt icon of an action pill, from the 24-unit drawings of the design at half scale:
+/// a power sign, two opposite arrows, and a bin.
+fn draw_page_action_icon(painter: &egui::Painter, rect: Rect, action: PageAction, color: Color32) {
+    let at = |x: f32, y: f32| rect.min + egui::vec2(x, y) * (rect.width() / 12.0);
+    let stroke = egui::Stroke::new(1.2, color);
+    let path = |points: Vec<egui::Pos2>| {
+        painter.add(egui::epaint::PathShape::line(points, stroke));
+    };
+    match action {
+        PageAction::Bypass => {
+            path(vec![at(6.0, 1.5), at(6.0, 6.0)]);
+            // The arc of radius 4 around (6, 6.5), from the upper right round the bottom to the
+            // upper left, open at the top where the line passes.
+            let center = at(6.0, 6.5);
+            let radius = 4.0 * rect.width() / 12.0;
+            let points = (0..=24)
+                .map(|step| {
+                    let radians = (-45.0 + 270.0 * step as f32 / 24.0_f32).to_radians();
+                    center + egui::vec2(radians.cos(), radians.sin()) * radius
+                })
+                .collect();
+            path(points);
+        }
+        PageAction::Replace => {
+            path(vec![at(2.0, 4.0), at(8.5, 4.0), at(7.0, 2.5)]);
+            path(vec![at(10.0, 8.0), at(3.5, 8.0), at(5.0, 9.5)]);
+        }
+        PageAction::Remove => {
+            path(vec![at(2.0, 3.5), at(10.0, 3.5)]);
+            path(vec![at(4.5, 3.5), at(4.5, 2.0), at(7.5, 2.0), at(7.5, 3.5)]);
+            path(vec![
+                at(3.0, 3.5),
+                at(3.5, 10.0),
+                at(8.5, 10.0),
+                at(9.0, 3.5),
+            ]);
+        }
+    }
 }
 
 /// A small uppercase text action whose accessible name may differ from its text.

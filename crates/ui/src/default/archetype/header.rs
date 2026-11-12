@@ -7,6 +7,7 @@ use crate::backend::ChainViewState;
 use crate::theme::Look;
 
 use super::add_menu::AddMenu;
+use super::block_menu::BlockMenu;
 
 use super::super::{
     chain::GallerySelection,
@@ -160,6 +161,7 @@ fn show_strip(
     let mut last_shown = first;
     let mut toggle = None;
     let mut open = None;
+    let mut menu_request = None;
     for (index, item) in items.iter().enumerate().skip(first) {
         let width = item_width(item);
         if x + width > right + 0.5 {
@@ -187,7 +189,7 @@ fn show_strip(
                         ui.scope_id().with(("archetype-block", &block.id.0)),
                         egui::Sense::click(),
                     )
-                    .on_hover_text(title);
+                    .on_hover_text(&title);
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::Role::Button, true, label.clone())
                 });
@@ -218,8 +220,10 @@ fn show_strip(
                         look.icon_selected,
                     );
                 }
-                if response.double_clicked() || response.secondary_clicked() {
+                if response.double_clicked() {
                     toggle = Some((block.id.0.clone(), !block.params.enabled));
+                } else if response.secondary_clicked() {
+                    menu_request = Some((block.id.clone(), rect, title.clone()));
                 } else if response.clicked() {
                     open = Some(block.id.0.clone());
                 }
@@ -255,6 +259,17 @@ fn show_strip(
         let _ = chrome.gallery_mut().set_enabled(&id, enabled);
     } else if let Some(id) = open {
         chrome.gallery_mut().activate(&id);
+    }
+    if let Some((id, rect, title)) = menu_request {
+        let mut menu = BlockMenu::load(ui.ctx());
+        menu.toggle(id, rect, title);
+        menu.store(ui.ctx());
+        if menu.is_open() {
+            // One black menu at a time: the block menu takes over the add menu.
+            let mut add = AddMenu::load(ui.ctx());
+            add.open = false;
+            add.store(ui.ctx());
+        }
     }
 }
 

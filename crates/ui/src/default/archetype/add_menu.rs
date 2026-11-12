@@ -42,11 +42,11 @@ const GAP_BESIDE_ANCHOR: f32 = 10.0;
 const PLACE_TITLE_CHARS: usize = 18;
 
 const BACKGROUND: Color32 = Color32::from_rgb(0x0b, 0x0b, 0x0b);
-const TEXT: Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
-const MUTED: Color32 = Color32::from_rgb(0x8a, 0x8a, 0x87);
+pub(super) const TEXT: Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
+pub(super) const MUTED: Color32 = Color32::from_rgb(0x8a, 0x8a, 0x87);
 const SOFT: Color32 = Color32::from_rgb(0xbd, 0xbd, 0xbd);
-const HOVER: Color32 = Color32::from_rgb(0x1d, 0x1d, 0x1d);
-const HAIRLINE: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
+pub(super) const HOVER: Color32 = Color32::from_rgb(0x1d, 0x1d, 0x1d);
+pub(super) const HAIRLINE: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
 const FIELD: Color32 = Color32::from_rgb(0x1a, 0x1a, 0x1a);
 const FIELD_BORDER: Color32 = Color32::from_rgb(0x2e, 0x2e, 0x2e);
 const ACCENT: Color32 = Color32::from_rgb(0xff, 0x6a, 0x1a);
@@ -95,6 +95,9 @@ pub(super) struct AddMenu {
     /// Whether the REPLACE button of the block page opened the menu, so that the menu follows
     /// that button when the page lays out again.
     pub(super) on_page_button: bool,
+    /// Whether the menu opened on this frame from a click elsewhere, such as a row of the strip's
+    /// block menu, so that this click does not count as a click outside the menu.
+    pub(super) fresh: bool,
 }
 
 impl Default for AddMenu {
@@ -111,6 +114,7 @@ impl Default for AddMenu {
             slot: None,
             replacing: None,
             on_page_button: false,
+            fresh: false,
         }
     }
 }
@@ -247,7 +251,7 @@ pub(super) fn place_text(word: &str, title: &str) -> String {
 /// Where the caret of the menu sits: on its top edge at an x, or on its left or right edge at
 /// a y.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Caret {
+pub(super) enum Caret {
     Top(f32),
     Left(f32),
     Right(f32),
@@ -504,16 +508,16 @@ fn downloads(value: u64) -> String {
     format!("{text}{unit}")
 }
 
-fn sans(size: f32) -> FontId {
+pub(super) fn sans(size: f32) -> FontId {
     FontId::new(size, FontFamily::Proportional)
 }
 
-fn bold(size: f32) -> FontId {
+pub(super) fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("arimo-bold".into()))
 }
 
 /// Puts one line of text in `rect`, at its left or right edge and centred in height.
-fn text_in(ui: &mut egui::Ui, rect: Rect, text: RichText, right: bool) {
+pub(super) fn text_in(ui: &mut egui::Ui, rect: Rect, text: RichText, right: bool) {
     let layout = if right {
         Layout::right_to_left(Align::Center)
     } else {
@@ -533,7 +537,7 @@ fn galley_of(ui: &egui::Ui, text: RichText) -> std::sync::Arc<egui::Galley> {
     )
 }
 
-fn tracked(text: &str, font: FontId, color: Color32, em: f32) -> RichText {
+pub(super) fn tracked(text: &str, font: FontId, color: Color32, em: f32) -> RichText {
     let size = font.size;
     RichText::new(text)
         .font(font)
@@ -541,7 +545,7 @@ fn tracked(text: &str, font: FontId, color: Color32, em: f32) -> RichText {
         .extra_letter_spacing(size * em)
 }
 
-fn menu_item(ui: &egui::Ui, rect: Rect, id: &str, label: &str) -> egui::Response {
+pub(super) fn menu_item(ui: &egui::Ui, rect: Rect, id: &str, label: &str) -> egui::Response {
     let response = ui.interact(rect, ui.scope_id().with(id), egui::Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::MenuItem, true, label));
     response
@@ -605,21 +609,17 @@ pub(super) fn show(
                 .flatten(),
         )
     });
-    if escape || clicked_at.is_some_and(|pos| !rect.contains(pos) && !anchor.contains(pos)) {
+    let fresh = std::mem::take(&mut menu.fresh);
+    let outside =
+        !fresh && clicked_at.is_some_and(|pos| !rect.contains(pos) && !anchor.contains(pos));
+    if escape || outside {
         menu.open = false;
     }
     action
 }
 
-fn draw(
-    ui: &mut egui::Ui,
-    rect: Rect,
-    caret: Caret,
-    menu: &mut AddMenu,
-    data: &MenuData<'_>,
-    results: Option<&Results<'_>>,
-) -> Option<AddMenuAction> {
-    let painter = ui.painter().clone();
+/// Paints the black board of a menu: its two soft shadows, its fill, and its caret.
+pub(super) fn paint_board(painter: &egui::Painter, rect: Rect, caret: Caret) {
     // The two soft shadows of the board: a wide one far below, and a close one.
     for (offset, blur, alpha) in [(18, 40, 71), (2, 6, 51)] {
         painter.add(
@@ -655,6 +655,18 @@ fn draw(
         BACKGROUND,
         Stroke::NONE,
     ));
+}
+
+fn draw(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    caret: Caret,
+    menu: &mut AddMenu,
+    data: &MenuData<'_>,
+    results: Option<&Results<'_>>,
+) -> Option<AddMenuAction> {
+    let painter = ui.painter().clone();
+    paint_board(&painter, rect, caret);
 
     let inner = rect.shrink(PADDING);
     let head = Rect::from_min_size(inner.min, egui::vec2(inner.width(), HEAD));

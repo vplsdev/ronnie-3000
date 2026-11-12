@@ -153,13 +153,52 @@ fn clicking_a_block_opens_it() {
     );
 }
 
+const STRIP_MENU_ROWS: [&str; 4] = ["BYPASS", "REPLACE\u{2026}", "DUPLICATE", "REMOVE"];
+
+fn strip_menu_open(driver: &UiDriver) -> bool {
+    STRIP_MENU_ROWS.iter().any(|row| driver.is_visible(row))
+}
+
 #[test]
-fn right_clicking_a_block_bypasses_it() {
+fn right_clicking_a_block_opens_its_menu() {
     let (mut driver, backend) = archetype_driver("main-mono");
     let _ = driver.secondary_click(VOX).expect("block button");
     driver.settle();
-    let enabled = backend.chain_state(0).chain.left[1].params.enabled;
-    assert!(!enabled, "the block is bypassed");
+    assert!(
+        backend.chain_state(0).chain.left[1].params.enabled,
+        "a right-click no longer bypasses"
+    );
+    for row in STRIP_MENU_ROWS {
+        assert!(driver.is_visible(row), "{row} is missing");
+    }
+    assert!(
+        driver.shows_text("'02 VOX AC30/6 TOP BOOST"),
+        "the menu names the block"
+    );
+    assert!(
+        driver.shows_text("double-click"),
+        "BYPASS hints the shortcut"
+    );
+    let icon = rect_of(&driver, VOX).expect("the icon");
+    let bypass = rect_of(&driver, "BYPASS").expect("the row");
+    assert!(
+        bypass.top() > icon.bottom(),
+        "the menu opens under the icon"
+    );
+    assert!(
+        (bypass.left()..=bypass.right()).contains(&icon.center().x),
+        "the menu sits under the icon"
+    );
+
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+    assert!(!strip_menu_open(&driver), "Escape closes the menu");
+
+    let _ = driver.secondary_click(VOX).expect("block button");
+    driver.settle();
+    assert!(strip_menu_open(&driver));
+    let _ = driver.click_empty_space();
+    driver.settle();
+    assert!(!strip_menu_open(&driver), "a click outside closes the menu");
 }
 
 const CATEGORY_ROWS: [&str; 6] = ["PEDAL", "AMP", "AMP + CAB", "CAB", "OUTBOARD", "SPACE"];
@@ -529,7 +568,9 @@ fn utility_mono_stereo_switch_modes() {
 #[test]
 fn utility_undo_redo_follow_history() {
     let (mut driver, backend) = archetype_driver("main-mono");
-    let _ = driver.secondary_click(VOX).expect("bypass a block");
+    let _ = driver.secondary_click(VOX).expect("the block menu");
+    driver.settle();
+    let _ = driver.click("BYPASS").expect("bypass a block");
     driver.settle();
     assert!(!backend.chain_state(0).chain.left[1].params.enabled);
     let _ = driver.click("Undo").expect("undo");
@@ -627,7 +668,7 @@ fn the_background_leaves_the_banner_visible() {
 #[test]
 fn removing_a_block_opens_its_neighbour_without_a_flash() {
     let (mut driver, _) = archetype_driver("main-mono");
-    let _ = driver.click("REMOVE").expect("remove");
+    let _ = driver.click("Remove").expect("remove");
     driver.frame();
     assert!(
         !driver.is_visible("Add Tone"),
@@ -651,7 +692,7 @@ fn removing_the_last_block_opens_the_previous_one() {
         .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
         .expect("third block");
     driver.settle();
-    let _ = driver.click("REMOVE").expect("remove");
+    let _ = driver.click("Remove").expect("remove");
     for _ in 0..3 {
         assert!(
             !driver.is_visible("Add Tone"),
@@ -1021,7 +1062,7 @@ fn block_titled(backend: &MockBackend, needle: &str) -> Option<ronie_core::Chain
 #[test]
 fn the_block_page_has_a_title_row_and_tabs() {
     let (driver, _) = amp_page();
-    for label in ["GEAR", "EQ", "INFO", "BYPASS", "REPLACE", "REMOVE"] {
+    for label in ["GEAR", "EQ", "INFO", "Bypass", "Replace", "Remove"] {
         assert!(driver.is_visible(label), "{label} is on the page");
     }
     assert!(
@@ -1051,7 +1092,7 @@ fn the_eq_tab_opens_the_eq() {
 #[test]
 fn bypass_toggles_the_block() {
     let (mut driver, backend) = amp_page();
-    let _ = driver.click("BYPASS").expect("BYPASS");
+    let _ = driver.click("Bypass").expect("Bypass");
     driver.settle();
     assert!(!block_titled(&backend, "AC30").expect("amp").params.enabled);
 }
@@ -1059,7 +1100,7 @@ fn bypass_toggles_the_block() {
 #[test]
 fn remove_removes_the_block() {
     let (mut driver, backend) = amp_page();
-    let _ = driver.click("REMOVE").expect("REMOVE");
+    let _ = driver.click("Remove").expect("Remove");
     driver.settle();
     assert!(block_titled(&backend, "AC30").is_none());
 }
@@ -3663,7 +3704,7 @@ fn tuned_vox_page(library: &[ronie_core::Tone]) -> (UiDriver, Arc<MockBackend>) 
 }
 
 fn open_replace(driver: &mut UiDriver) {
-    let _ = driver.click("REPLACE").expect("REPLACE");
+    let _ = driver.click("Replace").expect("Replace");
     driver.settle();
 }
 
@@ -3699,7 +3740,7 @@ fn replace_opens_the_menu_on_the_blocks_category() {
         ),
         "the block stays on the stage"
     );
-    let replace = rect_of(&driver, "REPLACE").expect("the button");
+    let replace = rect_of(&driver, "Replace").expect("the button");
     let search = rect_of(&driver, "Search amps in your library").expect("the field");
     assert!(
         search.top() > replace.bottom(),
@@ -3910,4 +3951,261 @@ fn a_replace_drops_the_skin_override_and_ir_b() {
     driver.chrome_mut().undo().expect("undo");
     driver.settle();
     assert_eq!(backend.chain_state(0).chain.block(&cab.id), Some(&old));
+}
+
+// ---------------------------------------------------------------- Visible block actions
+
+/// Plays a double-click on a control.
+fn double_click(driver: &mut UiDriver, label: &str) {
+    let at = rect_of(driver, label)
+        .unwrap_or_else(|| panic!("{label} is missing"))
+        .center();
+    let button = |pressed| eframe::egui::Event::PointerButton {
+        pos: at,
+        button: eframe::egui::PointerButton::Primary,
+        pressed,
+        modifiers: eframe::egui::Modifiers::NONE,
+    };
+    driver.play(vec![eframe::egui::Event::PointerMoved(at)]);
+    for _ in 0..2 {
+        driver.play(vec![button(true)]);
+        driver.play(vec![button(false)]);
+    }
+    driver.settle();
+}
+
+fn checked(driver: &UiDriver, label: &str) -> bool {
+    driver
+        .controls()
+        .iter()
+        .find(|control| control.label == label)
+        .unwrap_or_else(|| panic!("{label} is missing"))
+        .checked
+}
+
+#[test]
+fn the_page_shows_bypass_replace_and_remove_buttons() {
+    let (mut driver, backend) = amp_page();
+    let rects: Vec<_> = ["Bypass", "Replace", "Remove"]
+        .into_iter()
+        .map(|label| rect_of(&driver, label).unwrap_or_else(|| panic!("{label} is missing")))
+        .collect();
+    for rect in &rects {
+        assert!(
+            (rect.height() - 28.0).abs() < 0.5,
+            "a pill is 28 pt tall: {rect:?}"
+        );
+    }
+    assert!(
+        rects[0].right() < rects[1].left() && rects[1].right() < rects[2].left(),
+        "BYPASS, REPLACE, REMOVE from left to right"
+    );
+    assert!(
+        (rects[1].left() - rects[0].right() - 8.0).abs() < 0.5,
+        "8 pt between the pills"
+    );
+    for text in ["BYPASS", "REPLACE", "REMOVE"] {
+        assert!(driver.shows_text(text), "the pill reads {text}");
+    }
+    assert!(
+        !checked(&driver, "Bypass"),
+        "an active block is not bypassed"
+    );
+    let _ = driver.click("Bypass").expect("Bypass");
+    driver.settle();
+    assert!(!vox(&backend).params.enabled);
+    assert!(checked(&driver, "Bypass"), "BYPASS reads as selected");
+    let _ = driver.click("Bypass").expect("Bypass");
+    driver.settle();
+    assert!(vox(&backend).params.enabled);
+    assert!(!checked(&driver, "Bypass"));
+}
+
+#[test]
+fn the_strip_menu_bypasses_replaces_duplicates_and_removes() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let count = |backend: &MockBackend, needle: &str| {
+        backend
+            .chain_state(0)
+            .chain
+            .left
+            .iter()
+            .filter(|block| {
+                block
+                    .tone
+                    .as_ref()
+                    .is_some_and(|tone| tone.title.contains(needle))
+            })
+            .count()
+    };
+    let strip_action = |driver: &mut UiDriver, row: &str| {
+        let _ = driver.secondary_click(VOX).expect("block button");
+        driver.settle();
+        let _ = driver.click(row).expect("menu row");
+        driver.settle();
+        assert!(!strip_menu_open(driver), "{row} closes the menu");
+    };
+
+    strip_action(&mut driver, "BYPASS");
+    assert!(!vox(&backend).params.enabled, "BYPASS bypasses");
+    strip_action(&mut driver, "BYPASS");
+    assert!(vox(&backend).params.enabled, "BYPASS toggles");
+
+    strip_action(&mut driver, "REPLACE\u{2026}");
+    assert!(
+        driver.shows_text("REPLACE \u{b7} AMP"),
+        "REPLACE opens the replace menu on the amps"
+    );
+    assert!(driver.shows_text("keeps trims, EQ and place"));
+    let icon = rect_of(&driver, VOX).expect("the icon");
+    let search = rect_of(&driver, "Search amps in your library").expect("the field");
+    assert!(
+        search.top() > icon.bottom(),
+        "the menu opens under the icon"
+    );
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+    assert!(!driver.shows_text("keeps trims, EQ and place"));
+
+    strip_action(&mut driver, "REMOVE");
+    assert_eq!(count(&backend, "AC30"), 0, "REMOVE removes the block");
+    driver.chrome_mut().undo().expect("undo");
+    driver.settle();
+    assert_eq!(count(&backend, "AC30"), 1, "one undo brings it back");
+
+    strip_action(&mut driver, "DUPLICATE");
+    assert_eq!(count(&backend, "AC30"), 2, "DUPLICATE copies the block");
+}
+
+#[test]
+fn removing_the_open_block_from_the_strip_opens_its_neighbour() {
+    let (mut driver, backend) = amp_page();
+    let _ = driver.secondary_click(VOX).expect("block button");
+    driver.settle();
+    let _ = driver.click("REMOVE").expect("REMOVE");
+    driver.settle();
+    assert!(block_titled(&backend, "AC30").is_none());
+    assert!(
+        matches!(
+            driver.chrome().gallery().selection(),
+            GallerySelection::BlockDetail(_)
+        ),
+        "a neighbour opens: {:?}",
+        driver.chrome().gallery().selection()
+    );
+}
+
+#[test]
+fn double_click_still_bypasses() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    double_click(&mut driver, VOX);
+    assert!(!vox(&backend).params.enabled, "a double-click bypasses");
+    assert!(!strip_menu_open(&driver), "a double-click opens no menu");
+    // Half a second later, so that egui counts a new double-click and not a triple one.
+    for _ in 0..30 {
+        driver.frame();
+    }
+    double_click(&mut driver, VOX);
+    assert!(
+        vox(&backend).params.enabled,
+        "a second double-click turns it on"
+    );
+}
+
+#[test]
+fn delete_removes_the_selected_block_and_undo_brings_it_back() {
+    for key in [eframe::egui::Key::Delete, eframe::egui::Key::Backspace] {
+        let (mut driver, backend) = amp_page();
+        let old = vox(&backend);
+        let _ = driver.press_key(key);
+        assert!(
+            block_titled(&backend, "AC30").is_none(),
+            "{key:?} removes the open block"
+        );
+        assert!(
+            matches!(
+                driver.chrome().gallery().selection(),
+                GallerySelection::BlockDetail(_)
+            ),
+            "a neighbour opens"
+        );
+        let others = backend.chain_state(0).chain.left.len();
+        driver.chrome_mut().undo().expect("undo");
+        driver.settle();
+        assert_eq!(
+            backend.chain_state(0).chain.block(&old.id),
+            Some(&old),
+            "one undo brings it back"
+        );
+        assert!(backend.chain_state(0).chain.left.len() >= others);
+    }
+}
+
+#[test]
+fn delete_while_typing_removes_nothing() {
+    let (mut driver, backend) = menu_driver("main-mono", false, &[]);
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    let blocks = |backend: &MockBackend| backend.chain_state(0).chain.left.clone();
+    let before = blocks(&backend);
+
+    // The add menu's search field.
+    open_amp(&mut driver);
+    let _ = driver
+        .fill("Search amps in your library", "vox")
+        .expect("search");
+    for key in [eframe::egui::Key::Backspace, eframe::egui::Key::Delete] {
+        let _ = driver.press_key(key);
+    }
+    assert_eq!(
+        blocks(&backend),
+        before,
+        "typing in the search removes nothing"
+    );
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+
+    // The preset name.
+    let _ = driver.click("Save preset").expect("save");
+    driver.settle();
+    let _ = driver.fill("Name", "Lead").expect("the name field");
+    for key in [eframe::egui::Key::Backspace, eframe::egui::Key::Delete] {
+        let _ = driver.press_key(key);
+    }
+    assert_eq!(
+        blocks(&backend),
+        before,
+        "typing a preset name removes nothing"
+    );
+}
+
+#[test]
+fn delete_with_a_menu_open_removes_nothing() {
+    let (mut driver, backend) = amp_page();
+    open_menu(&mut driver);
+    let _ = driver.press_key(eframe::egui::Key::Delete);
+    assert!(
+        block_titled(&backend, "AC30").is_some(),
+        "the add menu is open"
+    );
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+    let _ = driver.secondary_click(VOX).expect("block button");
+    driver.settle();
+    let _ = driver.press_key(eframe::egui::Key::Delete);
+    assert!(
+        block_titled(&backend, "AC30").is_some(),
+        "the strip menu is open"
+    );
+}
+
+#[test]
+fn right_click_on_plus_or_an_empty_slot_opens_no_menu() {
+    let (mut driver, _) = slot_driver("main-mono", false, &[], add_overdrive);
+    let _ = driver.secondary_click("Add a block").expect("plus");
+    driver.settle();
+    assert!(!strip_menu_open(&driver), "the + has no block menu");
+    let _ = driver
+        .secondary_click("Add a pedal after these")
+        .expect("slot");
+    driver.settle();
+    assert!(!strip_menu_open(&driver), "a slot has no block menu");
 }
