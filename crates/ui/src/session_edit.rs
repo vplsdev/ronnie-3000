@@ -494,7 +494,16 @@ impl SessionEditor {
                 side,
                 index,
             } => self.place_added_block(&block_id, side, index),
-            UiAction::RestoreReplacedParams { block_id } => self.restore_replaced_params(&block_id),
+            UiAction::ReplaceTone {
+                target_block_id,
+                tone,
+                model_id,
+                bytes,
+            } => self.replace_tone(&target_block_id, tone, model_id, bytes, storage),
+            UiAction::ReplaceWithFile {
+                target_block_id,
+                path,
+            } => self.replace_with_file(&target_block_id, &path, storage),
             UiAction::RetryModelLoad(block_id) => self.retry_model_load(&block_id),
             UiAction::SetBlockParamsGesture {
                 block_id,
@@ -678,6 +687,56 @@ impl SessionEditor {
         Ok(self.chain_changed())
     }
 
+    /// Replaces the tone of tone block `target` in place, as one undo step: the block keeps its
+    /// id, its place, and its params, and loses the second IR and the skin of the old tone.
+    fn replace_tone(
+        &mut self,
+        target: &BlockId,
+        tone: Tone,
+        model_id: ModelId,
+        bytes: Option<ModelBytes>,
+        storage: &mut impl SessionStorage,
+    ) -> Result<UiEffect, UiError> {
+        self.tone_block(target)?;
+        if let Some(bytes) = bytes {
+            check_downloaded_model(&tone, model_id, &bytes)?;
+            storage.keep_model_bytes(target, model_id, bytes)?;
+        }
+        self.swap_tone(target, tone, model_id)
+    }
+
+    fn replace_with_file(
+        &mut self,
+        target: &BlockId,
+        path: &Path,
+        storage: &mut impl SessionStorage,
+    ) -> Result<UiEffect, UiError> {
+        self.tone_block(target)?;
+        let tone = storage.load_local(path)?;
+        let model_id = tone
+            .models
+            .first()
+            .ok_or_else(|| UiError::Control("local load has no models".to_owned()))?
+            .id;
+        self.swap_tone(target, tone, model_id)
+    }
+
+    /// Puts a new tone into tone block `target` and keeps the block's params, as one undo step.
+    fn swap_tone(
+        &mut self,
+        target: &BlockId,
+        tone: Tone,
+        model_id: ModelId,
+    ) -> Result<UiEffect, UiError> {
+        let id = target.0.clone();
+        self.change_block(target, |block| {
+            let params = std::mem::take(&mut block.params);
+            *block = ChainBlock::tone(id, tone, model_id);
+            block.params = params;
+        })?;
+        Ok(self.chain_changed())
+    }
+
     fn load_tone_with_bytes(
         &mut self,
         target: &BlockId,
@@ -755,24 +814,6 @@ impl SessionEditor {
         // A lane keeps its tones first and its empty slots after them.
         let end = lane.iter().filter(|block| !block.is_insert).count();
         lane.insert(index.min(end), block);
-        Ok(self.chain_changed())
-    }
-
-    /// Gives block `block_id` the params that it held before the newest undo step, which is the
-    /// load that replaced its tone.
-    ///
-    /// It takes no undo step, so one undo takes back the replace with its params. The second IR
-    /// and the skin of the old tone stay gone, because they belong to that tone.
-    fn restore_replaced_params(&mut self, block_id: &BlockId) -> Result<UiEffect, UiError> {
-        self.tone_block(block_id)?;
-        let params = self
-            .undo
-            .last()
-            .and_then(|frame| frame.session.chain.block(block_id))
-            .filter(|block| !block.is_insert)
-            .map(|block| block.params.clone())
-            .ok_or_else(|| UiError::InvalidAction("the block replaced no tone block".to_owned()))?;
-        self.block_mut(block_id)?.params = params;
         Ok(self.chain_changed())
     }
 
@@ -1936,17 +1977,13 @@ mod tests {
         assert!(old.ir_b.is_some() && old.skin.is_some());
 
         editor
-            .apply_alone(UiAction::LoadTone {
-                target_insert_id: slot.clone(),
+            .apply_alone(UiAction::ReplaceTone {
+                target_block_id: slot.clone(),
                 tone: tone(2),
                 model_id: ModelId(20),
+                bytes: None,
             })
             .expect("replace");
-        editor
-            .apply_alone(UiAction::RestoreReplacedParams {
-                block_id: slot.clone(),
-            })
-            .expect("restore");
 
         let replaced = editor.view(0).chain.left[0].clone();
         assert_eq!(replaced.id, slot, "the block keeps its id and place");
@@ -1967,15 +2004,22 @@ mod tests {
     }
 
     #[test]
-    fn restoring_params_with_no_replaced_block_is_refused() {
+    fn replacing_an_insert_is_refused() {
         let mut editor = editor();
         let slot = editor.view(0).chain.left[0].id.clone();
+        let before = editor.view(0);
         assert!(
             editor
-                .apply_alone(UiAction::RestoreReplacedParams { block_id: slot })
+                .apply_alone(UiAction::ReplaceTone {
+                    target_block_id: slot,
+                    tone: tone(2),
+                    model_id: ModelId(20),
+                    bytes: None,
+                })
                 .is_err(),
-            "an insert has no params to restore"
+            "an insert has no tone to replace"
         );
+        assert_eq!(editor.view(0).revision, before.revision);
     }
 
     #[test]

@@ -28,6 +28,9 @@ pub struct LoadTarget {
     pub side: ChainSide,
     /// Insert or tone block identity.
     pub block_id: String,
+    /// Whether the load replaces the tone of the block in place, keeping its params, rather than
+    /// filling it as a new block.
+    pub replace: bool,
 }
 
 /// The one current generation of a flow.
@@ -113,13 +116,22 @@ impl LoadTicket {
                 bytes,
             },
             |downloaded| {
-                let target_insert_id = resolve_target(self.backend.as_ref(), &self.target)
+                let target = resolve_target(self.backend.as_ref(), &self.target)
                     .ok_or_else(|| UiError::UnknownTarget(self.target.block_id.clone()))?;
-                Ok(Some(UiAction::LoadToneWithBytes {
-                    target_insert_id,
-                    tone: downloaded.tone,
-                    model_id: downloaded.model_id,
-                    bytes: downloaded.bytes,
+                Ok(Some(if self.target.replace {
+                    UiAction::ReplaceTone {
+                        target_block_id: target,
+                        tone: downloaded.tone,
+                        model_id: downloaded.model_id,
+                        bytes: Some(downloaded.bytes),
+                    }
+                } else {
+                    UiAction::LoadToneWithBytes {
+                        target_insert_id: target,
+                        tone: downloaded.tone,
+                        model_id: downloaded.model_id,
+                        bytes: downloaded.bytes,
+                    }
                 }))
             },
         )
@@ -170,12 +182,16 @@ fn publish_model(
     Ok(true)
 }
 
-/// The remembered block, or the first open insert of its lane when the block is gone.
+/// The remembered block, or the first open insert of its lane when the block is gone. A
+/// replace has only its own block.
 fn resolve_target(backend: &dyn UiBackend, target: &LoadTarget) -> Option<BlockId> {
     let chain = backend.chain_state(0).chain;
     let remembered = BlockId(target.block_id.clone());
     if chain.block(&remembered).is_some() {
         return Some(remembered);
+    }
+    if target.replace {
+        return None;
     }
     let lane = match target.side {
         ChainSide::Left => &chain.left,
@@ -402,6 +418,16 @@ impl LoadFlow {
 
     /// Remembers an insert or swap target and opens tone selection.
     pub fn select(&mut self, side: ChainSide, target_block_id: &str) {
+        self.select_target(side, target_block_id, false);
+    }
+
+    /// Remembers a tone block whose tone the next load replaces in place, keeping the block's
+    /// params, and opens tone selection.
+    pub fn select_replace(&mut self, side: ChainSide, target_block_id: &str) {
+        self.select_target(side, target_block_id, true);
+    }
+
+    fn select_target(&mut self, side: ChainSide, target_block_id: &str, replace: bool) {
         // A load in progress belongs to the target that it started for.
         if self.phase == LoadPhase::Loading {
             self.gate.advance();
@@ -409,6 +435,7 @@ impl LoadFlow {
         self.pending = Some(LoadTarget {
             side,
             block_id: target_block_id.to_owned(),
+            replace,
         });
         self.browser_open = true;
         self.closed = false;
@@ -621,10 +648,19 @@ impl LoadFlow {
             return false;
         };
         let loaded = tone.clone();
-        let result = self.backend.dispatch(UiAction::LoadTone {
-            target_insert_id,
-            tone,
-            model_id,
+        let result = self.backend.dispatch(if target.replace {
+            UiAction::ReplaceTone {
+                target_block_id: target_insert_id,
+                tone,
+                model_id,
+                bytes: None,
+            }
+        } else {
+            UiAction::LoadTone {
+                target_insert_id,
+                tone,
+                model_id,
+            }
         });
         if result.is_err() {
             self.phase = LoadPhase::Failed;

@@ -3841,6 +3841,153 @@ fn a_replace_wins_over_a_capture_download_of_that_block() {
     );
 }
 
+/// The block `BLOCK` with its params changed from the defaults, as the backend holds it.
+fn tune_block(rig: &DetailRig, gain: f64) -> ronie_core::ChainBlock {
+    let block = BlockId(BLOCK.to_owned());
+    let mut params = rig
+        .inner
+        .chain_state(0)
+        .chain
+        .block(&block)
+        .expect("block")
+        .params
+        .clone();
+    params.input_gain = gain;
+    params.enabled = false;
+    rig.inner
+        .dispatch(UiAction::SetBlockParams {
+            block_id: block.clone(),
+            params,
+        })
+        .expect("tune");
+    rig.inner
+        .chain_state(0)
+        .chain
+        .block(&block)
+        .cloned()
+        .expect("block")
+}
+
+/// Starts a catalog replace of `BLOCK` with tone 5, whose file download waits.
+fn start_held_replace(rig: &mut DetailRig) {
+    rig.routes
+        .respond(TONE_FIVE, tone_answer(5, "nam"))
+        .respond(MODELS, one_model(7, PUBLIC_URL))
+        .respond(PUBLIC_FILE, file_answer(b"nam bytes"));
+    rig.routes.hold(PUBLIC_FILE);
+    rig.chrome.replace_tone(BLOCK, catalog_row(5));
+    let routes = rig.routes.clone();
+    pump(&mut rig.chrome, "the replace download", move |_| {
+        routes.count(PUBLIC_FILE) == 1
+    });
+}
+
+fn block_tone(rig: &DetailRig) -> Option<ToneId> {
+    rig.inner
+        .chain_state(0)
+        .chain
+        .block(&BlockId(BLOCK.to_owned()))
+        .and_then(|block| block.tone.as_ref().map(|tone| tone.id))
+}
+
+#[test]
+fn a_catalog_replace_keeps_the_params_of_landing_time_and_one_undo_restores_the_block() {
+    let mut rig = DetailRig::new();
+    start_held_replace(&mut rig);
+    let old = tune_block(&rig, 0.8);
+    rig.routes.release(PUBLIC_FILE);
+    pump(&mut rig.chrome, "the landing", |chrome| {
+        chrome.load_flow_phase() == LoadPhase::Ready
+    });
+
+    let block = rig
+        .inner
+        .chain_state(0)
+        .chain
+        .block(&old.id)
+        .cloned()
+        .expect("block");
+    assert_eq!(block_tone(&rig), Some(ToneId(5)));
+    assert_eq!(block.params, old.params, "the params of landing time stay");
+    rig.chrome.undo().expect("undo");
+    assert_eq!(rig.inner.chain_state(0).chain.block(&old.id), Some(&old));
+}
+
+#[test]
+fn an_edit_between_the_publish_and_the_poll_keeps_the_replaced_params() {
+    let mut rig = DetailRig::new();
+    start_held_replace(&mut rig);
+    let old = tune_block(&rig, 0.7);
+    rig.routes.release(PUBLIC_FILE);
+    // The worker publishes with no poll, and an edit of another block takes an undo step
+    // before the poll sees the landing.
+    wait_for("the publish", || block_tone(&rig) == Some(ToneId(5)));
+    let other = BlockId("blk-2".to_owned());
+    let mut params = rig
+        .inner
+        .chain_state(0)
+        .chain
+        .block(&other)
+        .expect("amp")
+        .params
+        .clone();
+    params.mix = 0.3;
+    rig.inner
+        .dispatch(UiAction::SetBlockParams {
+            block_id: other,
+            params,
+        })
+        .expect("edit");
+    pump(&mut rig.chrome, "the landing", |chrome| {
+        chrome.load_flow_phase() == LoadPhase::Ready
+    });
+    let block = rig
+        .inner
+        .chain_state(0)
+        .chain
+        .block(&old.id)
+        .cloned()
+        .expect("block");
+    assert_eq!(block.params, old.params, "the replaced params stay");
+}
+
+#[test]
+fn a_catalog_replace_lands_with_its_params_after_a_return_to_main() {
+    let mut rig = DetailRig::new();
+    start_held_replace(&mut rig);
+    let old = tune_block(&rig, 0.6);
+    rig.chrome.go_to_main();
+    rig.routes.release(PUBLIC_FILE);
+    pump(&mut rig.chrome, "the landing", |chrome| {
+        chrome.load_flow_phase() == LoadPhase::Ready
+    });
+    let block = rig
+        .inner
+        .chain_state(0)
+        .chain
+        .block(&old.id)
+        .cloned()
+        .expect("block");
+    assert_eq!(block_tone(&rig), Some(ToneId(5)));
+    assert_eq!(block.params, old.params);
+}
+
+#[test]
+fn a_failed_catalog_replace_leaves_the_block_untouched() {
+    let mut rig = DetailRig::new();
+    let old = tune_block(&rig, 0.6);
+    let revision = rig.inner.chain_state(0).revision;
+    rig.routes
+        .respond(TONE_FIVE, tone_answer(5, "nam"))
+        .respond(MODELS, models_answer(serde_json::json!([])));
+    rig.chrome.replace_tone(BLOCK, catalog_row(5));
+    pump(&mut rig.chrome, "the failure", |chrome| {
+        chrome.load_flow_phase() == LoadPhase::Failed
+    });
+    assert_eq!(rig.inner.chain_state(0).chain.block(&old.id), Some(&old));
+    assert_eq!(rig.inner.chain_state(0).revision, revision);
+}
+
 #[test]
 fn a_late_download_gives_way_to_a_newer_switch() {
     let mut rig = DetailRig::new();

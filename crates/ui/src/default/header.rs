@@ -160,9 +160,6 @@ pub struct ChromeController {
     /// Where a tone that the browser loads goes, when a stage slot opened the browser: the
     /// insert it fills, and its place in the lane of that insert.
     browser_placement: Option<(String, Placement)>,
-    /// The block whose tone a pending load replaces, so that the block keeps its params when
-    /// the load lands.
-    replacing: Option<String>,
     /// A REPLACE that asks the Archetype layout for its menu: the block and the control under
     /// which the menu opens.
     replace_request: Option<(BlockId, egui::Rect)>,
@@ -278,7 +275,6 @@ impl ChromeController {
             placement: Placement::End,
             added_side: ronie_core::ChainSide::Left,
             browser_placement: None,
-            replacing: None,
             replace_request: None,
             model_switches: ModelSwitchFlow::new(backend.clone()),
             detail_work_live: false,
@@ -1080,17 +1076,23 @@ impl ChromeController {
         placement: Placement,
         replace: bool,
     ) -> Result<(), UiError> {
-        if replace && self.load_flow.phase() == LoadPhase::Loading {
-            // A download that lands later must not take the place of the file.
-            self.load_flow.cancel();
-        }
-        self.replacing = None;
-        if let Err(error) = self.gallery.drop_file(target_id, path) {
+        let dropped = if replace {
+            self.backend
+                .dispatch(UiAction::ReplaceWithFile {
+                    target_block_id: BlockId(target_id.to_owned()),
+                    path: path.to_path_buf(),
+                })
+                .map(|_| ())
+        } else {
+            self.gallery.drop_file(target_id, path)
+        };
+        if let Err(error) = dropped {
             self.hints.set_toast(Some(FILE_REFUSED.to_owned()));
             return Err(error);
         }
-        if replace {
-            self.restore_replaced_params(target_id);
+        if replace && self.load_flow.phase() == LoadPhase::Loading {
+            // A download that lands later must not take the place of the file.
+            self.load_flow.cancel();
         }
         self.place_block(target_id, placement);
         let chain = self.backend.chain_state(0).chain;
@@ -1214,29 +1216,9 @@ impl ChromeController {
         }
     }
 
-    /// Gives block `id`, which a load just replaced, the params that it had before that load.
-    fn restore_replaced_params(&self, id: &str) {
-        // A refusal means that the load was no replace of a tone, so the defaults stay.
-        let _ = self.backend.dispatch(UiAction::RestoreReplacedParams {
-            block_id: BlockId(id.to_owned()),
-        });
-    }
-
-    /// Finishes a load that landed: a replace keeps its params, the tone joins the library, and
-    /// the block of an add from the menu opens.
+    /// Finishes a load that landed: the tone joins the library, and the block of an add from
+    /// the menu opens.
     fn finish_landed(&mut self, tone: ronie_core::Tone) {
-        if let Some(id) = self.replacing.take() {
-            let holds = self
-                .backend
-                .chain_state(0)
-                .chain
-                .block(&BlockId(id.clone()))
-                .and_then(|block| block.tone.as_ref())
-                .is_some_and(|held| held.id == tone.id);
-            if holds {
-                self.restore_replaced_params(&id);
-            }
-        }
         self.remember_tone(tone);
         self.open_added_block();
     }
@@ -1261,8 +1243,11 @@ impl ChromeController {
             }
         }
         self.browser_placement = None;
-        self.load_flow.select(side, insert_id);
-        self.replacing = replace.then(|| insert_id.to_owned());
+        if replace {
+            self.load_flow.select_replace(side, insert_id);
+        } else {
+            self.load_flow.select(side, insert_id);
+        }
         self.pick_tone(tone);
         self.placement = placement;
         self.added_side = side;
@@ -1349,7 +1334,6 @@ impl ChromeController {
     ) {
         self.browser_placement =
             (placement != Placement::End).then(|| (insert_id.to_owned(), placement));
-        self.replacing = None;
         self.gallery.activate(insert_id);
         self.sync_browser();
         self.narrow_browser(category, text);
@@ -1366,8 +1350,9 @@ impl ChromeController {
         self.browser_placement = None;
         let side = self.side_of(block_id);
         self.gallery.select_tone(side, BlockId(block_id.to_owned()));
+        // The browser keeps a target of this block and side, so this replace marker stays.
+        self.load_flow.select_replace(side, block_id);
         self.sync_browser();
-        self.replacing = Some(block_id.to_owned());
         self.narrow_browser(category, text);
     }
 
@@ -1424,7 +1409,6 @@ impl ChromeController {
         {
             let mut closed = self.browser.take();
             self.browser_placement = None;
-            self.replacing = None;
             if self.community.is_some() {
                 // A cancelled load leaves the store open, and its worker now stops.
                 if let Some(browser) = &mut closed {
@@ -1485,7 +1469,6 @@ impl ChromeController {
             self.cancel_browser_work();
         }
         self.browser_placement = None;
-        self.replacing = None;
         if let Some(detail) = &mut self.detail {
             detail.close();
             self.detail = None;
