@@ -1,7 +1,7 @@
 {
   "id": "fuzz",
   "width": 621,
-  "height": 785,
+  "height": 768,
   "knobs": [
     {
       "control": "output",
@@ -36,5 +36,15 @@
       "frames": 32,
       "columns": 8
     }
-  ]
+  ],
+  "lcd": {
+    "center": [
+      310.5,
+      203.6
+    ],
+    "size": [
+      82.4,
+      25.4
+    ]
+  }
 }

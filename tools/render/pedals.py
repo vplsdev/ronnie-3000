@@ -13,7 +13,7 @@ import bpy
 from mathutils import Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import finish, knob_rig  # noqa: E402
+from common import finish, knob_rig, lcd_rig  # noqa: E402
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 FAMILY = argv[0] if argv else "od-green"
@@ -124,21 +124,21 @@ KNOBS = {
 
 # ================================================================ families
 F = {
-    "od-green": dict(form="treadle", name="GREEN OD", lcd="DRV 3", paint=dict(color=(0.016, 0.15, 0.05), rough=0.45, coat=0.22, coat_rough=0.28, bump=(1600, 0.05)),
+    "od-green": dict(form="treadle", name="GREEN OD", paint=dict(color=(0.016, 0.15, 0.05), rough=0.45, coat=0.22, coat_rough=0.28, bump=(1600, 0.05)),
                      wear=(0.10, 0.36, 0.16), ink=(0.86, 0.85, 0.80), knob="black", led=(1.0, 0.025, 0.0)),
-    "od-gold": dict(form="standard", name="GOLD OD", lcd="GAIN 2", paint=dict(color=(0.42, 0.24, 0.045), metallic=0.9, rough=0.3, coat=0.6, coat_rough=0.08, flake=(900, 0.3)),
+    "od-gold": dict(form="standard", name="GOLD OD", paint=dict(color=(0.42, 0.24, 0.045), metallic=0.9, rough=0.3, coat=0.6, coat_rough=0.08, flake=(900, 0.3)),
                     wear=(0.8, 0.62, 0.3), ink=(0.05, 0.035, 0.015), knob="black", led=(1.0, 0.025, 0.0), frame=True, track=0.25),
-    "dist-black": dict(form="row3", name="DIST", lcd="DIST 5", paint=dict(color=(0.012, 0.012, 0.013), rough=0.72, bump=(2500, 0.12)),
+    "dist-black": dict(form="row3", name="DIST", paint=dict(color=(0.012, 0.012, 0.013), rough=0.72, bump=(2500, 0.12)),
                        wear=(0.08, 0.08, 0.08), ink=(0.85, 0.85, 0.85), knob="chrome", led=(1.0, 0.025, 0.0), bold=0.03),
-    "fuzz": dict(form="wide", name="FUZZ", lcd="SUS 7", paint=dict(color=(0.62, 0.63, 0.64), metallic=1.0, rough=0.3, aniso=0.7),
+    "fuzz": dict(form="wide", name="FUZZ", paint=dict(color=(0.62, 0.63, 0.64), metallic=1.0, rough=0.3, aniso=0.7),
                  wear=None, ink=(0.45, 0.025, 0.015), knob="black", led=(1.0, 0.025, 0.0), shear=0.2, bold=0.03, frame=True),
-    "boost": dict(form="compact", name="BOOST", lcd="+10 dB", paint=dict(color=(0.74, 0.71, 0.62), rough=0.55, bump=(2200, 0.06)),
+    "boost": dict(form="compact", name="BOOST", paint=dict(color=(0.74, 0.71, 0.62), rough=0.55, bump=(2200, 0.06)),
                   wear=(0.55, 0.53, 0.47), ink=(0.06, 0.06, 0.06), knob="black", led=(1.0, 0.025, 0.0)),
-    "comp": dict(form="compact", name="COMP", lcd="SUS 4", paint=dict(color=(0.42, 0.02, 0.012), rough=0.38, coat=0.4, coat_rough=0.15, bump=(1600, 0.05)),
+    "comp": dict(form="compact", name="COMP", paint=dict(color=(0.42, 0.02, 0.012), rough=0.38, coat=0.4, coat_rough=0.15, bump=(1600, 0.05)),
                  wear=(0.6, 0.15, 0.1), ink=(0.9, 0.86, 0.78), knob="black", led=(1.0, 0.025, 0.0), bold=0.02),
-    "default-dark": dict(form="standard", name="MYSTERY", lcd="CAP 1", paint=dict(color=(0.09, 0.09, 0.1), metallic=0.7, rough=0.34, aniso=0.6),
+    "default-dark": dict(form="standard", name="MYSTERY", paint=dict(color=(0.09, 0.09, 0.1), metallic=0.7, rough=0.34, aniso=0.6),
                          wear=None, ink=(0.88, 0.88, 0.86), knob="black", led=(1.0, 0.18, 0.0)),
-    "default-light": dict(form="standard", name="MY PEDAL", lcd="CAP 1", paint=dict(color=(0.6, 0.61, 0.62), metallic=1.0, rough=0.3, aniso=0.6),
+    "default-light": dict(form="standard", name="MY PEDAL", paint=dict(color=(0.6, 0.61, 0.62), metallic=1.0, rough=0.3, aniso=0.6),
                           wear=None, ink=(0.04, 0.04, 0.045), knob="black", led=(1.0, 0.18, 0.0)),
 }
 cfg = F[FAMILY]
@@ -147,7 +147,6 @@ if cfg.get("wear"):
     add_edge_wear(M_PAINT, cfg["wear"])
 M_INK = principled("ink", cfg["ink"], rough=0.5)
 M_LED = emission_only("led", cfg["led"], 2.6)
-M_LCD = emission_only("lcd text", (0.62, 1.0, 0.7), 1.6)
 M_KNOB = KNOBS[cfg["knob"]]
 
 # ================================================================ helpers
@@ -206,7 +205,6 @@ def load_font(paths):
 
 
 FONT = load_font(["/System/Library/Fonts/Supplemental/Futura.ttc", "/System/Library/Fonts/Avenir Next.ttc"])
-LCD_FONT = load_font(["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf"])
 
 
 def text(body, size, loc, mat, extrude=0.0, font=FONT, shear=0.0, bold=0.0):
@@ -286,10 +284,12 @@ def led(x, y, top, label=None):
         text(label, 0.2, (x, y - 0.5, top + 0.004), M_INK)
 
 
-def lcd(x, y, top, body, w=2.05, h=0.82):
+def lcd(x, y, top, w=2.05, h=0.82):
+    """A blank LCD: bezel and dark glass. The app draws the text; the manifest records the glass."""
     box("lcd bezel", (w, h, 0.08), (x, y, top + 0.05), M_JACK, bev=0.08, seg=3)
-    box("lcd glass", (w - 0.2, h - 0.18, 0.04), (x, y, top + 0.1), M_GLASS, bev=0.03, seg=2)
-    text(body, h * 0.54, (x, y - 0.02, top + 0.125), M_LCD, font=LCD_FONT)
+    gw, gh, gd, gz = w - 0.2, h - 0.18, 0.04, top + 0.1
+    box("lcd glass", (gw, gh, gd), (x, y, gz), M_GLASS, bev=0.03, seg=2)
+    lcd_rig.set_glass(x, y, gz + gd / 2, gw, gh)
 
 
 def toggle(x, y, top, up_label, down_label=None, up=True):
@@ -348,7 +348,7 @@ if form == "treadle":
     enclosure(W, D, TOP, 0.5)
     box("label strip", (W - 1.1, 1.55, 0.04), (0, 0.55, TOP + 0.005), principled("inset", tuple(c * 0.5 for c in cfg["paint"]["color"]), rough=0.5), bev=0.12, seg=4)
     text(cfg["name"], 0.95, (-1.15, 0.55, TOP + 0.03), M_INK, extrude=0.006)
-    lcd(1.95, 0.55, TOP, cfg["lcd"])
+    lcd(1.95, 0.55, TOP)
     knob("gain", -2.05, 3.75, 0.82, 1.15, 0.45, TOP, "GAIN IN")
     knob("output", 2.05, 3.75, 0.82, 1.15, 0.6, TOP, "OUTPUT")
     knob("mix", 0, 2.35, 0.52, 0.9, 1.0, TOP, "MIX", label_below=True)
@@ -373,7 +373,7 @@ elif form == "standard":
     knob("gain", -2.2, 3.55, 0.85, 1.2, 0.55, TOP, "GAIN IN")
     knob("output", 2.2, 3.55, 0.85, 1.2, 0.5, TOP, "OUTPUT")
     text("CAPTURE", 0.2, (0, 4.75, TOP + 0.004), M_INK)
-    lcd(0, 4.1, TOP, cfg["lcd"], w=1.9, h=0.72)
+    lcd(0, 4.1, TOP, w=1.9, h=0.72)
     knob("mix", 0, 1.75, 0.6, 1.0, 1.0, TOP, "MIX", label_below=True)
     toggle(-2.15, 1.75, TOP, "NORM", "ON")
     toggle(2.15, 1.75, TOP, "FULL", "LITE")
@@ -392,7 +392,7 @@ elif form == "row3":
     knob("output", -2.45, 3.9, 0.76, 1.1, 0.5, TOP, "OUTPUT")
     knob("mix", 0, 3.9, 0.76, 1.1, 1.0, TOP, "MIX")
     knob("gain", 2.45, 3.9, 0.76, 1.1, 0.7, TOP, "GAIN IN")
-    lcd(0, 2.2, TOP, cfg["lcd"], w=1.9, h=0.72)
+    lcd(0, 2.2, TOP, w=1.9, h=0.72)
     toggle(-2.3, 2.2, TOP, "NORM")
     toggle(2.3, 2.2, TOP, "FULL")
     led(0, 0.9, TOP)
@@ -408,7 +408,7 @@ elif form == "wide":
     knob("output", -3.2, 4.1, 0.95, 1.25, 0.55, TOP, "OUTPUT")
     knob("mix", 0, 4.1, 0.95, 1.25, 1.0, TOP, "MIX")
     knob("gain", 3.2, 4.1, 0.95, 1.25, 0.75, TOP, "GAIN IN")
-    lcd(0, 2.15, TOP, cfg["lcd"], w=2.0, h=0.75)
+    lcd(0, 2.15, TOP, w=2.0, h=0.75)
     toggle(-2.6, 2.15, TOP, "NORM")
     toggle(2.6, 2.15, TOP, "FULL")
     led(0, 0.85, TOP)
@@ -427,7 +427,7 @@ elif form == "compact":
     knob("left", -1.55, 3.35, 0.78, 1.1, 0.6, TOP, left)
     knob("right", 1.55, 3.35, 0.78, 1.1, 0.45, TOP, right)
     knob("mix", 0, 3.35, 0.36, 0.8, 1.0, TOP, "MIX")
-    lcd(0, 1.7, TOP, cfg["lcd"], w=1.8, h=0.68)
+    lcd(0, 1.7, TOP, w=1.8, h=0.68)
     led(0, 0.55, TOP)
     name_text(-0.8, 0.78 if len(cfg["name"]) > 7 else 0.9, TOP)
     arrows(-2.45, 2.45, -1.75, TOP)

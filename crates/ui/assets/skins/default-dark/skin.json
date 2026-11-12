@@ -1,7 +1,7 @@
 {
   "id": "default-dark",
-  "width": 621,
-  "height": 767,
+  "width": 580,
+  "height": 738,
   "knobs": [
     {
       "control": "gain",
@@ -36,5 +36,15 @@
       "frames": 32,
       "columns": 8
     }
-  ]
+  ],
+  "lcd": {
+    "center": [
+      310.5,
+      100.5
+    ],
+    "size": [
+      77.2,
+      23.7
+    ]
+  }
 }

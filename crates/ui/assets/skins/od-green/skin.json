@@ -1,6 +1,6 @@
 {
   "id": "od-green",
-  "width": 621,
+  "width": 586,
   "height": 778,
   "knobs": [
     {
@@ -36,5 +36,15 @@
       "frames": 32,
       "columns": 8
     }
-  ]
+  ],
+  "lcd": {
+    "center": [
+      400.0,
+      269.2
+    ],
+    "size": [
+      85.0,
+      28.8
+    ]
+  }
 }

@@ -2,7 +2,8 @@
 //! drawn with knobs that turn.
 //!
 //! Each skin has a transparent body, a filmstrip of 32 frames for each live knob, and a manifest
-//! that says where each knob sits on the body, in body pixels.
+//! that says where each knob (and, on a pedal, the blank LCD glass) sits on the body, in body
+//! pixels.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -74,7 +75,28 @@ impl SkinKnob {
     }
 }
 
-/// Size of a skin's body and its live knobs.
+/// The blank LCD glass on a pedal skin, where the app draws the active capture's name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkinLcd {
+    /// Centre of the glass, in body pixels.
+    pub center: [f32; 2],
+    /// Width and height of the glass's axis-aligned bounds, in body pixels.
+    pub size: [f32; 2],
+}
+
+impl SkinLcd {
+    /// Where the glass sits when the body is drawn in `body`.
+    #[must_use]
+    pub fn rect_in(&self, body: Rect, manifest: &SkinManifest) -> Rect {
+        let scale = body.width() / manifest.width as f32;
+        Rect::from_center_size(
+            body.min + egui::vec2(self.center[0], self.center[1]) * scale,
+            egui::vec2(self.size[0], self.size[1]) * scale,
+        )
+    }
+}
+
+/// Size of a skin's body, its live knobs and its LCD.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkinManifest {
     /// Skin identity, as from [`ronie_core::gear::GearFamily::skin_id`].
@@ -85,6 +107,8 @@ pub struct SkinManifest {
     pub height: u32,
     /// Live knobs.
     pub knobs: Vec<SkinKnob>,
+    /// The LCD glass, on pedals.
+    pub lcd: Option<SkinLcd>,
 }
 
 impl SkinManifest {
@@ -107,11 +131,23 @@ impl SkinManifest {
                 })
             })
             .collect::<Option<Vec<_>>>()?;
+        // A missing or malformed LCD leaves the skin without one; the body and knobs still draw.
+        let lcd = value.get("lcd").and_then(|lcd| {
+            let pair = |key: &str| -> Option<[f32; 2]> {
+                let pair = lcd.get(key)?.as_array()?;
+                Some([number(pair.first()?)?, number(pair.get(1)?)?])
+            };
+            Some(SkinLcd {
+                center: pair("center")?,
+                size: pair("size")?,
+            })
+        });
         Some(Self {
             id: value.get("id")?.as_str()?.to_owned(),
             width: u32::try_from(value.get("width")?.as_u64()?).ok()?,
             height: u32::try_from(value.get("height")?.as_u64()?).ok()?,
             knobs,
+            lcd,
         })
     }
 
@@ -349,5 +385,40 @@ pub fn paint(
                 tint,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE: &str = r#""id": "x", "width": 600, "height": 800, "knobs": []"#;
+
+    #[test]
+    fn a_malformed_lcd_is_dropped_and_the_rest_of_the_manifest_kept() {
+        for lcd in [
+            r#""lcd": 3"#,
+            r#""lcd": {"center": [1, 2]}"#,
+            r#""lcd": {"center": [1], "size": [3, 4]}"#,
+            r#""lcd": {"center": [1, 2], "size": ["a", 4]}"#,
+        ] {
+            let manifest = SkinManifest::parse(&format!("{{{BASE}, {lcd}}}"))
+                .unwrap_or_else(|| panic!("{lcd} dropped the manifest"));
+            assert_eq!(manifest.width, 600);
+            assert!(manifest.lcd.is_none(), "{lcd}");
+        }
+    }
+
+    #[test]
+    fn a_well_formed_lcd_is_parsed() {
+        let text = format!(r#"{{{BASE}, "lcd": {{"center": [1.5, 2], "size": [3, 4.5]}}}}"#);
+        let manifest = SkinManifest::parse(&text).unwrap();
+        assert_eq!(
+            manifest.lcd,
+            Some(SkinLcd {
+                center: [1.5, 2.0],
+                size: [3.0, 4.5],
+            })
+        );
     }
 }

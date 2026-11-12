@@ -1,7 +1,8 @@
 //! The embedded gear skins: one per rendered family, clean edges, knobs where the manifest says.
 
+use eframe::egui::{Rect, pos2, vec2};
 use ronie_core::gear::{GearCategory, GearFamily};
-use ronie_ui::default::skins::{self, KnobControl};
+use ronie_ui::default::skins::{self, KnobControl, SkinLcd, SkinManifest};
 
 const FAMILIES: [GearFamily; 23] = [
     GearFamily::OdGreen,
@@ -138,6 +139,81 @@ fn knobs_sit_inside_the_body_and_their_strips_hold_every_frame() {
             );
         }
     }
+}
+
+#[test]
+fn every_pedal_skin_has_an_lcd_inside_its_body() {
+    let pedals = [
+        "od-green",
+        "od-gold",
+        "dist-black",
+        "fuzz",
+        "boost",
+        "comp",
+        "default-dark",
+        "default-light",
+    ];
+    for family in FAMILIES {
+        if family.category() == GearCategory::Pedal {
+            assert!(pedals.contains(&family.skin_id().unwrap()));
+        }
+    }
+    for id in pedals {
+        let manifest = skins::manifest(id).unwrap();
+        let lcd = manifest
+            .lcd
+            .as_ref()
+            .unwrap_or_else(|| panic!("{id} has no LCD"));
+        let [w, h] = lcd.size;
+        assert!(w > 0.0 && h > 0.0, "{id} LCD is {w} x {h}");
+        let [x, y] = lcd.center;
+        assert!(
+            x - w / 2.0 >= 0.0 && x + w / 2.0 <= manifest.width as f32,
+            "{id} LCD spans x {} to {}",
+            x - w / 2.0,
+            x + w / 2.0
+        );
+        assert!(
+            y - h / 2.0 >= 0.0 && y + h / 2.0 <= manifest.height as f32,
+            "{id} LCD spans y {} to {}",
+            y - h / 2.0,
+            y + h / 2.0
+        );
+    }
+}
+
+#[test]
+fn amps_and_cabs_have_no_lcd() {
+    for family in FAMILIES {
+        if family.category() == GearCategory::Pedal {
+            continue;
+        }
+        let id = family.skin_id().unwrap();
+        assert!(skins::manifest(id).unwrap().lcd.is_none(), "{id}");
+    }
+}
+
+#[test]
+fn an_lcd_rect_scales_with_the_body() {
+    let manifest = SkinManifest {
+        id: "test".to_owned(),
+        width: 600,
+        height: 800,
+        knobs: Vec::new(),
+        lcd: Some(SkinLcd {
+            center: [300.0, 200.0],
+            size: [90.0, 30.0],
+        }),
+    };
+    let lcd = manifest.lcd.as_ref().unwrap();
+    let full = Rect::from_min_size(pos2(10.0, 20.0), vec2(600.0, 800.0));
+    let rect = lcd.rect_in(full, &manifest);
+    assert_eq!(rect.center(), pos2(310.0, 220.0));
+    assert_eq!(rect.size(), vec2(90.0, 30.0));
+    let half = Rect::from_min_size(pos2(100.0, 50.0), vec2(300.0, 400.0));
+    let rect = lcd.rect_in(half, &manifest);
+    assert_eq!(rect.center(), pos2(250.0, 150.0));
+    assert_eq!(rect.size(), vec2(45.0, 15.0));
 }
 
 #[test]
