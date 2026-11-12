@@ -840,3 +840,115 @@ fn a_catalog_b_waits_for_its_bytes_and_lands_in_b() {
     assert_eq!(detail.second_model_select().target(), None);
     assert_eq!(detail.model_select().active(), Some(ModelId(71)));
 }
+
+/// One frame of a light block page with `events`, and the rectangle of each labelled control.
+fn light_frame(
+    context: &eframe::egui::Context,
+    detail: &mut BlockDetail,
+    events: Vec<eframe::egui::Event>,
+) -> Vec<(String, eframe::egui::Rect)> {
+    use eframe::egui;
+
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1024.0, 614.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    let mut output = context.run_ui(input, |ui| detail.show(ui, SignedIn));
+    output.textures_delta.clear();
+    let Some(update) = output.platform_output.accesskit_update.take() else {
+        return Vec::new();
+    };
+    let widgets = context.viewport(|viewport| {
+        viewport
+            .prev_pass
+            .widgets
+            .layers()
+            .flat_map(|(_, widgets)| widgets.iter().copied())
+            .map(|widget| (widget.id.accesskit_id(), widget))
+            .collect::<std::collections::HashMap<_, _>>()
+    });
+    update
+        .nodes
+        .iter()
+        .filter_map(|(id, node)| {
+            let widget = widgets.get(id)?;
+            Some((node.label()?.to_owned(), widget.interact_rect))
+        })
+        .collect()
+}
+
+/// While B only downloads, the blend and the phase of B change nothing: a failed or superseded
+/// download must not leave pair settings on a block with no B.
+#[test]
+fn the_blend_waits_for_b_to_land() {
+    use eframe::egui;
+
+    let backend = mock_backend(&scenario("main-detail"));
+    let mut detail = cab_detail(&backend);
+    detail.set_page(ronie_ui::default::block::BlockPage::Archetype);
+    detail
+        .select_second_model(Some(ModelId(72)), SignedIn)
+        .expect("B");
+    let _download = detail.take_switch_request().expect("a download of B");
+    let before = backend.chain_state(0).chain.left[0].params.clone();
+
+    let context = egui::Context::default();
+    context.enable_accesskit();
+    ronie_ui::fonts::Fonts::install(&context);
+    let mut controls = Vec::new();
+    for _ in 0..3 {
+        controls = light_frame(&context, &mut detail, Vec::new());
+    }
+    let rect_of = |controls: &[(String, egui::Rect)], prefix: &str| {
+        controls
+            .iter()
+            .find(|(label, _)| label.starts_with(prefix))
+            .map(|(_, rect)| *rect)
+    };
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let blend = rect_of(&controls, "Blend:").expect("the BLEND knob shows");
+    let phase = rect_of(&controls, "Invert IR B phase").expect("the phase of B shows");
+    {
+        let start = blend.center();
+        light_frame(
+            &context,
+            &mut detail,
+            vec![egui::Event::PointerMoved(start)],
+        );
+        light_frame(&context, &mut detail, vec![button(start, true)]);
+        for step in 1..=6 {
+            let pos = start - egui::vec2(0.0, 6.0 * step as f32);
+            light_frame(&context, &mut detail, vec![egui::Event::PointerMoved(pos)]);
+        }
+        light_frame(
+            &context,
+            &mut detail,
+            vec![button(start - egui::vec2(0.0, 36.0), false)],
+        );
+    }
+    {
+        let at = phase.center();
+        light_frame(&context, &mut detail, vec![egui::Event::PointerMoved(at)]);
+        light_frame(&context, &mut detail, vec![button(at, true)]);
+        light_frame(&context, &mut detail, vec![button(at, false)]);
+    }
+    for _ in 0..2 {
+        light_frame(&context, &mut detail, Vec::new());
+    }
+
+    let after = backend.chain_state(0).chain.left[0].params.clone();
+    assert_eq!(after.ir_blend, before.ir_blend);
+    assert_eq!(after.ir_b_invert, before.ir_b_invert);
+    assert_eq!(detail.block().params.ir_blend, before.ir_blend);
+    assert!(!detail.block().params.ir_b_invert);
+    assert_eq!(detail.block().ir_b, None, "B is still downloading");
+}

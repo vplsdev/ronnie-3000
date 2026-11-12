@@ -2499,19 +2499,33 @@ impl BlockDetail {
             egui::pos2(content.left(), column_top),
             egui::vec2(phase_width, 24.0),
         );
+        // The pair settings wait for B to land: a download that fails or that a switch of A
+        // ends must not leave them on a block with no B.
+        let landed = self.block.ir_b.is_some();
+        let fade = |color: Color32| {
+            if landed {
+                color
+            } else {
+                color.gamma_multiply(0.4)
+            }
+        };
         let inverted = self.block.params.ir_b_invert;
-        let response = ui.interact(
-            phase,
-            ui.scope_id().with(("ir-b-invert", &self.block_id.0)),
-            Sense::click(),
-        );
+        let response = ui
+            .add_enabled_ui(landed, |ui| {
+                ui.interact(
+                    phase,
+                    ui.scope_id().with(("ir-b-invert", &self.block_id.0)),
+                    Sense::click(),
+                )
+            })
+            .inner;
         response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::Role::Button, true, inverted, "Invert IR B phase")
+            egui::WidgetInfo::selected(egui::Role::Button, landed, inverted, "Invert IR B phase")
         });
         let (fill, edge, ink) = if inverted {
-            (look.text, look.text, Color32::WHITE)
+            (fade(look.text), fade(look.text), fade(Color32::WHITE))
         } else {
-            (look.panel, CHIP_EDGE, look.text)
+            (look.panel, fade(CHIP_EDGE), fade(look.text))
         };
         painter.rect_filled(phase, 12.0, fill);
         painter.rect_stroke(
@@ -2529,7 +2543,7 @@ impl BlockDetail {
             ink,
             0.8,
         );
-        if response.clicked() {
+        if landed && response.clicked() {
             let _ = self.set_ir_b_invert(!inverted);
         }
         let remove_width = tracked_width(&painter, "REMOVE B", &phase_font, 0.8);
@@ -2561,6 +2575,8 @@ impl BlockDetail {
         }
 
         // A, the BLEND knob, B.
+        let mut painter = painter.clone();
+        painter.multiply_opacity(if landed { 1.0 } else { 0.4 });
         let letter_font = bold_font(11.0);
         let b_width = text_width(ui, "B", 11.0);
         let knob_column = Rect::from_center_size(
@@ -2597,9 +2613,14 @@ impl BlockDetail {
         let spec = KnobSpec::blend();
         let id = ui.scope_id().with(("ir-blend", &self.block_id.0));
         let pass = ui.ctx().cumulative_pass_nr();
-        let output =
-            crate::widgets::knob::show(ui, id, face, &spec, "Blend", self.block.params.ir_blend);
-        if let Some(edit) = self.track_trim("Blend", pass, output.edit) {
+        let blend = self.block.params.ir_blend;
+        let output = ui
+            .add_enabled_ui(landed, |ui| {
+                crate::widgets::knob::show(ui, id, face, &spec, "Blend", blend)
+            })
+            .inner;
+        let edit = output.edit.filter(|_| landed);
+        if let Some(edit) = self.track_trim("Blend", pass, edit) {
             self.block.params.ir_blend = edit.value;
             self.write_params_in_gesture(edit.phase);
         }

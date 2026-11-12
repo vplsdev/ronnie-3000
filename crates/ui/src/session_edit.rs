@@ -1537,7 +1537,6 @@ impl SessionEditor {
     }
 }
 
-/// Refuses bytes that cannot belong to one catalog model of `tone`.
 /// Adds `model` to a stored tone, in its models and its JSON, unless the tone holds it.
 fn keep_model(tone: &mut Tone, model: ToneModel) {
     if tone.models.iter().any(|known| known.id == model.id) {
@@ -1567,6 +1566,7 @@ fn reset_ir_pair(params: &mut BlockParams) {
     params.ir_b_invert = defaults.ir_b_invert;
 }
 
+/// Refuses bytes that cannot belong to one catalog model of `tone`.
 fn check_downloaded_model(
     tone: &Tone,
     model_id: ModelId,
