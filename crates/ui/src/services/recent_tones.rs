@@ -160,6 +160,30 @@ mod tests {
     }
 
     #[test]
+    fn text_with_thirty_tones_keeps_twenty_four() {
+        let raws: Vec<serde_json::Value> = (1..=30).map(|id| catalog(id, "amp").raw).collect();
+        let text = serde_json::to_string(&raws).expect("text");
+        let back = RecentTones::from_text(&text);
+        let ids: Vec<i64> = back.tones().iter().map(|tone| tone.id.0).collect();
+        assert_eq!(ids, (1..=24).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn text_keeps_the_valid_tones_among_invalid_ones() {
+        let text = serde_json::to_string(&json!([
+            catalog(1, "amp").raw,
+            "not a tone",
+            {"id": 9, "title": "Broken", "models": [{"id": 90, "model_url": "not a url"}]},
+            catalog(2, "pedal").raw,
+            42,
+        ]))
+        .expect("text");
+        let back = RecentTones::from_text(&text);
+        let ids: Vec<i64> = back.tones().iter().map(|tone| tone.id.0).collect();
+        assert_eq!(ids, [1, 2]);
+    }
+
+    #[test]
     fn text_round_trips() {
         let mut recent = RecentTones::default();
         recent.remember(catalog(1, "amp"));
