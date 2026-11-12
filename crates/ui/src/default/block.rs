@@ -66,6 +66,17 @@ const BYPASSED_TINT: Color32 = Color32::from_rgb(0xb4, 0xb4, 0xb2);
 
 /// Tallest a rendered skin draws, in points (the design's stage height).
 const RENDER_HEIGHT: f32 = 300.0;
+/// What an amp's stage keeps free under its render for the capture lights.
+const CAPTURE_LIGHTS_ROOM: f32 = 28.0;
+/// The most capture lights a pill shows at once.
+const CAPTURE_LIGHT_COUNT: usize = 8;
+const LIGHT_SIZE: f32 = 12.0;
+const LIGHT_GAP: f32 = 8.0;
+const LIGHT_PITCH: f32 = LIGHT_SIZE + LIGHT_GAP;
+const CAPTURE_PILL_HEIGHT: f32 = 26.0;
+const CAPTURE_TRACKING: f32 = 1.3;
+/// How many characters of the active capture's name the pill shows.
+const CAPTURE_NAME_CHARS: usize = 18;
 
 /// Width of a cab's MICS panel, and the space between it and the render.
 const MICS_PANEL_WIDTH: f32 = 300.0;
@@ -165,6 +176,10 @@ pub struct BlockDetail {
     /// The chain revision of the last copy of the block, or `None` after a local change of the
     /// copy. A frame copies the block again only when this is not the current revision.
     synced_revision: Option<u64>,
+    /// The first capture light of the amp's window when it has more captures than lights, and
+    /// the capture the window last followed.
+    light_start: usize,
+    light_followed: Option<usize>,
 }
 
 /// The model list and the switch of one detail.
@@ -251,6 +266,8 @@ impl BlockDetail {
             remote: None,
             trim_drag: OpenDrag::default(),
             synced_revision: None,
+            light_start: 0,
+            light_followed: None,
         })
     }
 
@@ -2066,16 +2083,32 @@ impl BlockDetail {
         };
         let skin = super::skins::skin_for(&self.block)
             .and_then(|skin| Some((skin, super::skins::textures(ui.ctx(), skin.id)?)));
+        let lights = skin.as_ref().is_some_and(|(skin, _)| {
+            skin.category == ronie_core::gear::GearCategory::Amp && self.models.options().len() >= 2
+        });
         let gear = match &skin {
             Some((skin, textures)) => {
+                // An amp with lights leaves room under its render for them.
+                let render_stage = if lights {
+                    Rect::from_min_max(
+                        stage.min,
+                        egui::pos2(stage.right(), stage.bottom() - CAPTURE_LIGHTS_ROOM),
+                    )
+                } else {
+                    stage
+                };
                 let body = if matches!(
                     skin.category,
                     ronie_core::gear::GearCategory::Pedal | ronie_core::gear::GearCategory::Amp
                 ) {
-                    self.show_pedalboard(ui, stage, textures, skin.category)
+                    self.show_pedalboard(ui, render_stage, textures, skin.category)
                 } else {
-                    textures.manifest.fit(stage, RENDER_HEIGHT)
+                    textures.manifest.fit(render_stage, RENDER_HEIGHT)
                 };
+                // The lights register first, so a knob keeps the clicks where they overlap.
+                if lights {
+                    self.show_capture_lights(ui, body, stage.bottom() - 2.0, session);
+                }
                 self.show_render(ui, body, *skin, textures, session);
                 if textures.manifest.knobs.is_empty() {
                     self.show_trims_beside(ui, body, stage);
@@ -3100,6 +3133,214 @@ impl BlockDetail {
         );
         // The bubble sits above the ring.
         Some((glass.expand(4.0), format!("{place} \u{b7} click for next")))
+    }
+
+    /// The pill of capture lights centred under the amp render `body`, its bottom at `bottom`:
+    /// a window of at most eight lights on the picker's captures, and arrows that move the
+    /// window when there are more. A click on a light selects its capture.
+    fn show_capture_lights(
+        &mut self,
+        ui: &mut egui::Ui,
+        body: Rect,
+        bottom: f32,
+        session: SessionStatus,
+    ) {
+        let look = crate::theme::Look::get(ui.ctx());
+        let options: Vec<(ModelId, String)> = self
+            .models
+            .options()
+            .iter()
+            .map(|option| (option.id, option.name.clone()))
+            .collect();
+        let count = options.len();
+        let shown = self.capture_shown_id();
+        let active = shown
+            .and_then(|id| options.iter().position(|(each, _)| *each == id))
+            .unwrap_or(0);
+        // The window follows the active light whenever the active capture changes, and the
+        // arrows move it by one from there.
+        let visible = count.min(CAPTURE_LIGHT_COUNT);
+        let last_start = count - visible;
+        if self.light_followed != Some(active) {
+            self.light_followed = Some(active);
+            let lowest = active.saturating_sub(visible - 1);
+            self.light_start = self.light_start.clamp(lowest, active);
+        }
+        self.light_start = self.light_start.min(last_start);
+        let start = self.light_start;
+        let paged = count > visible;
+        let enabled = !self.models.disabled(session);
+
+        let label_font = bold_font(9.5);
+        let label_width = tracked_width(ui.painter(), "CAPTURE", &label_font, CAPTURE_TRACKING);
+        let name: String = options[active].1.chars().take(CAPTURE_NAME_CHARS).collect();
+        let name_font = egui::FontId::monospace(10.0);
+        let name_width = ui
+            .painter()
+            .layout_no_wrap(name.clone(), name_font.clone(), look.text)
+            .size()
+            .x;
+        let arrow = if paged { LIGHT_PITCH } else { 0.0 };
+        let lights_width = visible as f32 * LIGHT_PITCH - LIGHT_GAP + 2.0 * arrow;
+        let pad = 14.0;
+        let gap = 12.0;
+        let width = pad * 2.0 + label_width + gap + lights_width + gap + name_width;
+        let pill = Rect::from_center_size(
+            egui::pos2(body.center().x, bottom - CAPTURE_PILL_HEIGHT / 2.0),
+            egui::vec2(width, CAPTURE_PILL_HEIGHT),
+        );
+        let painter = ui.painter().clone();
+        painter.rect(
+            pill,
+            CAPTURE_PILL_HEIGHT / 2.0,
+            Color32::from_rgb(0xfb, 0xfb, 0xfa),
+            egui::Stroke::new(1.0, Color32::from_rgb(0xdc, 0xdc, 0xd9)),
+            egui::StrokeKind::Inside,
+        );
+        let group = ui.interact(
+            pill,
+            ui.scope_id().with(("capture-lights", &self.block_id.0)),
+            Sense::hover(),
+        );
+        group.widget_info(|| egui::WidgetInfo::labeled(egui::Role::RadioGroup, true, "Captures"));
+        let muted = Color32::from_rgb(0x5f, 0x5f, 0x5c);
+        let mut x = pill.left() + pad;
+        paint_tracked(
+            &painter,
+            egui::pos2(x, pill.center().y),
+            egui::Align2::LEFT_CENTER,
+            "CAPTURE",
+            &label_font,
+            muted,
+            CAPTURE_TRACKING,
+        );
+        static_text(
+            ui,
+            Rect::from_min_size(
+                egui::pos2(x, pill.top()),
+                egui::vec2(label_width, pill.height()),
+            ),
+            ui.scope_id()
+                .with(("capture-lights-label", &self.block_id.0)),
+            "CAPTURE",
+        );
+        x += label_width + gap;
+        let mut step_to = None;
+        let mut picked = None;
+        let page_id = ui
+            .scope_id()
+            .with(("capture-lights-page", &self.block_id.0));
+        let arrow_button = |ui: &mut egui::Ui, x: f32, glyph: &str, label: &str, can: bool| {
+            let rect = Rect::from_center_size(
+                egui::pos2(x + LIGHT_PITCH / 2.0 - LIGHT_GAP / 2.0, pill.center().y),
+                egui::vec2(LIGHT_PITCH, CAPTURE_PILL_HEIGHT - 4.0),
+            );
+            let response = ui.interact(rect, page_id.with(label), Sense::click());
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, can, label));
+            let color = if can {
+                look.text
+            } else {
+                Color32::from_rgb(0xb4, 0xb4, 0xb0)
+            };
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                glyph,
+                egui::FontId::proportional(13.0),
+                color,
+            );
+            can && response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+        };
+        if paged {
+            if arrow_button(ui, x, "\u{2039}", "Previous captures", start > 0) {
+                step_to = Some(start - 1);
+            }
+            x += LIGHT_PITCH;
+        }
+        for (offset, (id, name)) in options.iter().enumerate().skip(start).take(visible) {
+            let center = egui::pos2(x + LIGHT_SIZE / 2.0, pill.center().y);
+            let on = offset == active;
+            let hit = Rect::from_center_size(center, egui::Vec2::splat(LIGHT_PITCH));
+            let response = ui.interact(
+                hit,
+                ui.scope_id()
+                    .with(("capture-light", &self.block_id.0, offset)),
+                Sense::click(),
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::Role::RadioButton, enabled, on, name)
+            });
+            let response = response.on_hover_text(name);
+            if on {
+                for (grow, alpha) in [(5.0, 18), (3.5, 36), (2.0, 64)] {
+                    painter.circle_filled(
+                        center,
+                        LIGHT_SIZE / 2.0 + grow,
+                        Color32::from_rgba_unmultiplied(0xff, 0xb3, 0x47, alpha),
+                    );
+                }
+            }
+            let (fill, edge) = if on {
+                (
+                    Color32::from_rgb(0xff, 0xb3, 0x47),
+                    Color32::from_rgb(0xc8, 0x7a, 0x1e),
+                )
+            } else {
+                (
+                    Color32::from_rgb(0x3a, 0x3a, 0x38),
+                    Color32::from_rgb(0x1d, 0x1d, 0x1c),
+                )
+            };
+            painter.circle(
+                center,
+                LIGHT_SIZE / 2.0 - 0.5,
+                fill,
+                egui::Stroke::new(1.0, edge),
+            );
+            if enabled
+                && !on
+                && response
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+            {
+                picked = Some(*id);
+            }
+            x += LIGHT_PITCH;
+        }
+        if paged {
+            x -= LIGHT_GAP;
+            if arrow_button(ui, x, "\u{203a}", "Next captures", start < last_start) {
+                step_to = Some(start + 1);
+            }
+            x += LIGHT_PITCH;
+        }
+        if let Some(to) = step_to {
+            self.light_start = to;
+        }
+        if let Some(id) = picked {
+            let _ = self.select_model(id, session);
+        }
+        let name_pos = egui::pos2(pill.right() - pad - name_width, pill.center().y);
+        painter.text(
+            name_pos,
+            egui::Align2::LEFT_CENTER,
+            &name,
+            name_font,
+            look.text,
+        );
+        static_text(
+            ui,
+            Rect::from_min_size(
+                egui::pos2(name_pos.x, pill.top()),
+                egui::vec2(name_width, pill.height()),
+            ),
+            ui.scope_id()
+                .with(("capture-lights-name", &self.block_id.0)),
+            &name,
+        );
+        let _ = x;
     }
 
     /// The capture the display shows: the one on its way, or else the one the block plays.

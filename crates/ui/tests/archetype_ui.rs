@@ -3192,3 +3192,146 @@ fn a_downloading_display_says_so() {
         "{controls:?}"
     );
 }
+
+// ---------------------------------------------------------------- The amp capture lights
+
+/// The amp of main-mono, open on the stage, with `count` captures named "Take 1" and up.
+fn amp_driver(count: usize) -> (UiDriver, Arc<MockBackend>) {
+    let (mut driver, backend) = edited_driver("main-mono", |chain| {
+        let models: Vec<_> = (0..count)
+            .map(|index| serde_json::json!({ "id": 1101 + index, "name": format!("Take {}", index + 1) }))
+            .collect();
+        chain["chain"][1]["tone"]["models"] = models.into();
+        chain["chain"][1]["tone"]["local"] = true.into();
+    });
+    let _ = driver.click(VOX).expect("amp button");
+    driver.settle();
+    (driver, backend)
+}
+
+/// The lights of the open amp: label and whether lit, in order.
+fn lights(driver: &UiDriver, count: usize) -> Vec<(String, bool)> {
+    (1..=count)
+        .filter_map(|index| {
+            let label = format!("Take {index}");
+            driver
+                .controls()
+                .iter()
+                .find(|control| control.label == label)
+                .map(|control| (label, control.checked))
+        })
+        .collect()
+}
+
+#[test]
+fn an_amp_with_captures_shows_its_lights() {
+    let (driver, _) = amp_driver(6);
+    assert!(
+        driver.is_visible("Captures"),
+        "{:?}",
+        driver.visible_labels()
+    );
+    assert!(driver.shows_text("CAPTURE"));
+    let lit = lights(&driver, 6);
+    assert_eq!(lit.len(), 6);
+    assert_eq!(lit.iter().filter(|(_, on)| *on).count(), 1);
+    assert!(lit[0].1, "the active capture is lit");
+    assert!(
+        driver.shows_text("Take 1"),
+        "its short name beside the lights"
+    );
+}
+
+#[test]
+fn clicking_a_light_selects_its_capture() {
+    let (mut driver, backend) = amp_driver(6);
+    let _ = driver.click("Take 4").expect("light");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-2"), Some(1104));
+    let lit = lights(&driver, 6);
+    assert!(lit[3].1 && lit.iter().filter(|(_, on)| *on).count() == 1);
+}
+
+#[test]
+fn a_single_capture_amp_has_no_lights() {
+    let (driver, _) = amp_driver(1);
+    assert!(!driver.is_visible("Captures"));
+    assert!(!driver.shows_text("CAPTURE"));
+    assert!(!driver.is_visible("Take 1"));
+}
+
+#[test]
+fn nine_captures_page_the_light_window() {
+    let (mut driver, _) = amp_driver(9);
+    let shown = lights(&driver, 9);
+    assert_eq!(shown.len(), 8, "at most eight lights");
+    assert!(shown[0].1, "the active light is inside the window");
+    assert!(driver.is_visible("Next captures"));
+    let _ = driver.click("Next captures").expect("page right");
+    driver.settle();
+    let shown = lights(&driver, 9);
+    assert_eq!(shown.len(), 8);
+    assert!(
+        shown.iter().all(|(label, _)| label != "Take 1"),
+        "paged by one"
+    );
+    let _ = driver.click("Take 9").expect("last light");
+    driver.settle();
+    let shown = lights(&driver, 9);
+    assert!(shown.iter().any(|(label, on)| label == "Take 9" && *on));
+    let _ = driver.click("Previous captures").expect("page left");
+    driver.settle();
+    let shown = lights(&driver, 9);
+    assert_eq!(
+        shown.first().map(|(label, _)| label.as_str()),
+        Some("Take 1")
+    );
+    assert!(
+        shown.iter().all(|(_, on)| !*on),
+        "paged past the active one"
+    );
+}
+
+#[test]
+fn eight_captures_need_no_paging() {
+    let (driver, _) = amp_driver(8);
+    assert_eq!(lights(&driver, 8).len(), 8);
+    assert!(!driver.is_visible("Next captures"));
+    assert!(!driver.is_visible("Previous captures"));
+}
+
+#[test]
+fn the_active_light_follows_a_capture_change_from_the_picker() {
+    let (mut driver, backend) = amp_driver(6);
+    driver
+        .chrome_mut()
+        .detail_mut()
+        .expect("detail")
+        .select_model(
+            ronie_core::ModelId(1103),
+            ronie_ui::services::session::SessionStatus::SignedIn,
+        )
+        .expect("picker select");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-2"), Some(1103));
+    let lit = lights(&driver, 6);
+    assert!(lit[2].1, "{lit:?}");
+}
+
+#[test]
+fn cabs_and_pedals_have_no_lights() {
+    let (driver, _) = capture_pedalboard();
+    assert!(driver.is_visible("Capture display: Muff 1"));
+    assert!(!driver.is_visible("Captures"));
+    assert!(!driver.is_visible("Muff 2"));
+    let (mut cab, _) = edited_driver("main-mono", |chain| {
+        chain["chain"][2]["tone"]["models"] = serde_json::json!([
+            { "id": 1103, "name": "Mic 1" }, { "id": 1203, "name": "Mic 2" }, { "id": 1303, "name": "Mic 3" }
+        ]);
+    });
+    let _ = cab
+        .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
+        .expect("cab button");
+    cab.settle();
+    assert!(!cab.is_visible("Captures"));
+}
