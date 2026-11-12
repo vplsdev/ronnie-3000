@@ -494,6 +494,7 @@ impl SessionEditor {
                 side,
                 index,
             } => self.place_added_block(&block_id, side, index),
+            UiAction::RestoreReplacedParams { block_id } => self.restore_replaced_params(&block_id),
             UiAction::RetryModelLoad(block_id) => self.retry_model_load(&block_id),
             UiAction::SetBlockParamsGesture {
                 block_id,
@@ -754,6 +755,24 @@ impl SessionEditor {
         // A lane keeps its tones first and its empty slots after them.
         let end = lane.iter().filter(|block| !block.is_insert).count();
         lane.insert(index.min(end), block);
+        Ok(self.chain_changed())
+    }
+
+    /// Gives block `block_id` the params that it held before the newest undo step, which is the
+    /// load that replaced its tone.
+    ///
+    /// It takes no undo step, so one undo takes back the replace with its params. The second IR
+    /// and the skin of the old tone stay gone, because they belong to that tone.
+    fn restore_replaced_params(&mut self, block_id: &BlockId) -> Result<UiEffect, UiError> {
+        self.tone_block(block_id)?;
+        let params = self
+            .undo
+            .last()
+            .and_then(|frame| frame.session.chain.block(block_id))
+            .filter(|block| !block.is_insert)
+            .map(|block| block.params.clone())
+            .ok_or_else(|| UiError::InvalidAction("the block replaced no tone block".to_owned()))?;
+        self.block_mut(block_id)?.params = params;
         Ok(self.chain_changed())
     }
 
@@ -1864,6 +1883,99 @@ mod tests {
         assert_eq!(editor.view(0).chain.left[0].id, slot);
         editor.apply_alone(UiAction::Undo).expect("undo");
         assert_eq!(editor.view(0).chain.left, before);
+    }
+
+    /// An IR tone with two captures, so that a block of it can hold a second IR.
+    fn two_irs(id: i64) -> Tone {
+        Tone::from_value(serde_json::json!({
+            "id": id,
+            "title": format!("Tone {id}"),
+            "format": "ir",
+            "models": [
+                {"id": id * 10, "name": "First", "model_url": "https://models.example/a.wav"},
+                {"id": id * 10 + 1, "name": "Second", "model_url": "https://models.example/b.wav"},
+            ],
+        }))
+        .expect("tone")
+    }
+
+    #[test]
+    fn a_replace_keeps_the_params_and_one_undo_restores_the_old_block() {
+        let mut editor = editor();
+        let slot = editor.view(0).chain.left[0].id.clone();
+        editor
+            .apply_alone(UiAction::LoadTone {
+                target_insert_id: slot.clone(),
+                tone: two_irs(1),
+                model_id: ModelId(10),
+            })
+            .expect("load");
+        let mut params = editor.view(0).chain.left[0].params.clone();
+        params.enabled = false;
+        params.input_gain = 0.8;
+        params.mix = 0.4;
+        params.eq.enabled = !params.eq.enabled;
+        params.ir_blend = 0.2;
+        for action in [
+            UiAction::SetBlockParams {
+                block_id: slot.clone(),
+                params: params.clone(),
+            },
+            UiAction::SelectSecondModel {
+                block_id: slot.clone(),
+                model_id: Some(ModelId(11)),
+            },
+            UiAction::SetBlockSkin {
+                block_id: slot.clone(),
+                skin: Some("british".to_owned()),
+            },
+        ] {
+            editor.apply_alone(action).expect("edit");
+        }
+        let old = editor.view(0).chain.left[0].clone();
+        assert!(old.ir_b.is_some() && old.skin.is_some());
+
+        editor
+            .apply_alone(UiAction::LoadTone {
+                target_insert_id: slot.clone(),
+                tone: tone(2),
+                model_id: ModelId(20),
+            })
+            .expect("replace");
+        editor
+            .apply_alone(UiAction::RestoreReplacedParams {
+                block_id: slot.clone(),
+            })
+            .expect("restore");
+
+        let replaced = editor.view(0).chain.left[0].clone();
+        assert_eq!(replaced.id, slot, "the block keeps its id and place");
+        assert_eq!(replaced.tone.as_ref().map(|tone| tone.id.0), Some(2));
+        assert_eq!(replaced.params, old.params, "the params stay");
+        assert_eq!(
+            replaced.ir_b, None,
+            "the second IR belonged to the old tone"
+        );
+        assert_eq!(replaced.skin, None, "the skin belonged to the old tone");
+
+        editor.apply_alone(UiAction::Undo).expect("undo");
+        assert_eq!(
+            editor.view(0).chain.left[0],
+            old,
+            "one undo restores the old block"
+        );
+    }
+
+    #[test]
+    fn restoring_params_with_no_replaced_block_is_refused() {
+        let mut editor = editor();
+        let slot = editor.view(0).chain.left[0].id.clone();
+        assert!(
+            editor
+                .apply_alone(UiAction::RestoreReplacedParams { block_id: slot })
+                .is_err(),
+            "an insert has no params to restore"
+        );
     }
 
     #[test]

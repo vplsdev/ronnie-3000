@@ -160,6 +160,12 @@ pub struct ChromeController {
     /// Where a tone that the browser loads goes, when a stage slot opened the browser: the
     /// insert it fills, and its place in the lane of that insert.
     browser_placement: Option<(String, Placement)>,
+    /// The block whose tone a pending load replaces, so that the block keeps its params when
+    /// the load lands.
+    replacing: Option<String>,
+    /// A REPLACE that asks the Archetype layout for its menu: the block and the control under
+    /// which the menu opens.
+    replace_request: Option<(BlockId, egui::Rect)>,
     model_switches: ModelSwitchFlow,
     /// Whether the worker can hold a model list or a switch of a detail.
     detail_work_live: bool,
@@ -272,6 +278,8 @@ impl ChromeController {
             placement: Placement::End,
             added_side: ronie_core::ChainSide::Left,
             browser_placement: None,
+            replacing: None,
+            replace_request: None,
             model_switches: ModelSwitchFlow::new(backend.clone()),
             detail_work_live: false,
             images: None,
@@ -1048,20 +1056,52 @@ impl ChromeController {
         path: &std::path::Path,
         placement: Placement,
     ) -> Result<(), UiError> {
-        if let Err(error) = self.gallery.drop_file(insert_id, path) {
+        self.drop_file(insert_id, path, placement, false)
+    }
+
+    /// Loads a local file into block `block_id` in place of its tone. The block keeps its id,
+    /// its place, and its params; a load that is still downloading gives way to the file. A
+    /// refused file shows a toast and changes nothing.
+    ///
+    /// # Errors
+    /// Returns the error of the drop.
+    pub fn replace_with_file(
+        &mut self,
+        block_id: &str,
+        path: &std::path::Path,
+    ) -> Result<(), UiError> {
+        self.drop_file(block_id, path, Placement::End, true)
+    }
+
+    fn drop_file(
+        &mut self,
+        target_id: &str,
+        path: &std::path::Path,
+        placement: Placement,
+        replace: bool,
+    ) -> Result<(), UiError> {
+        if replace && self.load_flow.phase() == LoadPhase::Loading {
+            // A download that lands later must not take the place of the file.
+            self.load_flow.cancel();
+        }
+        self.replacing = None;
+        if let Err(error) = self.gallery.drop_file(target_id, path) {
             self.hints.set_toast(Some(FILE_REFUSED.to_owned()));
             return Err(error);
         }
-        self.place_block(insert_id, placement);
+        if replace {
+            self.restore_replaced_params(target_id);
+        }
+        self.place_block(target_id, placement);
         let chain = self.backend.chain_state(0).chain;
         if let Some(tone) = chain
-            .block(&ronie_core::BlockId(insert_id.to_owned()))
+            .block(&ronie_core::BlockId(target_id.to_owned()))
             .and_then(|block| block.tone.clone())
         {
             self.remember_tone(tone);
         }
-        // The insert holds the file's tone now, so it opens as a block, as an add does.
-        self.gallery.activate(insert_id);
+        // The target holds the file's tone now, so it opens as a block, as an add does.
+        self.gallery.activate(target_id);
         self.sync_detail();
         Ok(())
     }
@@ -1142,6 +1182,73 @@ impl ChromeController {
         tone: ronie_core::Tone,
         placement: Placement,
     ) {
+        self.start_add(side, insert_id, tone, placement, false);
+    }
+
+    /// Loads `tone` into block `block_id` in place of its tone, from the add menu. The block
+    /// keeps its id, its place, and its params, and loses the second IR and the skin of the old
+    /// tone. One undo takes the whole replace back, and a failed load leaves the block alone.
+    pub fn replace_tone(&mut self, block_id: &str, tone: ronie_core::Tone) {
+        let side = self.side_of(block_id);
+        self.start_add(side, block_id, tone, Placement::End, true);
+    }
+
+    /// Asks the Archetype layout to open the add menu under `anchor`, to replace the tone of
+    /// block `block_id`.
+    pub fn open_replace(&mut self, block_id: BlockId, anchor: egui::Rect) {
+        self.replace_request = Some((block_id, anchor));
+    }
+
+    /// The REPLACE that waits for its menu, once.
+    pub(super) fn take_replace_request(&mut self) -> Option<(BlockId, egui::Rect)> {
+        self.replace_request.take()
+    }
+
+    /// The lane that holds block `id`; lane A for a block that is gone.
+    fn side_of(&self, id: &str) -> ronie_core::ChainSide {
+        let chain = self.backend.chain_state(0).chain;
+        if chain.right.iter().any(|block| block.id.0 == id) {
+            ronie_core::ChainSide::Right
+        } else {
+            ronie_core::ChainSide::Left
+        }
+    }
+
+    /// Gives block `id`, which a load just replaced, the params that it had before that load.
+    fn restore_replaced_params(&self, id: &str) {
+        // A refusal means that the load was no replace of a tone, so the defaults stay.
+        let _ = self.backend.dispatch(UiAction::RestoreReplacedParams {
+            block_id: BlockId(id.to_owned()),
+        });
+    }
+
+    /// Finishes a load that landed: a replace keeps its params, the tone joins the library, and
+    /// the block of an add from the menu opens.
+    fn finish_landed(&mut self, tone: ronie_core::Tone) {
+        if let Some(id) = self.replacing.take() {
+            let holds = self
+                .backend
+                .chain_state(0)
+                .chain
+                .block(&BlockId(id.clone()))
+                .and_then(|block| block.tone.as_ref())
+                .is_some_and(|held| held.id == tone.id);
+            if holds {
+                self.restore_replaced_params(&id);
+            }
+        }
+        self.remember_tone(tone);
+        self.open_added_block();
+    }
+
+    fn start_add(
+        &mut self,
+        side: ronie_core::ChainSide,
+        insert_id: &str,
+        tone: ronie_core::Tone,
+        placement: Placement,
+        replace: bool,
+    ) {
         if let Some(mut browser) = self.browser.take() {
             browser.close();
             self.parked_browser = Some(browser);
@@ -1155,6 +1262,7 @@ impl ChromeController {
         }
         self.browser_placement = None;
         self.load_flow.select(side, insert_id);
+        self.replacing = replace.then(|| insert_id.to_owned());
         self.pick_tone(tone);
         self.placement = placement;
         self.added_side = side;
@@ -1162,8 +1270,7 @@ impl ChromeController {
             .then(|| (insert_id.to_owned(), self.load_flow.generation()));
         // A tone with no network lands at once, so its block opens in this call.
         if let Some(tone) = self.load_flow.take_landed() {
-            self.remember_tone(tone);
-            self.open_added_block();
+            self.finish_landed(tone);
         }
     }
 
@@ -1242,8 +1349,30 @@ impl ChromeController {
     ) {
         self.browser_placement =
             (placement != Placement::End).then(|| (insert_id.to_owned(), placement));
+        self.replacing = None;
         self.gallery.activate(insert_id);
         self.sync_browser();
+        self.narrow_browser(category, text);
+    }
+
+    /// Opens the tone browser to replace the tone of block `block_id`, narrowed to `category`
+    /// and `text`. The tone that the browser loads keeps the block's id, place, and params.
+    pub fn open_replace_browser(
+        &mut self,
+        block_id: &str,
+        category: Option<ronie_core::gear::GearCategory>,
+        text: &str,
+    ) {
+        self.browser_placement = None;
+        let side = self.side_of(block_id);
+        self.gallery.select_tone(side, BlockId(block_id.to_owned()));
+        self.sync_browser();
+        self.replacing = Some(block_id.to_owned());
+        self.narrow_browser(category, text);
+    }
+
+    /// Narrows the open tone browser to `category` and `text`.
+    fn narrow_browser(&mut self, category: Option<ronie_core::gear::GearCategory>, text: &str) {
         let service = self.community.is_some();
         let Some(category) = category else {
             return;
@@ -1271,8 +1400,7 @@ impl ChromeController {
                     .and_then(|block| block.tone.as_ref())
                     .is_some_and(|held| held.id == tone.id)
             });
-            self.remember_tone(tone);
-            self.open_added_block();
+            self.finish_landed(tone);
             if let Some((insert, placement)) = filled {
                 self.place_block(&insert, placement);
             }
@@ -1296,6 +1424,7 @@ impl ChromeController {
         {
             let mut closed = self.browser.take();
             self.browser_placement = None;
+            self.replacing = None;
             if self.community.is_some() {
                 // A cancelled load leaves the store open, and its worker now stops.
                 if let Some(browser) = &mut closed {
@@ -1356,6 +1485,7 @@ impl ChromeController {
             self.cancel_browser_work();
         }
         self.browser_placement = None;
+        self.replacing = None;
         if let Some(detail) = &mut self.detail {
             detail.close();
             self.detail = None;

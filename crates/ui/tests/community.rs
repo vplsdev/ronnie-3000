@@ -3786,6 +3786,62 @@ fn a_late_compile_after_each_change_reaches_no_processor() {
 }
 
 #[test]
+fn a_replace_wins_over_a_capture_download_of_that_block() {
+    let mut rig = DetailRig::new();
+    rig.open(&[1104, 1105]);
+    rig.offer_file(1105, b"late");
+    rig.routes.hold(&model_file(1105));
+    let block = BlockId(BLOCK.to_owned());
+    let mut params = rig
+        .inner
+        .chain_state(0)
+        .chain
+        .block(&block)
+        .expect("block")
+        .params
+        .clone();
+    params.input_gain = 0.8;
+    rig.inner
+        .dispatch(UiAction::SetBlockParams {
+            block_id: block.clone(),
+            params: params.clone(),
+        })
+        .expect("tune");
+    rig.pick(1105);
+    rig.wait_for_download(1105);
+
+    let mut local = DetailRig::other_tone();
+    local.local = true;
+    rig.chrome.replace_tone(BLOCK, local);
+    rig.routes.release(&model_file(1105));
+    let_tasks_finish();
+    rig.chrome.poll_community();
+    let_tasks_finish();
+    rig.chrome.poll_community();
+
+    assert!(
+        switched_bytes(&rig.inner).is_empty(),
+        "no stale capture lands"
+    );
+    let replaced = rig
+        .inner
+        .chain_state(0)
+        .chain
+        .block(&block)
+        .cloned()
+        .expect("block");
+    assert_eq!(replaced.tone.map(|tone| tone.id), Some(ToneId(900)));
+    assert_eq!(replaced.active_model_id, Some(ModelId(901)));
+    assert_eq!(replaced.params, params, "the replace keeps the params");
+    assert!(
+        rig.chrome
+            .detail()
+            .is_none_or(|detail| detail.model_select().target().is_none()),
+        "the detail waits for no capture"
+    );
+}
+
+#[test]
 fn a_late_download_gives_way_to_a_newer_switch() {
     let mut rig = DetailRig::new();
     rig.open(&[1104, 1105, 1106]);

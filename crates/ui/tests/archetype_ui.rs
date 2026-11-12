@@ -1065,20 +1065,6 @@ fn remove_removes_the_block() {
 }
 
 #[test]
-fn replace_opens_the_browser_for_the_block() {
-    let (mut driver, _) = amp_page();
-    let _ = driver.click("REPLACE").expect("REPLACE");
-    driver.settle();
-    assert!(
-        matches!(
-            driver.chrome().gallery().selection(),
-            GallerySelection::SelectTone { .. }
-        ) || driver.chrome_mut().browser_mut().is_some(),
-        "the browser opens to replace the block"
-    );
-}
-
-#[test]
 fn the_amp_render_fills_the_designed_stage_height() {
     let (driver, _) = amp_page();
     let render = rect_of(&driver, "Amp render").expect("render");
@@ -3634,4 +3620,294 @@ fn an_override_of_another_category_falls_back_to_auto() {
     let _ = driver.click(VOX).expect("amp");
     driver.settle();
     assert!(driver.shows_text("British head"), "an amp skin is honoured");
+}
+
+// ---------------------------------------------------------------- Replace in place
+
+const VOX_TITLE: &str = "'02 Vox AC30/6 Top Boost";
+
+/// The Vox block as the backend holds it.
+fn vox(backend: &MockBackend) -> ronie_core::ChainBlock {
+    block_titled(backend, "AC30").expect("the Vox block")
+}
+
+/// The Vox tone of the fixture chain.
+fn vox_tone() -> ronie_core::Tone {
+    vox(&MockBackend::from_scenario(&scenario("main-mono")))
+        .tone
+        .expect("the Vox tone")
+}
+
+/// A signed-out driver over `library` with the Vox page on the stage, whose params changed
+/// from the defaults: bypassed, more gain in, less mix, and its EQ on.
+fn tuned_vox_page(library: &[ronie_core::Tone]) -> (UiDriver, Arc<MockBackend>) {
+    use ronie_ui::backend::UiAction;
+    let (mut driver, backend) = menu_driver("main-mono", false, library);
+    let block = vox(&backend);
+    let mut params = block.params.clone();
+    params.enabled = false;
+    params.input_gain = 0.8;
+    params.output_gain = 0.3;
+    params.mix = 0.6;
+    params.eq.enabled = true;
+    backend
+        .dispatch(UiAction::SetBlockParams {
+            block_id: block.id.clone(),
+            params,
+        })
+        .expect("tune the Vox");
+    driver.settle();
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    (driver, backend)
+}
+
+fn open_replace(driver: &mut UiDriver) {
+    let _ = driver.click("REPLACE").expect("REPLACE");
+    driver.settle();
+}
+
+/// The position of block `id` in the left lane.
+fn index_of(backend: &MockBackend, id: &BlockId) -> Option<usize> {
+    backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .position(|block| block.id == *id)
+}
+
+#[test]
+fn replace_opens_the_menu_on_the_blocks_category() {
+    let (mut driver, _) = amp_page();
+    open_replace(&mut driver);
+    assert!(
+        driver.shows_text("REPLACE \u{b7} AMP"),
+        "the menu opens on the amps"
+    );
+    assert!(driver.shows_text("keeps trims, EQ and place"));
+    assert!(driver.is_visible("Search amps in your library"));
+    assert!(!driver.is_visible("LANE A"), "a replace keeps the lane");
+    assert!(
+        driver.chrome_mut().browser_mut().is_none(),
+        "the tone browser stays closed"
+    );
+    assert!(
+        matches!(
+            driver.chrome().gallery().selection(),
+            GallerySelection::BlockDetail(_)
+        ),
+        "the block stays on the stage"
+    );
+    let replace = rect_of(&driver, "REPLACE").expect("the button");
+    let search = rect_of(&driver, "Search amps in your library").expect("the field");
+    assert!(
+        search.top() > replace.bottom(),
+        "the menu opens under the button"
+    );
+
+    open_replace(&mut driver);
+    assert!(
+        !driver.shows_text("keeps trims, EQ and place"),
+        "a second click closes the menu"
+    );
+}
+
+#[test]
+fn back_keeps_replacing_the_block() {
+    let (mut driver, _) = amp_page();
+    open_replace(&mut driver);
+    let _ = driver.click("Back to categories").expect("back");
+    driver.settle();
+    assert!(driver.is_visible("CAB"), "the categories show");
+    assert!(driver.shows_text("keeps trims, EQ and place"));
+    let _ = driver.click("CAB").expect("CAB");
+    driver.settle();
+    assert!(driver.shows_text("REPLACE \u{b7} CAB"));
+}
+
+#[test]
+fn swapping_a_head_keeps_its_place_and_settings() {
+    let (mut driver, backend) = tuned_vox_page(&[amp_tone(601, "Plexi Lead")]);
+    let old = vox(&backend);
+    let place = index_of(&backend, &old.id);
+    open_replace(&mut driver);
+    assert!(driver.shows_text("SWAP"));
+    let _ = driver.click("Plexi Lead").expect("library row");
+    driver.settle();
+
+    let block = backend
+        .chain_state(0)
+        .chain
+        .block(&old.id)
+        .cloned()
+        .expect("the block keeps its id");
+    assert_eq!(
+        block.tone.as_ref().map(|tone| tone.title.as_str()),
+        Some("Plexi Lead")
+    );
+    assert_eq!(block.params, old.params, "trims, EQ and bypass stay");
+    assert_eq!(
+        index_of(&backend, &old.id),
+        place,
+        "the block keeps its place"
+    );
+    assert_eq!(lane_titles(&backend, false).len(), 3, "no block was added");
+    assert!(
+        !driver.shows_text("keeps trims, EQ and place"),
+        "the menu closed"
+    );
+    assert!(
+        matches!(driver.chrome().gallery().selection(), GallerySelection::BlockDetail(id) if *id == old.id),
+        "the block stays on the stage"
+    );
+}
+
+#[test]
+fn one_undo_restores_the_replaced_block() {
+    let (mut driver, backend) = tuned_vox_page(&[amp_tone(601, "Plexi Lead")]);
+    let old = vox(&backend);
+    open_replace(&mut driver);
+    let _ = driver.click("Plexi Lead").expect("library row");
+    driver.settle();
+    driver.chrome_mut().undo().expect("undo");
+    driver.settle();
+    assert_eq!(
+        backend.chain_state(0).chain.block(&old.id),
+        Some(&old),
+        "one undo brings back the old tone and its params"
+    );
+}
+
+#[test]
+fn the_current_tone_reads_current() {
+    use ronie_ui::backend::UiAction;
+    let (mut driver, backend) = tuned_vox_page(&[vox_tone(), amp_tone(603, "Not Loaded")]);
+    open_replace(&mut driver);
+    assert!(driver.shows_text("CURRENT"));
+    assert!(driver.shows_text("SWAP"));
+    assert!(!driver.shows_text("IN CHAIN") && !driver.shows_text("ADD"));
+    let before = backend.actions().len();
+    let _ = driver.click(VOX_TITLE).expect("the current row");
+    driver.settle();
+    assert!(
+        !backend.actions()[before..]
+            .iter()
+            .any(|action| matches!(action, UiAction::LoadTone { .. })),
+        "the current tone loads nothing"
+    );
+    assert!(
+        driver.shows_text("keeps trims, EQ and place"),
+        "the menu stays open"
+    );
+}
+
+#[test]
+fn replace_via_the_browser_and_a_file_keeps_settings() {
+    let (mut driver, backend) = tuned_vox_page(&[]);
+    let old = vox(&backend);
+    open_replace(&mut driver);
+    let _ = driver
+        .click("OPEN THE TONE BROWSER")
+        .expect("the browser link");
+    driver.settle();
+    assert!(
+        driver.chrome_mut().browser_mut().is_some(),
+        "the browser opened"
+    );
+    driver.chrome_mut().pick_tone(amp_tone(611, "Browsed Amp"));
+    for _ in 0..4 {
+        driver.settle();
+    }
+    let block = backend
+        .chain_state(0)
+        .chain
+        .block(&old.id)
+        .cloned()
+        .expect("the block keeps its id");
+    assert_eq!(
+        block.tone.as_ref().map(|tone| tone.title.as_str()),
+        Some("Browsed Amp")
+    );
+    assert_eq!(block.params, old.params, "the browser keeps the settings");
+    assert_eq!(lane_titles(&backend, false).len(), 3, "no block was added");
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("closet-cab.wav");
+    write_ir(&path);
+    driver
+        .chrome_mut()
+        .replace_with_file(&old.id.0, &path)
+        .expect("the file loads");
+    driver.settle();
+    let block = backend
+        .chain_state(0)
+        .chain
+        .block(&old.id)
+        .cloned()
+        .expect("the block keeps its id");
+    assert!(block.tone.as_ref().is_some_and(|tone| tone.local));
+    assert_eq!(block.params, old.params, "a file keeps the settings");
+    assert_eq!(index_of(&backend, &old.id), Some(1));
+}
+
+#[test]
+fn a_replace_drops_the_skin_override_and_ir_b() {
+    use ronie_ui::backend::UiAction;
+    let (mut driver, backend) = edited_driver("main-mono", |chain| {
+        chain["chain"][2]["tone"]["models"] = serde_json::json!([
+            { "id": 1103, "name": "M201" },
+            { "id": 1105, "name": "SM57" },
+        ]);
+    });
+    let cab = block_titled(&backend, "Greenback").expect("the cab");
+    for action in [
+        UiAction::SelectSecondModel {
+            block_id: cab.id.clone(),
+            model_id: Some(ronie_core::ModelId(1105)),
+        },
+        UiAction::SetBlockSkin {
+            block_id: cab.id.clone(),
+            skin: Some("cab-212-chime".to_owned()),
+        },
+    ] {
+        backend.dispatch(action).expect("edit the cab");
+    }
+    let old = backend
+        .chain_state(0)
+        .chain
+        .block(&cab.id)
+        .cloned()
+        .expect("cab");
+    assert!(old.ir_b.is_some() && old.skin.is_some());
+    driver.settle();
+    let _ = driver
+        .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
+        .expect("the cab");
+    driver.settle();
+    open_replace(&mut driver);
+    assert!(driver.shows_text("REPLACE \u{b7} CAB"));
+    let cab_tone = ronie_core::Tone::from_value(serde_json::json!({
+        "id": 621, "title": "Closet 1x12", "format": "ir", "gear": "ir",
+        "models": [{"id": 6210, "name": "m", "model_url": "https://fixtures.invalid/m/621.wav"}]
+    }))
+    .expect("tone");
+    driver.chrome_mut().replace_tone(&cab.id.0, cab_tone);
+    driver.settle();
+    let block = backend
+        .chain_state(0)
+        .chain
+        .block(&cab.id)
+        .cloned()
+        .expect("cab");
+    assert_eq!(
+        block.tone.as_ref().map(|tone| tone.title.as_str()),
+        Some("Closet 1x12")
+    );
+    assert_eq!(block.ir_b, None, "the second IR belonged to the old tone");
+    assert_eq!(block.skin, None, "the skin belonged to the old tone");
+    assert_eq!(block.params, old.params);
+    driver.chrome_mut().undo().expect("undo");
+    driver.settle();
+    assert_eq!(backend.chain_state(0).chain.block(&cab.id), Some(&old));
 }

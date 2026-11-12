@@ -187,6 +187,13 @@ pub struct BlockDetail {
     eq: EqEditor,
     closed: bool,
     swap_requested: Option<BlockId>,
+    /// A click on REPLACE of the light page, by where the button was drawn, for the layout to
+    /// open its menu under it.
+    replace_request: Option<Rect>,
+    /// Whether the replace menu of this block is open, which draws REPLACE solid.
+    replace_open: bool,
+    /// Where REPLACE was drawn on the latest frame, for an open menu to stay under it.
+    replace_rect: Option<Rect>,
     sign_in_requested: bool,
     artwork: Option<TextureHandle>,
     avatar: Option<TextureHandle>,
@@ -286,6 +293,9 @@ impl BlockDetail {
             eq,
             closed: false,
             swap_requested: None,
+            replace_request: None,
+            replace_open: false,
+            replace_rect: None,
             sign_in_requested: false,
             artwork: None,
             avatar: None,
@@ -1000,6 +1010,22 @@ impl BlockDetail {
     /// Takes a pending tone-swap navigation request.
     pub fn take_swap_request(&mut self) -> Option<BlockId> {
         self.swap_requested.take()
+    }
+
+    /// A click on REPLACE of the light page, once, by where the button was drawn.
+    pub fn take_replace_request(&mut self) -> Option<Rect> {
+        self.replace_request.take()
+    }
+
+    /// Draws REPLACE solid while the replace menu of this block is open.
+    pub fn set_replace_open(&mut self, open: bool) {
+        self.replace_open = open;
+    }
+
+    /// Where REPLACE of the light page was drawn on the latest frame.
+    #[must_use]
+    pub const fn replace_rect(&self) -> Option<Rect> {
+        self.replace_rect
     }
 
     /// Renders the centered detail takeover.
@@ -1995,12 +2021,18 @@ impl BlockDetail {
                 egui::pos2(right, cy + 11.0),
             );
             right = button.left();
-            if page_text_button(ui, button, label, active, look).clicked() {
+            let response = if label == "REPLACE" {
+                self.replace_rect = Some(button);
+                replace_button(ui, button, self.replace_open, look)
+            } else {
+                page_text_button(ui, button, label, active, look)
+            };
+            if response.clicked() {
                 match label {
                     "BYPASS" => {
                         let _ = self.set_enabled(!self.block.params.enabled);
                     }
-                    "REPLACE" => self.swap_requested = Some(self.block_id.clone()),
+                    "REPLACE" => self.replace_request = Some(button),
                     _ => {
                         let _ = self.remove();
                     }
@@ -3932,6 +3964,38 @@ fn page_text_button(
     look: crate::theme::Look,
 ) -> egui::Response {
     page_toggle(ui, rect, label, label, active, look)
+}
+
+/// REPLACE of the light page, drawn solid while its menu is open.
+fn replace_button(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    open: bool,
+    look: crate::theme::Look,
+) -> egui::Response {
+    if !open {
+        return page_text_button(ui, rect, "REPLACE", false, look);
+    }
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with(("page-action", "REPLACE")),
+        Sense::click(),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "REPLACE"));
+    ui.painter().rect_filled(
+        // Short of the dividers that sit 5.5 points away on each side.
+        rect.expand2(egui::vec2(4.0, 0.0)),
+        11.0,
+        Color32::from_rgb(0x11, 0x11, 0x11),
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "REPLACE",
+        egui::FontId::new(10.0, egui::FontFamily::Name("arimo-bold".into())),
+        Color32::WHITE,
+    );
+    response
 }
 
 /// A small uppercase text action whose accessible name may differ from its text.

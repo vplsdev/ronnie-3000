@@ -295,6 +295,12 @@ pub enum UiAction {
         /// Destination zero-based index, clamped before the trailing insert.
         index: usize,
     },
+    /// Give a block that a load just replaced the params it had before that load, without an
+    /// undo step of its own, so that one undo takes back the replace with its params.
+    RestoreReplacedParams {
+        /// The replaced block.
+        block_id: BlockId,
+    },
     /// Load and stash a local file or folder into one insert.
     DropFile {
         /// Destination insert.

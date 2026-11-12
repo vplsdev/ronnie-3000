@@ -89,7 +89,9 @@ pub(super) fn show(
         detail.set_stage_neighbours(before, after);
         let slots = stage_slots(state, detail.block_id());
         detail.set_stage_slots(slots);
-        detail.set_open_slot(add_menu::AddMenu::load(ui.ctx()).open_slot());
+        let menu = add_menu::AddMenu::load(ui.ctx());
+        detail.set_open_slot(menu.open_slot());
+        detail.set_replace_open(menu.replaced_block() == Some(detail.block_id()));
     }
     show_stage(ui, chrome, now_ms);
     if let Some(id) = chrome
@@ -106,7 +108,19 @@ pub(super) fn show(
     {
         open_slot_menu(ui.ctx(), state, request);
     }
+    let page_replace = chrome.detail_mut().and_then(|detail| {
+        let anchor = detail.take_replace_request()?;
+        Some((detail.block_id().clone(), anchor))
+    });
+    if let Some((id, anchor)) = &page_replace {
+        chrome.open_replace(id.clone(), *anchor);
+    }
+    if let Some((id, anchor)) = chrome.take_replace_request() {
+        let on_page = page_replace.is_some_and(|(page, _)| page == id);
+        open_replace_menu(ui.ctx(), state, id, anchor, on_page);
+    }
     follow_slot(ui.ctx(), chrome);
+    follow_replace(ui.ctx(), chrome, state);
     show_add_menu(ui, chrome, state, header_bounds, stage);
 }
 
@@ -129,6 +143,82 @@ fn open_slot_menu(
     }
     menu.store(ctx);
     ctx.request_repaint();
+}
+
+/// Opens the add menu under `anchor` to replace the tone of block `id`, on the block's kind of
+/// gear, or closes it when it is that block's replace menu already.
+fn open_replace_menu(
+    ctx: &egui::Context,
+    state: &crate::backend::ChainViewState,
+    id: ronie_core::BlockId,
+    anchor: egui::Rect,
+    on_page: bool,
+) {
+    let mut menu = add_menu::AddMenu::load(ctx);
+    if menu.replaced_block() == Some(&id) {
+        menu.open = false;
+    } else {
+        let category = state
+            .chain
+            .left
+            .iter()
+            .chain(&state.chain.right)
+            .find(|block| block.id == id)
+            .and_then(gear_of);
+        menu.open_replace(id, category, anchor);
+        menu.on_page_button = on_page;
+    }
+    menu.store(ctx);
+    ctx.request_repaint();
+}
+
+/// The kind of gear that a block models, when it is known.
+fn gear_of(block: &ronie_core::ChainBlock) -> Option<ronie_core::gear::GearCategory> {
+    use ronie_core::gear::{GearCategory, GearHints, identify};
+    let tone = block.tone.as_ref()?;
+    let model = block
+        .active_model_id
+        .and_then(|id| tone.models.iter().find(|model| model.id == id));
+    let category = identify(&GearHints::from_tone(tone, model)).category;
+    (category != GearCategory::Unknown).then_some(category)
+}
+
+/// Keeps a replace menu under the REPLACE button that opened it when the page lays out again,
+/// and closes it when its block is gone.
+fn follow_replace(
+    ctx: &egui::Context,
+    chrome: &mut ChromeController,
+    state: &crate::backend::ChainViewState,
+) {
+    let mut menu = add_menu::AddMenu::load(ctx);
+    let Some(id) = menu.replaced_block().cloned() else {
+        return;
+    };
+    let exists = state
+        .chain
+        .left
+        .iter()
+        .chain(&state.chain.right)
+        .any(|block| block.id == id && !block.is_insert);
+    if !exists {
+        menu.open = false;
+        menu.store(ctx);
+        ctx.request_repaint();
+        return;
+    }
+    if !menu.on_page_button {
+        return;
+    }
+    let drawn = chrome
+        .detail_mut()
+        .filter(|detail| *detail.block_id() == id)
+        .and_then(|detail| detail.replace_rect());
+    if let Some(rect) = drawn
+        && menu.anchor != Some(rect)
+    {
+        menu.anchor = Some(rect);
+        menu.store(ctx);
+    }
 }
 
 /// Keeps a slot's menu beside its slot when the stage lays out again, such as after a resize,
@@ -213,41 +303,23 @@ fn show_add_menu(
         results: chrome.add_store(),
         loading: chrome.loading_tone(),
         place: place_of_slot(state, &menu.placement),
+        replacing: menu.replacing.as_ref().and_then(|id| {
+            state
+                .chain
+                .left
+                .iter()
+                .chain(&state.chain.right)
+                .find(|block| block.id == *id)
+                .and_then(|block| block.tone.as_ref())
+        }),
     };
     let plus = header::plus_rect(header_bounds);
     let action = add_menu::show(ui, plus, stage, &mut menu, &data);
     if let Some(action) = action {
-        let insert = header::insert_of(state, menu.lane);
-        match action {
-            add_menu::AddMenuAction::OpenBrowser(category) => {
-                menu.open = false;
-                if let Some(id) = insert {
-                    chrome.open_browser_for(&id, category, &menu.search, menu.placement.clone());
-                }
-            }
-            add_menu::AddMenuAction::LoadFile => {
-                menu.open = false;
-                let picked = rfd::FileDialog::new()
-                    .set_title("Open a Ronnie model")
-                    .add_filter("Audio models", &["nam", "wav"])
-                    .pick_file();
-                if let (Some(path), Some(id)) = (picked, insert) {
-                    let _ = chrome.drop_file_into(&id, &path, menu.placement.clone());
-                }
-            }
-            add_menu::AddMenuAction::Add(tone) => {
-                if let Some(id) = insert {
-                    chrome.add_tone(menu.lane, &id, tone, menu.placement.clone());
-                }
-                // A download keeps the menu open, so that its row shows the load, and a failed
-                // load keeps it open beside its toast, so that the player can try again.
-                menu.adding = chrome.load_flow_phase() == LoadPhase::Loading;
-                menu.open = chrome.load_flow_phase() != LoadPhase::Ready;
-            }
-            add_menu::AddMenuAction::SignIn => {
-                menu.open = false;
-                let _ = chrome.sign_in();
-            }
+        if let Some(id) = menu.replacing.clone() {
+            replace_from_menu(chrome, &mut menu, &id.0, action);
+        } else {
+            add_from_menu(chrome, &mut menu, state, action);
         }
     }
     match menu.view {
@@ -258,6 +330,83 @@ fn show_add_menu(
     }
     menu.store(ui.ctx());
     ui.ctx().request_repaint();
+}
+
+/// Carries out what the player chose in the menu of an add.
+fn add_from_menu(
+    chrome: &mut ChromeController,
+    menu: &mut add_menu::AddMenu,
+    state: &crate::backend::ChainViewState,
+    action: add_menu::AddMenuAction,
+) {
+    let insert = header::insert_of(state, menu.lane);
+    match action {
+        add_menu::AddMenuAction::OpenBrowser(category) => {
+            menu.open = false;
+            if let Some(id) = insert {
+                chrome.open_browser_for(&id, category, &menu.search, menu.placement.clone());
+            }
+        }
+        add_menu::AddMenuAction::LoadFile => {
+            menu.open = false;
+            let picked = rfd::FileDialog::new()
+                .set_title("Open a Ronnie model")
+                .add_filter("Audio models", &["nam", "wav"])
+                .pick_file();
+            if let (Some(path), Some(id)) = (picked, insert) {
+                let _ = chrome.drop_file_into(&id, &path, menu.placement.clone());
+            }
+        }
+        add_menu::AddMenuAction::Add(tone) => {
+            if let Some(id) = insert {
+                chrome.add_tone(menu.lane, &id, tone, menu.placement.clone());
+            }
+            // A download keeps the menu open, so that its row shows the load, and a failed
+            // load keeps it open beside its toast, so that the player can try again.
+            menu.adding = chrome.load_flow_phase() == LoadPhase::Loading;
+            menu.open = chrome.load_flow_phase() != LoadPhase::Ready;
+        }
+        add_menu::AddMenuAction::SignIn => {
+            menu.open = false;
+            let _ = chrome.sign_in();
+        }
+    }
+}
+
+/// Carries out what the player chose in a replace menu, for block `id`.
+fn replace_from_menu(
+    chrome: &mut ChromeController,
+    menu: &mut add_menu::AddMenu,
+    id: &str,
+    action: add_menu::AddMenuAction,
+) {
+    match action {
+        add_menu::AddMenuAction::OpenBrowser(category) => {
+            menu.open = false;
+            chrome.open_replace_browser(id, category, &menu.search);
+        }
+        add_menu::AddMenuAction::LoadFile => {
+            menu.open = false;
+            let picked = rfd::FileDialog::new()
+                .set_title("Open a Ronnie model")
+                .add_filter("Audio models", &["nam", "wav"])
+                .pick_file();
+            if let Some(path) = picked {
+                let _ = chrome.replace_with_file(id, &path);
+            }
+        }
+        add_menu::AddMenuAction::Add(tone) => {
+            chrome.replace_tone(id, tone);
+            // As with an add, a download keeps the menu open on its row, and a failure keeps it
+            // open beside its toast.
+            menu.adding = chrome.load_flow_phase() == LoadPhase::Loading;
+            menu.open = chrome.load_flow_phase() != LoadPhase::Ready;
+        }
+        add_menu::AddMenuAction::SignIn => {
+            menu.open = false;
+            let _ = chrome.sign_in();
+        }
+    }
 }
 
 /// The stage of a chain with no tone blocks: a prompt and a button that opens the browser.

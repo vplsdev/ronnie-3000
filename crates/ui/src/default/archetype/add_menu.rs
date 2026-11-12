@@ -2,7 +2,7 @@
 //! block, and the ways to load a file or open the tone browser.
 
 use eframe::egui::{self, Align, Color32, FontFamily, FontId, Layout, Rect, RichText, Stroke};
-use ronie_core::{ChainSide, ModelKind, Tone, ToneId, gear::GearCategory};
+use ronie_core::{BlockId, ChainSide, ModelKind, Tone, ToneId, gear::GearCategory};
 
 use crate::default::Placement;
 use crate::services::{
@@ -90,6 +90,11 @@ pub(super) struct AddMenu {
     pub(super) anchor: Option<Rect>,
     /// The kind of gear of the slot that opened the menu.
     pub(super) slot: Option<GearCategory>,
+    /// The block whose tone the menu replaces, or `None` for an add.
+    pub(super) replacing: Option<BlockId>,
+    /// Whether the REPLACE button of the block page opened the menu, so that the menu follows
+    /// that button when the page lays out again.
+    pub(super) on_page_button: bool,
 }
 
 impl Default for AddMenu {
@@ -104,6 +109,8 @@ impl Default for AddMenu {
             placement: Placement::End,
             anchor: None,
             slot: None,
+            replacing: None,
+            on_page_button: false,
         }
     }
 }
@@ -132,6 +139,8 @@ impl AddMenu {
         self.placement = Placement::End;
         self.anchor = None;
         self.slot = None;
+        self.replacing = None;
+        self.on_page_button = false;
     }
 
     /// Opens the menu beside the stage slot `anchor` on the tones of `category`, for a block that
@@ -149,7 +158,38 @@ impl AddMenu {
         self.placement = placement;
         self.anchor = Some(anchor);
         self.slot = Some(category);
+        self.replacing = None;
+        self.on_page_button = false;
         self.show_results(category);
+    }
+
+    /// Opens the menu under `anchor` to replace the tone of block `block_id`: on the tones of
+    /// `category`, or on the categories for a block of no known gear.
+    pub(super) fn open_replace(
+        &mut self,
+        block_id: BlockId,
+        category: Option<GearCategory>,
+        anchor: Rect,
+    ) {
+        self.open = true;
+        self.adding = false;
+        self.placement = Placement::End;
+        self.anchor = Some(anchor);
+        self.slot = None;
+        self.replacing = Some(block_id);
+        self.on_page_button = false;
+        match category {
+            Some(category) => self.show_results(category),
+            None => {
+                self.view = MenuView::Categories;
+                self.search.clear();
+            }
+        }
+    }
+
+    /// The block whose tone the open menu replaces.
+    pub(super) fn replaced_block(&self) -> Option<&BlockId> {
+        self.replacing.as_ref().filter(|_| self.open)
     }
 
     /// The slot whose menu is open, by its kind of gear and its placement, which the stage
@@ -188,6 +228,8 @@ pub(super) struct MenuData<'a> {
     pub(super) loading: Option<ToneId>,
     /// Where a slot's menu puts the block, such as "after OD808".
     pub(super) place: Option<String>,
+    /// The tone of the block that a replace swaps out, or `None` for an add.
+    pub(super) replacing: Option<&'a Tone>,
 }
 
 /// What the header of a slot's menu says about where the block goes: "after" or "before" and
@@ -329,6 +371,10 @@ enum RowState {
     SignIn,
     InChain,
     Downloading,
+    /// A tone that replaces the block's tone.
+    Swap,
+    /// The tone of the block that the menu replaces, which a click leaves alone.
+    Current,
 }
 
 /// The rows that the results view shows, chosen once for the height and the drawing.
@@ -397,8 +443,15 @@ impl<'a> Results<'a> {
     fn state_of(tone: &Tone, data: &MenuData<'_>) -> RowState {
         if data.loading.is_some_and(|id| id == tone.id && !tone.local) {
             RowState::Downloading
+        } else if data
+            .replacing
+            .is_some_and(|current| same_tone(current, tone))
+        {
+            RowState::Current
         } else if !tone.local && !data.catalog_downloads {
             RowState::SignIn
+        } else if data.replacing.is_some() {
+            RowState::Swap
         } else if data.in_chain.iter().any(|held| same_tone(held, tone)) {
             RowState::InChain
         } else {
@@ -529,7 +582,9 @@ pub(super) fn show(
             });
     let screen = ui.ctx().content_rect();
     let anchor = menu.anchor.unwrap_or(plus);
-    let (rect, caret) = place_menu(anchor, menu.anchor.is_some(), height, screen, stage);
+    // A replace opens under its button, as the + button's menu does.
+    let beside = menu.anchor.is_some() && menu.replacing.is_none();
+    let (rect, caret) = place_menu(anchor, beside, height, screen, stage);
     let mut action = None;
     egui::Area::new(egui::Id::unique("archetype-add-menu-area"))
         .order(egui::Order::Foreground)
@@ -610,12 +665,30 @@ fn draw(
             text_in(
                 ui,
                 Rect::from_min_max(head.min + egui::vec2(14.0, 0.0), head.max),
-                tracked("ADD BLOCK", bold(10.0), TEXT, 0.14),
+                tracked(
+                    if menu.replacing.is_some() {
+                        "REPLACE BLOCK"
+                    } else {
+                        "ADD BLOCK"
+                    },
+                    bold(10.0),
+                    TEXT,
+                    0.14,
+                ),
                 false,
             );
         }
         MenuView::Results(category) => {
-            let back = Rect::from_min_size(head.min, egui::vec2(120.0, HEAD));
+            let title = if menu.replacing.is_some() {
+                format!("REPLACE \u{b7} {}", category_name(category))
+            } else {
+                category_name(category).to_owned()
+            };
+            let width = galley_of(ui, tracked(&title, bold(10.0), TEXT, 0.14))
+                .size()
+                .x;
+            let back =
+                Rect::from_min_size(head.min, egui::vec2((34.0 + width + 8.0).max(120.0), HEAD));
             let response = ui.interact(back, ui.scope_id().with("back"), egui::Sense::click());
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::Role::Button, true, "Back to categories")
@@ -629,7 +702,7 @@ fn draw(
             text_in(
                 ui,
                 Rect::from_min_max(back.min + egui::vec2(34.0, 0.0), back.max),
-                tracked(category_name(category), bold(10.0), TEXT, 0.14),
+                tracked(&title, bold(10.0), TEXT, 0.14),
                 false,
             );
             if response.clicked() {
@@ -775,7 +848,9 @@ fn draw(
 /// a slot's menu, whose lane is the slot's.
 fn lane_picker(ui: &mut egui::Ui, head: Rect, menu: &mut AddMenu, data: &MenuData<'_>) {
     let right = head.right() - 6.0;
-    let place = if menu.anchor.is_some() {
+    let place = if menu.replacing.is_some() {
+        Some("keeps trims, EQ and place")
+    } else if menu.anchor.is_some() {
         data.place.as_deref()
     } else {
         None
@@ -1107,7 +1182,7 @@ fn tone_row(
     state: RowState,
 ) -> bool {
     let response = menu_item(ui, row, &format!("{}-{}", id.0, id.1), &tone.title);
-    if response.hovered() {
+    if response.hovered() && state != RowState::Current {
         painter.rect_filled(row, 6.0, HOVER);
     }
     let icon = Rect::from_center_size(
@@ -1142,6 +1217,9 @@ fn tone_row(
         RowState::SignIn => ("SIGN IN", MUTED),
         RowState::InChain => ("IN CHAIN", MUTED),
         RowState::Downloading => ("DOWNLOADING", MUTED),
+        RowState::Swap if response.hovered() => ("SWAP", ACCENT),
+        RowState::Swap => ("SWAP", MUTED),
+        RowState::Current => ("CURRENT", MUTED),
     };
     text_in(
         ui,
@@ -1168,7 +1246,7 @@ fn tone_row(
             ACCENT,
         );
     }
-    response.clicked() && state != RowState::Downloading
+    response.clicked() && !matches!(state, RowState::Downloading | RowState::Current)
 }
 
 /// The box that takes the place of the TONE3000 rows for a signed-out user. Returns whether
