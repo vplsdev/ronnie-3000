@@ -2349,3 +2349,133 @@ fn a_file_from_a_slot_lands_at_the_slot() {
     driver.settle();
     assert_eq!(lane_titles(&backend, false), before);
 }
+
+/// A local tone, which lands at once with or without a service.
+fn local_pedal(id: i64, title: &str) -> ronie_core::Tone {
+    ronie_core::Tone::from_value(serde_json::json!({
+        "id": id, "title": title, "format": "nam", "gear": "pedal", "local": true,
+        "models": [{"id": id * 10, "name": "m", "model_url": format!("file:///stash/{id}.nam")}]
+    }))
+    .expect("tone")
+}
+
+/// Opens the tone browser from the pedal slot after the run, for the lane's insert.
+fn open_browser_from_the_slot(driver: &mut UiDriver) {
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("browser link");
+    driver.settle();
+    assert!(
+        driver.chrome_mut().browser_mut().is_some(),
+        "the browser opened"
+    );
+}
+
+/// Loads `tone` into insert `insert` of lane A through the browser of the chain, which no slot
+/// opened.
+fn load_through_the_browser(driver: &mut UiDriver, insert: &str, tone: ronie_core::Tone) {
+    let chrome = driver.chrome_mut();
+    chrome
+        .gallery_mut()
+        .select_tone(ronie_core::ChainSide::Left, BlockId(insert.to_owned()));
+    chrome.sync_browser();
+    chrome.pick_tone(tone);
+    chrome.sync_browser();
+    driver.settle();
+}
+
+/// A key setup that starts a service over no responses when a key is saved.
+struct KeyOnSave(tempfile::TempDir);
+
+impl ronie_ui::services::key_setup::KeySetup for KeyOnSave {
+    fn origin(&self) -> String {
+        "https://www.fixtures.invalid".to_owned()
+    }
+
+    fn has_saved_key(&self) -> bool {
+        false
+    }
+
+    fn save(
+        &mut self,
+        key: &str,
+    ) -> Result<
+        Option<ronie_ui::services::key_setup::CommunityParts>,
+        ronie_ui::services::key_setup::KeySetupError,
+    > {
+        let origin = url::Url::parse("https://api.example").expect("origin");
+        Ok(Some(
+            ronie_ui::services::community::CommunityService::new(
+                ronie_core::OAuthConfig::new(origin.clone(), key.to_owned()),
+                ronie_core::OriginPolicy::new(origin, []),
+                ronie_core::RecordedTransport::new(Vec::new()),
+                ronie_core::SettingsStore::standalone(
+                    self.0.path(),
+                    ronie_core::UI_PREFERENCES_SETTINGS,
+                ),
+            )
+            .into(),
+        ))
+    }
+
+    fn remove(
+        &mut self,
+    ) -> Result<
+        Option<ronie_ui::services::key_setup::CommunityParts>,
+        ronie_ui::services::key_setup::KeySetupError,
+    > {
+        Ok(None)
+    }
+}
+
+#[test]
+fn a_service_change_ends_the_place_of_a_browser_from_a_slot() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[], add_overdrive);
+    let insert = last_insert(&backend);
+    open_browser_from_the_slot(&mut driver);
+    // A saved key starts a service, whose views start again with no browser.
+    let chrome = driver.chrome_mut();
+    chrome.use_key_setup(Box::new(KeyOnSave(
+        tempfile::tempdir().expect("temporary settings"),
+    )));
+    chrome.open_key_page();
+    chrome
+        .key_page_mut()
+        .expect("key page")
+        .set_draft("t3k_pub_test_fake");
+    chrome.save_key().expect("the key saves");
+    assert!(driver.chrome_mut().browser_mut().is_none());
+
+    load_through_the_browser(&mut driver, &insert, local_pedal(901, "Later Drive"));
+    let titles = lane_titles(&backend, false);
+    assert_eq!(
+        titles.last().map(String::as_str),
+        Some("Later Drive"),
+        "{titles:?}"
+    );
+}
+
+#[test]
+fn a_browser_from_a_slot_places_only_the_tone_of_its_insert() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[], add_overdrive);
+    let insert = last_insert(&backend);
+    open_browser_from_the_slot(&mut driver);
+    // A file fills the slot's insert at the end of the lane while the browser is open.
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("closet-cab.wav");
+    write_ir(&path);
+    driver
+        .chrome_mut()
+        .drop_file_into(&insert, &path, Placement::End)
+        .expect("the file loads");
+    driver.settle();
+    let file = lane_titles(&backend, false);
+
+    // A later load into the next insert lands at the end, and the file stays where it is.
+    let next = last_insert(&backend);
+    assert_ne!(next, insert);
+    load_through_the_browser(&mut driver, &next, local_pedal(902, "Next Drive"));
+    let mut expected = file;
+    expected.push("Next Drive".to_owned());
+    assert_eq!(lane_titles(&backend, false), expected);
+}

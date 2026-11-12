@@ -461,6 +461,7 @@ impl ChromeController {
         }
         self.browser = None;
         self.parked_browser = None;
+        self.browser_placement = None;
         self.after_session_change(before);
         self.user_refresh_due = self.session.status().signed_in();
     }
@@ -1260,9 +1261,19 @@ impl ChromeController {
     /// Opens tone selection for the gallery target and closes completed flows.
     pub fn sync_browser(&mut self) {
         if let Some(tone) = self.load_flow.take_landed() {
+            // The slot's place belongs to the load that filled the slot's insert, and not to a
+            // load that landed in another insert.
+            let filled = self.browser_placement.take().filter(|(insert, _)| {
+                self.backend
+                    .chain_state(0)
+                    .chain
+                    .block(&BlockId(insert.clone()))
+                    .and_then(|block| block.tone.as_ref())
+                    .is_some_and(|held| held.id == tone.id)
+            });
             self.remember_tone(tone);
             self.open_added_block();
-            if let Some((insert, placement)) = self.browser_placement.take() {
+            if let Some((insert, placement)) = filled {
                 self.place_block(&insert, placement);
             }
         }
