@@ -2552,3 +2552,237 @@ fn a_file_load_keeps_the_place_of_a_slot_download() {
         "{left:?}"
     );
 }
+
+// ---------------------------------------------------------------- A cab's two mics
+
+const CAB: &str = "Chain: UK Greenback - Marshall 1960TV 4x12 M201";
+
+/// main-mono with its cab holding three mic positions, open on the cab.
+fn cab_driver() -> (UiDriver, Arc<MockBackend>) {
+    let (mut driver, backend) = edited_driver("main-mono", |chain| {
+        let tone = &mut chain["chain"][2]["tone"];
+        tone["models"] = serde_json::json!([
+            {"id": 1103, "name": "M201 Cap Edge"},
+            {"id": 1203, "name": "SM57 Cap Edge"},
+            {"id": 1303, "name": "R121 Center"},
+        ]);
+        tone["models_count"] = 3.into();
+        // A local pack switches its mics with no download and no sign-in.
+        tone["local"] = true.into();
+    });
+    let _ = driver.click(CAB).expect("cab");
+    driver.settle();
+    (driver, backend)
+}
+
+fn cab(backend: &MockBackend) -> ronie_core::ChainBlock {
+    block_titled(backend, "Greenback").expect("cab")
+}
+
+fn add_b(driver: &mut UiDriver) {
+    let _ = driver.click("Add a second IR").expect("ADD A SECOND IR");
+    driver.settle();
+}
+
+#[test]
+fn a_cab_with_two_mics_offers_a_second_ir() {
+    let (driver, backend) = cab_driver();
+    let panel = rect_of(&driver, "Cab mics").expect("the MICS panel");
+    assert!(driver.shows_text("MICS"));
+    assert!(driver.shows_text("1 IR"));
+    assert!(driver.is_visible("IR A capture"));
+    assert!(driver.is_visible("Add a second IR"));
+    assert!(driver.shows_text(
+        "Blend a second mic: pick another mic position from this cab. Both play at once; BLEND \
+         mixes them."
+    ));
+    assert!(!driver.is_visible("IR B capture"));
+    assert!((panel.width() - 300.0).abs() < 0.5, "{panel:?}");
+    let render = rect_of(&driver, "Cab render").expect("render");
+    assert!(
+        render.right() <= panel.left() - 20.0,
+        "the render moves left of the panel: {render:?} vs {panel:?}"
+    );
+    assert_eq!(cab(&backend).ir_b, None);
+}
+
+#[test]
+fn adding_b_picks_another_mic_and_shows_the_blend() {
+    let (mut driver, backend) = cab_driver();
+    add_b(&mut driver);
+    let block = cab(&backend);
+    let b = block.ir_b.expect("B is set").model_id;
+    assert_ne!(Some(b), block.active_model_id, "another mic");
+    assert!(driver.shows_text("2 IRs blended"));
+    assert!(driver.is_visible("IR B capture"));
+    assert!(!driver.is_visible("Add a second IR"));
+    assert!(driver.is_visible("Blend: 50 / 50"));
+    assert!(driver.is_visible("IR A level: 0.0 dB"));
+    assert!(driver.is_visible("IR B level: 0.0 dB"));
+    assert!(driver.is_visible("Invert IR B phase"));
+    assert!(driver.is_visible("Remove IR B"));
+}
+
+#[test]
+fn a_blend_drag_is_one_undo_step() {
+    let (mut driver, backend) = cab_driver();
+    add_b(&mut driver);
+    let label = driver.label_starting_with("Blend:").expect("BLEND knob");
+    let up: Vec<eframe::egui::Vec2> = (1..=6)
+        .map(|step| eframe::egui::vec2(0.0, -6.0 * step as f32))
+        .collect();
+    let _ = driver.drag_control(&label, &up).expect("drag");
+    let dragged = cab(&backend);
+    assert!(dragged.params.ir_blend > 0.6, "{}", dragged.params.ir_blend);
+    assert!(
+        driver
+            .label_starting_with("Blend:")
+            .is_some_and(|label| label != "Blend: 50 / 50")
+    );
+    let _ = driver.click("Undo").expect("undo");
+    driver.settle();
+    let undone = cab(&backend);
+    assert_eq!(
+        undone.params.ir_blend, 0.5,
+        "one step undoes the whole drag"
+    );
+    assert!(undone.ir_b.is_some(), "and leaves B");
+}
+
+#[test]
+fn a_level_readout_drags_like_a_knob() {
+    let (mut driver, backend) = cab_driver();
+    add_b(&mut driver);
+    let up: Vec<eframe::egui::Vec2> = (1..=4)
+        .map(|step| eframe::egui::vec2(0.0, -5.0 * step as f32))
+        .collect();
+    let _ = driver
+        .drag_control("IR B level: 0.0 dB", &up)
+        .expect("drag");
+    assert!(cab(&backend).params.ir_b_level > 0.5);
+    assert_eq!(cab(&backend).params.ir_a_level, 0.5);
+}
+
+#[test]
+fn removing_b_restores_a_alone() {
+    let (mut driver, backend) = cab_driver();
+    add_b(&mut driver);
+    let _ = driver.click("Remove IR B").expect("REMOVE B");
+    driver.settle();
+    let block = cab(&backend);
+    assert_eq!(block.ir_b, None);
+    assert_eq!(block.active_model_id, Some(ronie_core::ModelId(1103)));
+    assert!(driver.shows_text("1 IR"));
+    assert!(driver.is_visible("Add a second IR"));
+    assert!(!driver.is_visible("IR B capture"));
+}
+
+#[test]
+fn invert_toggles_b_phase() {
+    let (mut driver, backend) = cab_driver();
+    add_b(&mut driver);
+    assert!(!cab(&backend).params.ir_b_invert);
+    let _ = driver.click("Invert IR B phase").expect("Ø B");
+    driver.settle();
+    assert!(cab(&backend).params.ir_b_invert);
+    let _ = driver.click("Invert IR B phase").expect("Ø B");
+    driver.settle();
+    assert!(!cab(&backend).params.ir_b_invert);
+}
+
+#[test]
+fn picking_b_from_its_capture_list_changes_only_b() {
+    let (mut driver, backend) = cab_driver();
+    add_b(&mut driver);
+    let before = cab(&backend).ir_b.expect("B").model_id;
+    let _ = driver.click("IR B capture").expect("B picker");
+    driver.settle();
+    assert!(
+        !driver.is_visible("M201 Cap Edge"),
+        "A's mic is not offered as B"
+    );
+    let other = if before.0 == 1203 {
+        "R121 Center"
+    } else {
+        "SM57 Cap Edge"
+    };
+    let _ = driver.click(other).expect("other mic");
+    driver.settle();
+    let block = cab(&backend);
+    assert_ne!(block.ir_b.expect("B").model_id, before);
+    assert_eq!(block.active_model_id, Some(ronie_core::ModelId(1103)));
+}
+
+#[test]
+fn a_b_with_no_bytes_shows_as_not_loaded() {
+    let (mut driver, backend) = edited_driver("main-mono", |chain| {
+        let block = &mut chain["chain"][2];
+        block["tone"]["models"] = serde_json::json!([
+            {"id": 1103, "name": "M201 Cap Edge"},
+            {"id": 1203, "name": "SM57 Cap Edge"},
+        ]);
+        block["irBModelId"] = 1203.into();
+        block["irBMissing"] = true.into();
+    });
+    assert!(cab(&backend).ir_b_missing);
+    let _ = driver.click(CAB).expect("cab");
+    driver.settle();
+    assert!(driver.is_visible("IR B capture (not loaded)"));
+    assert!(!driver.is_visible("IR B capture"));
+}
+
+#[test]
+fn a_single_model_cab_has_no_second_ir() {
+    let (mut driver, _) = edited_driver("main-mono", |chain| {
+        chain["chain"][2]["tone"]["models_count"] = 1.into();
+    });
+    let _ = driver.click(CAB).expect("cab");
+    driver.settle();
+    assert!(driver.is_visible("Cab render"));
+    assert!(!driver.is_visible("Cab mics"));
+    assert!(!driver.is_visible("Add a second IR"));
+}
+
+#[test]
+fn the_reference_layout_has_no_mics_panel() {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(include_str!("../../../fixtures/ui-scenarios.json")).expect("json");
+    let scenario = doc["scenarios"]
+        .as_array_mut()
+        .expect("scenarios")
+        .iter_mut()
+        .find(|scenario| scenario["id"] == "main-mono")
+        .expect("scenario");
+    let block = &mut scenario["state"]["chain"]["chain"][2];
+    block["tone"]["models"] = serde_json::json!([
+        {"id": 1103, "name": "M201 Cap Edge"},
+        {"id": 1203, "name": "SM57 Cap Edge"},
+    ]);
+    block["irBModelId"] = 1203.into();
+    let scenario = load_scenarios(&doc.to_string())
+        .expect("scenarios")
+        .into_iter()
+        .find(|scenario| scenario.id == "main-mono")
+        .expect("scenario");
+    let backend = Arc::new(MockBackend::from_scenario(&scenario));
+    let chrome = ChromeController::new(backend.clone(), Vec::new(), false, true);
+    let mut driver = UiDriver::new(chrome, (*backend).clone());
+    driver.settle();
+    driver.chrome_mut().gallery_mut().activate("blk-3");
+    driver.settle();
+    assert!(
+        driver.label_starting_with("In:").is_some(),
+        "the detail is open"
+    );
+    for name in [
+        "Cab mics",
+        "Add a second IR",
+        "IR A capture",
+        "IR B capture",
+        "Remove IR B",
+        "Invert IR B phase",
+    ] {
+        assert!(!driver.is_visible(name), "{name}");
+    }
+    assert!(driver.label_starting_with("Blend:").is_none());
+}

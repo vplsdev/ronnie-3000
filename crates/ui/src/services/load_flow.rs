@@ -206,27 +206,56 @@ impl ModelSwitchFlow {
         }
     }
 
-    /// Starts a switch of `block_id` away from `replaces`, which ends each older switch.
+    /// Starts a switch of the active model of `block_id` away from `replaces`, which ends each
+    /// older switch.
     #[must_use]
     pub fn begin(&self, block_id: BlockId, replaces: Option<ModelId>) -> ModelSwitchTicket {
+        self.begin_slot(block_id, ModelSlot::A, replaces)
+    }
+
+    /// Starts a switch of one slot of `block_id` away from `replaces`, which ends each older
+    /// switch of either slot.
+    ///
+    /// Both slots share the one generation, so a switch of B ends a switch of A that is still
+    /// downloading, and the other way round. The ticket names its slot, so its bytes land only
+    /// in that slot.
+    #[must_use]
+    pub fn begin_slot(
+        &self,
+        block_id: BlockId,
+        slot: ModelSlot,
+        replaces: Option<ModelId>,
+    ) -> ModelSwitchTicket {
         ModelSwitchTicket {
             generation: self.gate.advance(),
             gate: self.gate.clone(),
             backend: self.backend.clone(),
             block_id,
+            slot,
             replaces,
         }
     }
 }
 
+/// Which model of a block a switch changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModelSlot {
+    /// The active model (IR A of a cab).
+    #[default]
+    A,
+    /// The second IR of a cab, blended with A.
+    B,
+}
+
 /// The right of one background switch to publish, while its generation stays current and the
-/// block stays as the switch found it.
+/// slot of the block stays as the switch found it.
 #[derive(Clone)]
 pub struct ModelSwitchTicket {
     generation: u64,
     gate: LoadGate,
     backend: Arc<dyn UiBackend>,
     block_id: BlockId,
+    slot: ModelSlot,
     replaces: Option<ModelId>,
 }
 
@@ -236,6 +265,7 @@ impl std::fmt::Debug for ModelSwitchTicket {
             .debug_struct("ModelSwitchTicket")
             .field("generation", &self.generation)
             .field("block_id", &self.block_id)
+            .field("slot", &self.slot)
             .field("replaces", &self.replaces)
             .finish_non_exhaustive()
     }
@@ -248,10 +278,16 @@ impl ModelSwitchTicket {
         self.generation
     }
 
-    /// Active model when the switch started.
+    /// The model of the slot when the switch started.
     #[must_use]
     pub const fn replaces(&self) -> Option<ModelId> {
         self.replaces
+    }
+
+    /// The slot that this switch changes.
+    #[must_use]
+    pub const fn slot(&self) -> ModelSlot {
+        self.slot
     }
 
     /// Validates, publishes, and prepares one downloaded model on the calling thread.
@@ -284,15 +320,27 @@ impl ModelSwitchTicket {
                     model_id,
                     bytes,
                 } = downloaded;
-                Ok(self
-                    .holds_block(&tone)
-                    .then(|| UiAction::SelectModelWithBytes {
-                        block_id: self.block_id.clone(),
+                if !self.holds_block(&tone) {
+                    return Ok(None);
+                }
+                let block_id = self.block_id.clone();
+                let replaces = self.replaces;
+                Ok(Some(match self.slot {
+                    ModelSlot::A => UiAction::SelectModelWithBytes {
+                        block_id,
                         tone,
                         model_id,
-                        replaces: self.replaces,
+                        replaces,
                         bytes,
-                    }))
+                    },
+                    ModelSlot::B => UiAction::SelectSecondModelWithBytes {
+                        block_id,
+                        tone,
+                        model_id,
+                        replaces,
+                        bytes,
+                    },
+                }))
             },
         )
     }
@@ -308,7 +356,11 @@ impl ModelSwitchTicket {
             .chain
             .block(&self.block_id)
             .is_some_and(|block| {
-                block.active_model_id == self.replaces
+                let held = match self.slot {
+                    ModelSlot::A => block.active_model_id,
+                    ModelSlot::B => block.ir_b.map(|ir_b| ir_b.model_id),
+                };
+                held == self.replaces
                     && block
                         .tone
                         .as_ref()

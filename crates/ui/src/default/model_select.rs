@@ -368,6 +368,103 @@ impl ModelSelect {
         selected
     }
 
+    /// Renders the picker as one compact capture button that opens the same list, and returns
+    /// a model selected by the user.
+    ///
+    /// `label` is the accessible name. `fallback` shows when the list does not hold the model,
+    /// and `faded` draws the button as a capture that is not loaded.
+    pub fn show_compact(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        label: &str,
+        fallback: &str,
+        faded: bool,
+        session: SessionStatus,
+    ) -> Option<ModelId> {
+        let colors = PickerColors::for_ctx(ui.ctx());
+        let disabled = self.disabled(session);
+        let response = ui
+            .add_enabled_ui(!disabled, |ui| {
+                ui.interact(rect, ui.scope_id().with("model-compact"), Sense::click())
+            })
+            .inner;
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, !disabled, label));
+        if response.clicked() {
+            if self.open {
+                self.close();
+            } else {
+                self.open(session);
+            }
+        }
+        let fade = |color: Color32| {
+            if faded {
+                color.gamma_multiply(0.4)
+            } else {
+                color
+            }
+        };
+        let painter = ui.painter_at(rect.expand(1.0));
+        painter.rect_filled(
+            rect,
+            colors.radius,
+            fade(if disabled {
+                colors.fill_disabled
+            } else {
+                colors.fill
+            }),
+        );
+        if let Some(edge) = colors.edge {
+            painter.rect_stroke(
+                rect,
+                colors.radius,
+                egui::Stroke::new(1.0, fade(edge)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let content = fade(if disabled {
+            colors.content_disabled
+        } else {
+            colors.content
+        });
+        let name = self
+            .current_index()
+            .and_then(|index| self.options.get(index))
+            .map_or(fallback, |option| option.name.as_str());
+        let chevron = egui::pos2(rect.right() - 13.0, rect.center().y);
+        let text_width = (rect.width() - 34.0).max(0.0);
+        let mut job = egui::text::LayoutJob::single_section(
+            name.to_owned(),
+            egui::TextFormat::simple(egui::FontId::proportional(11.0), content),
+        );
+        job.wrap = egui::text::TextWrapping {
+            max_width: text_width,
+            max_rows: 1,
+            break_anywhere: true,
+            overflow_character: Some('\u{2026}'),
+        };
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        painter.galley(
+            egui::pos2(rect.left() + 8.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            content,
+        );
+        let stroke = egui::Stroke::new(1.8, content);
+        painter.add(egui::epaint::PathShape::line(
+            vec![
+                chevron + egui::vec2(-3.75, -1.9),
+                chevron + egui::vec2(0.0, 1.9),
+                chevron + egui::vec2(3.75, -1.9),
+            ],
+            stroke,
+        ));
+        if self.open {
+            self.show_dropdown(ui, rect, response.id, session)
+        } else {
+            None
+        }
+    }
+
     fn show_dropdown(
         &mut self,
         ui: &mut egui::Ui,

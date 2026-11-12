@@ -362,6 +362,36 @@ pub enum UiAction {
         /// Complete model bytes.
         bytes: ModelBytes,
     },
+    /// Set or clear the second IR of a cab block: another model of its tone, blended with the
+    /// active model. `None` removes it and resets the blend, the levels and the invert, so the
+    /// block plays its active model alone.
+    ///
+    /// The model must be an IR of the block's tone other than the active model.
+    SelectSecondModel {
+        /// Block to edit.
+        block_id: BlockId,
+        /// New second IR, or `None` to remove it.
+        model_id: Option<ModelId>,
+    },
+    /// Set the second IR of a cab block to a catalog model with bytes that a background worker
+    /// downloaded. The model joins the block's stored tone, which otherwise holds only the active
+    /// model.
+    ///
+    /// The rules are those of [`Self::SelectModelWithBytes`], for the second IR: the action
+    /// fails with no change unless the block still holds this tone with `replaces` as its
+    /// second IR.
+    SelectSecondModelWithBytes {
+        /// Block to edit.
+        block_id: BlockId,
+        /// Stored tone that contains the new model.
+        tone: Tone,
+        /// New second IR.
+        model_id: ModelId,
+        /// Second IR when the switch started.
+        replaces: Option<ModelId>,
+        /// Complete model bytes.
+        bytes: ModelBytes,
+    },
     /// Save or update a user preset.
     SavePreset {
         /// Preset display name.
@@ -1052,6 +1082,16 @@ impl MockBackend {
                 }
             });
         session.chain.revision = fixture["chain"]["revision"].as_u64().unwrap_or(0);
+        // A restore marks a second IR whose bytes it did not find. A session never stores the
+        // mark, so a scenario names it beside the block.
+        for block in fixture["chain"]["chain"].as_array().into_iter().flatten() {
+            if block["irBMissing"].as_bool() == Some(true)
+                && let Some(id) = block["blockId"].as_str()
+                && let Some(block) = session.chain.block_mut(&BlockId(id.to_owned()))
+            {
+                block.ir_b_missing = block.ir_b.is_some();
+            }
+        }
         let preparation = PrepareSpec {
             host_sample_rate: fixture["chain"]["sampleRate"].as_f64().unwrap_or(48_000.0),
             max_host_frames: 64,

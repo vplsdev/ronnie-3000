@@ -3,14 +3,14 @@
 use std::sync::Arc;
 
 use eframe::egui::{self, Color32, Rect, Sense, TextureHandle};
-use ronie_core::{BlockId, BlockParams, ChainBlock, ModelId, ModelKind, ToneId, ToneModel};
+use ronie_core::{BlockId, BlockParams, ChainBlock, IrB, ModelId, ModelKind, ToneId, ToneModel};
 
 use crate::{
     backend::{GesturePhase, UiAction, UiBackend, UiError},
     services::{
         community_worker::{ModelList, ModelSwitchRequest, ModelsRequest},
         links::{is_web_url, open_web_url},
-        load_flow::{ModelSwitchFlow, ModelSwitchTicket},
+        load_flow::{ModelSlot, ModelSwitchFlow, ModelSwitchTicket},
         session::SessionStatus,
     },
     widgets::{
@@ -62,6 +62,27 @@ const BYPASSED_TINT: Color32 = Color32::from_rgb(0xb4, 0xb4, 0xb2);
 
 /// Tallest a rendered skin draws, in points (the design's stage height).
 const RENDER_HEIGHT: f32 = 300.0;
+
+/// Width of a cab's MICS panel, and the space between it and the render.
+const MICS_PANEL_WIDTH: f32 = 300.0;
+const MICS_PANEL_GAP: f32 = 20.0;
+/// Inner padding of the MICS panel, and the space between its parts.
+const MICS_PAD: f32 = 14.0;
+const MICS_GAP: f32 = 10.0;
+/// Heights of the parts of the MICS panel: the title, a mic row, the add button and the part
+/// with the blend.
+const MICS_HEADER: f32 = 12.0;
+const MICS_ROW: f32 = 28.0;
+const MICS_ADD: f32 = 40.0;
+const MICS_FOOTER: f32 = 5.0 + 14.0 + 6.0 + BLEND_KNOB + 6.0 + 13.0;
+/// Width of the level readout of a mic row.
+const MICS_LEVEL_WIDTH: f32 = 44.0;
+/// Side of the BLEND knob.
+const BLEND_KNOB: f32 = 46.0;
+/// The help line under the add button.
+const MICS_HELP: &str = "Blend a second mic: pick another mic position from this cab. Both play at once; BLEND mixes them.";
+/// Label and value text of a knob of the light panel.
+const KNOB_INK: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 
 /// Where the stage of a block offers a slot to add gear: the block each slot is placed
 /// against, or `None` where the slot does not show.
@@ -124,6 +145,8 @@ pub struct BlockDetail {
     calibrate_input: bool,
     view: BlockView,
     models: ModelSelect,
+    /// The picker of a cab's second IR: the models of the tone other than the active one.
+    models_b: ModelSelect,
     info: BlockInfoPanel,
     eq: EqEditor,
     closed: bool,
@@ -153,6 +176,9 @@ struct RemoteModels {
 struct PendingSwitch {
     ticket: ModelSwitchTicket,
     model: ModelId,
+    /// The slot that the switch changes. All switches of a detail share one generation, so a
+    /// detail has at most one pending switch.
+    slot: ModelSlot,
 }
 
 impl Drop for BlockDetail {
@@ -190,6 +216,7 @@ impl BlockDetail {
             .cloned()
             .ok_or_else(|| UiError::UnknownTarget(block_id.to_owned()))?;
         let models = model_select_for(&block);
+        let models_b = ModelSelect::new(block.tone.as_ref().is_some_and(|tone| tone.local));
         let eq = EqEditor::new(backend.clone(), block_id)?;
         let mut info = BlockInfoPanel::default();
         info.set_tone(block.tone.clone());
@@ -209,6 +236,7 @@ impl BlockDetail {
             calibrate_input,
             view: BlockView::Tone,
             models,
+            models_b,
             info,
             eq,
             closed: false,
@@ -337,7 +365,7 @@ impl BlockDetail {
             ));
         }
         if self.remote.is_some() && self.holds_catalog_tone() {
-            return self.request_switch(id);
+            return self.request_switch(ModelSlot::A, id);
         }
         self.backend.dispatch(UiAction::SelectModel {
             block_id: self.block_id.clone(),
@@ -349,10 +377,74 @@ impl BlockDetail {
         Ok(())
     }
 
+    /// Sets the second IR of a cab to another model of its tone, or removes it with `None`.
+    ///
+    /// A catalog tone waits for the bytes of the model, as a switch of the active model does.
+    /// A removal also ends a download of B.
+    ///
+    /// # Errors
+    /// Returns a signed-out, unknown-model, or backend error.
+    pub fn select_second_model(
+        &mut self,
+        id: Option<ModelId>,
+        session: SessionStatus,
+    ) -> Result<(), UiError> {
+        let Some(id) = id else {
+            if self.pending_slot() == Some(ModelSlot::B) {
+                self.revoke_switch();
+            }
+            self.models_b.clear_target();
+            if self.block.ir_b.is_none() {
+                return Ok(());
+            }
+            self.backend.dispatch(UiAction::SelectSecondModel {
+                block_id: self.block_id.clone(),
+                model_id: None,
+            })?;
+            self.block.ir_b = None;
+            self.block.ir_b_missing = false;
+            self.synced_revision = None;
+            return Ok(());
+        };
+        self.refresh_b_picker();
+        if self.models_b.select(id, session).is_none() {
+            return Err(UiError::InvalidAction(
+                "model is not selectable as the second IR".to_owned(),
+            ));
+        }
+        if self.remote.is_some() && self.holds_catalog_tone() {
+            return self.request_switch(ModelSlot::B, id);
+        }
+        self.backend.dispatch(UiAction::SelectSecondModel {
+            block_id: self.block_id.clone(),
+            model_id: Some(id),
+        })?;
+        self.block.ir_b = Some(IrB { model_id: id });
+        self.block.ir_b_missing = false;
+        self.synced_revision = None;
+        Ok(())
+    }
+
+    /// Inverts the polarity of a cab's second IR, or puts it back.
+    ///
+    /// # Errors
+    /// Returns a backend error.
+    pub fn set_ir_b_invert(&mut self, inverted: bool) -> Result<(), UiError> {
+        self.block.params.ir_b_invert = inverted;
+        self.write_params()
+    }
+
+    /// The picker of a cab's second IR.
+    #[must_use]
+    pub const fn second_model_select(&self) -> &ModelSelect {
+        &self.models_b
+    }
+
     /// Gives this detail a community service. A catalog tone then lists its models through the
     /// service, and a choice waits for its bytes. A local tone stays on the stash path.
     pub fn attach_model_switching(&mut self, flow: ModelSwitchFlow) {
         self.models.set_deferred(self.holds_catalog_tone());
+        self.models_b.set_deferred(self.holds_catalog_tone());
         self.remote = Some(RemoteModels {
             flow,
             rows: Vec::new(),
@@ -429,11 +521,12 @@ impl BlockDetail {
 
     /// Ends the current switch after its audio is prepared. Returns false for any other switch.
     pub fn finish_switch(&mut self, generation: u64) -> bool {
-        let Some(model) = self.take_pending(generation) else {
+        let Some((slot, model)) = self.take_pending(generation) else {
             return false;
         };
-        self.models.set_active(model);
-        self.models.clear_target();
+        let picker = self.picker_mut(slot);
+        picker.set_active(model);
+        picker.clear_target();
         self.sync();
         true
     }
@@ -441,10 +534,10 @@ impl BlockDetail {
     /// Ends the current switch, which failed. The active model stays, and the same choice can
     /// start again. Returns false for any other switch.
     pub fn fail_switch(&mut self, generation: u64) -> bool {
-        if self.take_pending(generation).is_none() {
+        let Some((slot, _)) = self.take_pending(generation) else {
             return false;
-        }
-        self.models.clear_target();
+        };
+        self.picker_mut(slot).clear_target();
         true
     }
 
@@ -452,6 +545,7 @@ impl BlockDetail {
     pub fn abandon_model_work(&mut self) {
         self.revoke_switch();
         self.models.clear_target();
+        self.models_b.clear_target();
         self.models.cancel_fetch();
         if let Some(remote) = &mut self.remote {
             remote.list_due = true;
@@ -494,37 +588,48 @@ impl BlockDetail {
         self.block.tone.as_ref().is_some_and(|tone| !tone.local)
     }
 
-    /// Starts a remote switch. A choice of the model that already downloads changes nothing, and
-    /// any other choice ends the switch in progress.
-    fn request_switch(&mut self, id: ModelId) -> Result<(), UiError> {
-        let downloading = self
+    /// Starts a remote switch of one slot. A choice of the model that already downloads changes
+    /// nothing, and any other choice ends the switch in progress, of either slot. A choice of
+    /// the model that the slot holds needs no download, unless it is a B with no bytes.
+    fn request_switch(&mut self, slot: ModelSlot, id: ModelId) -> Result<(), UiError> {
+        let pending = self
             .remote
             .as_ref()
             .and_then(|remote| remote.pending.as_ref())
-            .is_some_and(|pending| pending.model == id);
-        if downloading {
+            .map(|pending| (pending.slot, pending.model));
+        if pending == Some((slot, id)) {
+            return Ok(());
+        }
+        let held = self.slot_model(slot);
+        let missing = slot == ModelSlot::B && self.block.ir_b_missing;
+        if held == Some(id) && !missing {
+            // The slot already plays this model. A switch of this slot to another model ends,
+            // and a switch of the other slot goes on.
+            if pending.is_some_and(|(other, _)| other == slot) {
+                self.revoke_switch();
+            }
             return Ok(());
         }
         self.revoke_switch();
-        if self.block.active_model_id == Some(id) {
-            return Ok(());
+        if let Some((other, _)) = pending.filter(|(other, _)| *other != slot) {
+            self.picker_mut(other).clear_target();
         }
         let tone = self.block.tone.clone();
-        let replaces = self.block.active_model_id;
         let Some(remote) = &mut self.remote else {
             return Ok(());
         };
         let model = remote.rows.iter().find(|model| model.id == id).cloned();
         let (Some(tone), Some(model)) = (tone, model) else {
-            self.models.clear_target();
+            self.picker_mut(slot).clear_target();
             return Err(UiError::InvalidAction(
                 "model is not in the current list".to_owned(),
             ));
         };
-        let ticket = remote.flow.begin(self.block_id.clone(), replaces);
+        let ticket = remote.flow.begin_slot(self.block_id.clone(), slot, held);
         remote.pending = Some(PendingSwitch {
             ticket: ticket.clone(),
             model: id,
+            slot,
         });
         remote.unsent = Some(ModelSwitchRequest {
             tone,
@@ -532,6 +637,29 @@ impl BlockDetail {
             ticket,
         });
         Ok(())
+    }
+
+    /// The model that a slot of the block holds.
+    fn slot_model(&self, slot: ModelSlot) -> Option<ModelId> {
+        match slot {
+            ModelSlot::A => self.block.active_model_id,
+            ModelSlot::B => self.block.ir_b.map(|ir_b| ir_b.model_id),
+        }
+    }
+
+    fn picker_mut(&mut self, slot: ModelSlot) -> &mut ModelSelect {
+        match slot {
+            ModelSlot::A => &mut self.models,
+            ModelSlot::B => &mut self.models_b,
+        }
+    }
+
+    /// The slot of the switch in progress.
+    fn pending_slot(&self) -> Option<ModelSlot> {
+        self.remote
+            .as_ref()
+            .and_then(|remote| remote.pending.as_ref())
+            .map(|pending| pending.slot)
     }
 
     /// Ends the switch in progress. Its late completion cannot publish.
@@ -544,12 +672,12 @@ impl BlockDetail {
         }
     }
 
-    fn take_pending(&mut self, generation: u64) -> Option<ModelId> {
+    fn take_pending(&mut self, generation: u64) -> Option<(ModelSlot, ModelId)> {
         let remote = self.remote.as_mut()?;
         let pending = remote
             .pending
             .take_if(|pending| pending.ticket.generation() == generation)?;
-        Some(pending.model)
+        Some((pending.slot, pending.model))
     }
 
     /// Follows a change of the block that came from outside this detail.
@@ -561,6 +689,9 @@ impl BlockDetail {
             self.revoke_switch();
             self.models = model_select_for(&self.block);
             self.models.set_deferred(self.holds_catalog_tone());
+            self.models_b =
+                ModelSelect::new(self.block.tone.as_ref().is_some_and(|tone| tone.local));
+            self.models_b.set_deferred(self.holds_catalog_tone());
             self.info.set_tone(self.block.tone.clone());
             self.info.set_page_url(tone_url(&self.block));
             if let Some(remote) = &mut self.remote {
@@ -573,14 +704,19 @@ impl BlockDetail {
         let pending = self
             .remote
             .as_ref()
-            .and_then(|remote| remote.pending.as_ref());
-        if let Some(pending) = pending {
-            // The chain holds the old model, or the new model before its audio is prepared.
-            if active == Some(pending.model) || active == pending.ticket.replaces() {
-                return;
+            .and_then(|remote| remote.pending.as_ref())
+            .map(|pending| (pending.slot, pending.model, pending.ticket.replaces()));
+        if let Some((slot, model, replaces)) = pending {
+            // The slot holds the old model, or the new model before its audio is prepared.
+            let held = self.slot_model(slot);
+            if held == Some(model) || held == replaces {
+                if slot == ModelSlot::A {
+                    return;
+                }
+            } else {
+                self.revoke_switch();
+                self.picker_mut(slot).clear_target();
             }
-            self.revoke_switch();
-            self.models.clear_target();
         }
         if let Some(active) = active
             && self.models.active() != Some(active)
@@ -792,10 +928,7 @@ impl BlockDetail {
     /// Loading, failure, or ready state for the artwork and retry badge.
     #[must_use]
     pub fn load_state(&self) -> TileVisualState {
-        let switching = self
-            .remote
-            .as_ref()
-            .is_some_and(|remote| remote.pending.is_some());
+        let switching = self.pending_slot() == Some(ModelSlot::A);
         if self.block.load_failed {
             TileVisualState::Failed
         } else if switching || self.block.model_loading || !self.block.loaded {
@@ -1912,6 +2045,21 @@ impl BlockDetail {
             egui::pos2(rect.left() + 56.0, rect.top() + 6.0),
             egui::pos2(rect.right() - 56.0, row.top() - 4.0),
         );
+        // A cab with more than one mic position shows its MICS panel at the right of the stage,
+        // and the render moves left of it.
+        let mics = self.mics_offered();
+        let stage_full = stage;
+        let stage = if mics {
+            Rect::from_min_max(
+                stage.min,
+                egui::pos2(
+                    (stage.right() - MICS_PANEL_WIDTH - MICS_PANEL_GAP).max(stage.left()),
+                    stage.bottom(),
+                ),
+            )
+        } else {
+            stage
+        };
         let skin = super::skins::skin_for(&self.block)
             .and_then(|skin| Some((skin, super::skins::textures(ui.ctx(), skin.id)?)));
         let gear = match &skin {
@@ -1939,6 +2087,9 @@ impl BlockDetail {
             }
         };
         let _ = gear;
+        if mics {
+            self.show_mics_panel(ui, stage_full, session, look);
+        }
 
         // The row under the stage.
         let cy = row.center().y;
@@ -1963,6 +2114,10 @@ impl BlockDetail {
             if page_text_button(ui, button, "NORMALIZE", on, look).clicked() && !overridden {
                 let _ = self.set_normalize(!self.block.params.normalize);
             }
+        }
+        if mics {
+            // Row A of the panel holds the picker, and the panel replaces the note.
+            return;
         }
         let picker = Rect::from_center_size(
             row.center(),
@@ -1992,6 +2147,496 @@ impl BlockDetail {
             let pos = egui::pos2(note_right - galley.size().x, cy - galley.size().y / 2.0);
             ui.painter().galley(pos, galley, look.text_muted);
         }
+    }
+
+    /// Whether the stage shows the MICS panel: an IR cab whose tone has more than one mic
+    /// position, or that already blends two.
+    fn mics_offered(&self) -> bool {
+        let Some(tone) = self.block.tone.as_ref() else {
+            return false;
+        };
+        if tone.kind != ModelKind::Ir || page_category(&self.block) != "CAB" {
+            return false;
+        }
+        self.block.ir_b.is_some() || self.models.options().len().max(model_total(&self.block)) >= 2
+    }
+
+    /// Gives the picker of B the models of the tone other than the active one, and B as its
+    /// model.
+    fn refresh_b_picker(&mut self) {
+        let active = self.block.active_model_id;
+        let options: Vec<ModelOption> = self
+            .models
+            .options()
+            .iter()
+            .filter(|option| Some(option.id) != active)
+            .cloned()
+            .collect();
+        if self.models_b.options() != options.as_slice() {
+            let total = options.len();
+            self.models_b.set_options(options, total);
+        }
+        if let Some(ir_b) = self.block.ir_b
+            && self.models_b.active() != Some(ir_b.model_id)
+        {
+            self.models_b.set_active(ir_b.model_id);
+        }
+    }
+
+    /// The MICS panel at the right of `stage`: IR A, then either a button that adds a second IR
+    /// or IR B with its phase, its removal and the blend.
+    fn show_mics_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        stage: Rect,
+        session: SessionStatus,
+        look: crate::theme::Look,
+    ) {
+        self.refresh_b_picker();
+        let downloading_b = self.pending_slot() == Some(ModelSlot::B);
+        let b_shown = self.block.ir_b.is_some() || downloading_b;
+        let inner_width = MICS_PANEL_WIDTH - 2.0 * MICS_PAD;
+        let help = ui.painter().layout(
+            MICS_HELP.to_owned(),
+            egui::FontId::proportional(10.0),
+            look.text_muted,
+            inner_width,
+        );
+        let body = if b_shown {
+            MICS_ROW + MICS_GAP + MICS_FOOTER
+        } else {
+            MICS_ADD + MICS_GAP + help.size().y
+        };
+        let height = 2.0 * MICS_PAD + MICS_HEADER + MICS_GAP + MICS_ROW + MICS_GAP + body;
+        let panel = Rect::from_min_size(
+            egui::pos2(
+                stage.right() - MICS_PANEL_WIDTH,
+                stage.center().y - height / 2.0,
+            ),
+            egui::vec2(MICS_PANEL_WIDTH, height),
+        );
+        let id = ui.scope_id().with(("mics", &self.block_id.0));
+        ui.interact(panel, id, Sense::hover())
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Group, true, "Cab mics"));
+        let painter = ui.painter().clone();
+        painter.rect_filled(panel, 10.0, look.panel);
+        painter.rect_stroke(
+            panel,
+            10.0,
+            egui::Stroke::new(1.0, CARD_EDGE),
+            egui::StrokeKind::Inside,
+        );
+        let inner = panel.shrink(MICS_PAD);
+
+        let header = Rect::from_min_size(inner.min, egui::vec2(inner.width(), MICS_HEADER));
+        paint_tracked(
+            &painter,
+            header.left_center(),
+            egui::Align2::LEFT_CENTER,
+            "MICS",
+            &bold_font(10.0),
+            look.text,
+            1.4,
+        );
+        static_text(ui, header, id.with("title"), "MICS");
+        let summary = if self.block.ir_b.is_some() {
+            "2 IRs blended"
+        } else {
+            "1 IR"
+        };
+        let summary_rect = painter.text(
+            header.right_center(),
+            egui::Align2::RIGHT_CENTER,
+            summary,
+            egui::FontId::proportional(10.0),
+            look.text_muted,
+        );
+        static_text(ui, summary_rect, id.with("summary"), summary);
+
+        let row_a = Rect::from_min_size(
+            egui::pos2(inner.left(), header.bottom() + MICS_GAP),
+            egui::vec2(inner.width(), MICS_ROW),
+        );
+        self.show_mic_row(ui, row_a, ModelSlot::A, session, look);
+        let below = row_a.bottom() + MICS_GAP;
+        if !b_shown {
+            let add = Rect::from_min_size(
+                egui::pos2(inner.left(), below),
+                egui::vec2(inner.width(), MICS_ADD),
+            );
+            let first = self.models_b.options().first().map(|option| option.id);
+            let enabled = first.is_some() && !self.models_b.disabled(session);
+            if self.show_add_ir(ui, add, enabled, look) && enabled {
+                let _ = self.select_second_model(first, session);
+            }
+            let help_rect = Rect::from_min_size(
+                egui::pos2(inner.left(), add.bottom() + MICS_GAP),
+                help.size(),
+            );
+            painter.galley(help_rect.min, help, look.text_muted);
+            static_text(ui, help_rect, id.with("help"), MICS_HELP);
+            return;
+        }
+        let row_b = Rect::from_min_size(
+            egui::pos2(inner.left(), below),
+            egui::vec2(inner.width(), MICS_ROW),
+        );
+        self.show_mic_row(ui, row_b, ModelSlot::B, session, look);
+        let footer = Rect::from_min_max(
+            egui::pos2(inner.left(), row_b.bottom() + MICS_GAP),
+            egui::pos2(inner.right(), inner.bottom()),
+        );
+        self.show_mics_footer(ui, footer, session, look);
+    }
+
+    /// One row of the MICS panel: the slot badge, its capture picker and its level.
+    fn show_mic_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: Rect,
+        slot: ModelSlot,
+        session: SessionStatus,
+        look: crate::theme::Look,
+    ) {
+        let (letter, badge_fill, label, level_label) = match slot {
+            ModelSlot::A => ("A", look.text, "IR A capture", "IR A level"),
+            ModelSlot::B => ("B", look.accent, "IR B capture", "IR B level"),
+        };
+        // A B with no bytes, or still on its way, is drawn faded, as the render of a model that
+        // is not loaded is.
+        let loading = slot == ModelSlot::B
+            && (self.block.ir_b_missing || self.pending_slot() == Some(ModelSlot::B));
+        let fade = |color: Color32| {
+            if loading {
+                color.gamma_multiply(0.4)
+            } else {
+                color
+            }
+        };
+        let painter = ui.painter().clone();
+        let badge = Rect::from_min_size(
+            egui::pos2(row.left(), row.center().y - 11.0),
+            egui::Vec2::splat(22.0),
+        );
+        painter.rect_filled(badge, 4.0, fade(badge_fill));
+        painter.text(
+            badge.center(),
+            egui::Align2::CENTER_CENTER,
+            letter,
+            bold_font(11.0),
+            fade(Color32::WHITE),
+        );
+        let level = Rect::from_min_max(
+            egui::pos2(row.right() - MICS_LEVEL_WIDTH, row.top()),
+            row.right_bottom(),
+        );
+        let picker = Rect::from_min_max(
+            egui::pos2(badge.right() + 10.0, row.top()),
+            egui::pos2(level.left() - 10.0, row.bottom()),
+        );
+        let fallback = self
+            .slot_model(slot)
+            .and_then(|id| {
+                self.block
+                    .tone
+                    .as_ref()?
+                    .models
+                    .iter()
+                    .find(|model| model.id == id)
+            })
+            .map_or_else(String::new, |model| model.name.clone());
+        let name = if self.block.ir_b_missing && slot == ModelSlot::B {
+            "IR B capture (not loaded)"
+        } else {
+            label
+        };
+        let mut picker_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("mic-picker", letter))
+                .max_rect(picker),
+        );
+        let chosen = match slot {
+            ModelSlot::A => {
+                self.models
+                    .show_compact(&mut picker_ui, picker, name, &fallback, false, session)
+            }
+            ModelSlot::B => self.models_b.show_compact(
+                &mut picker_ui,
+                picker,
+                name,
+                &fallback,
+                loading,
+                session,
+            ),
+        };
+        if let Some(id) = chosen {
+            let _ = match slot {
+                ModelSlot::A => self.select_model(id, session),
+                ModelSlot::B => self.select_second_model(Some(id), session),
+            };
+        }
+
+        let gain = KnobSpec::block_gain();
+        let (value, editable) = match slot {
+            ModelSlot::A => (self.block.params.ir_a_level, self.block.ir_b.is_some()),
+            ModelSlot::B => (self.block.params.ir_b_level, self.block.ir_b.is_some()),
+        };
+        let mut shown = value;
+        if editable {
+            // The readout drags like a knob, so it has its gesture, its reset and its type-in.
+            let id = ui.scope_id().with(("mic-level", &self.block_id.0));
+            let pass = ui.ctx().cumulative_pass_nr();
+            let output = crate::widgets::knob::show(
+                ui,
+                id.with(level_label),
+                level,
+                &gain,
+                level_label,
+                value,
+            );
+            let _ = output
+                .response
+                .on_hover_cursor(egui::CursorIcon::ResizeVertical);
+            shown = output.shown;
+            if let Some(edit) = self.track_trim(level_label, pass, output.edit) {
+                match slot {
+                    ModelSlot::A => self.block.params.ir_a_level = edit.value,
+                    ModelSlot::B => self.block.params.ir_b_level = edit.value,
+                }
+                self.write_params_in_gesture(edit.phase);
+            }
+        }
+        painter.text(
+            level.right_center(),
+            egui::Align2::RIGHT_CENTER,
+            gain.format(shown),
+            egui::FontId::monospace(10.0),
+            fade(look.text_muted),
+        );
+    }
+
+    /// The dashed button that adds a second IR. Returns whether it was clicked.
+    fn show_add_ir(
+        &self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        enabled: bool,
+        look: crate::theme::Look,
+    ) -> bool {
+        let response = ui.interact(
+            rect,
+            ui.scope_id().with(("add-ir", &self.block_id.0)),
+            Sense::click(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::Button, enabled, "Add a second IR")
+        });
+        let response = if enabled {
+            response.on_hover_cursor(egui::CursorIcon::PointingHand)
+        } else {
+            response
+        };
+        let content = if !enabled {
+            look.text_muted.gamma_multiply(0.5)
+        } else if response.hovered() {
+            look.text
+        } else {
+            look.text_muted
+        };
+        let painter = ui.painter();
+        painter.rect_filled(rect, 8.0, Color32::from_white_alpha(89));
+        let outline = rounded_outline(rect.shrink(0.75), 8.0);
+        painter.extend(egui::Shape::dashed_line(
+            &outline,
+            egui::Stroke::new(1.5, SLOT_EDGE),
+            5.0,
+            4.0,
+        ));
+        let font = bold_font(10.0);
+        let text_width = tracked_width(painter, "ADD A SECOND IR", &font, 1.2);
+        let left = rect.center().x - (14.0 + 8.0 + text_width) / 2.0;
+        let icon = egui::pos2(left + 7.0, rect.center().y);
+        let stroke = egui::Stroke::new(2.4, content);
+        let arm = 5.25;
+        painter.line_segment(
+            [icon - egui::vec2(arm, 0.0), icon + egui::vec2(arm, 0.0)],
+            stroke,
+        );
+        painter.line_segment(
+            [icon - egui::vec2(0.0, arm), icon + egui::vec2(0.0, arm)],
+            stroke,
+        );
+        paint_tracked(
+            painter,
+            egui::pos2(left + 22.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            "ADD A SECOND IR",
+            &font,
+            content,
+            1.2,
+        );
+        response.clicked()
+    }
+
+    /// The last part of the panel with B: the phase of B and its removal at the left, and the
+    /// blend from A to B at the right.
+    fn show_mics_footer(
+        &mut self,
+        ui: &mut egui::Ui,
+        footer: Rect,
+        session: SessionStatus,
+        look: crate::theme::Look,
+    ) {
+        let painter = ui.painter().clone();
+        painter.hline(
+            footer.x_range(),
+            footer.top() + 0.5,
+            egui::Stroke::new(1.0, CHIP_FILL),
+        );
+        let content = Rect::from_min_max(egui::pos2(footer.left(), footer.top() + 5.0), footer.max);
+        let cy = content.center().y;
+
+        // Ø B over REMOVE B.
+        let column_top = cy - (24.0 + 6.0 + 12.0) / 2.0;
+        let phase_font = bold_font(10.0);
+        let phase_width = tracked_width(&painter, "Ø B", &phase_font, 0.8) + 20.0;
+        let phase = Rect::from_min_size(
+            egui::pos2(content.left(), column_top),
+            egui::vec2(phase_width, 24.0),
+        );
+        // The pair settings wait for B to land: a download that fails or that a switch of A
+        // ends must not leave them on a block with no B.
+        let landed = self.block.ir_b.is_some();
+        let fade = |color: Color32| {
+            if landed {
+                color
+            } else {
+                color.gamma_multiply(0.4)
+            }
+        };
+        let inverted = self.block.params.ir_b_invert;
+        let response = ui
+            .add_enabled_ui(landed, |ui| {
+                ui.interact(
+                    phase,
+                    ui.scope_id().with(("ir-b-invert", &self.block_id.0)),
+                    Sense::click(),
+                )
+            })
+            .inner;
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::Button, landed, inverted, "Invert IR B phase")
+        });
+        let (fill, edge, ink) = if inverted {
+            (fade(look.text), fade(look.text), fade(Color32::WHITE))
+        } else {
+            (look.panel, fade(CHIP_EDGE), fade(look.text))
+        };
+        painter.rect_filled(phase, 12.0, fill);
+        painter.rect_stroke(
+            phase,
+            12.0,
+            egui::Stroke::new(1.0, edge),
+            egui::StrokeKind::Inside,
+        );
+        paint_tracked(
+            &painter,
+            phase.center(),
+            egui::Align2::CENTER_CENTER,
+            "Ø B",
+            &phase_font,
+            ink,
+            0.8,
+        );
+        if landed && response.clicked() {
+            let _ = self.set_ir_b_invert(!inverted);
+        }
+        let remove_width = tracked_width(&painter, "REMOVE B", &phase_font, 0.8);
+        let remove = Rect::from_min_size(
+            egui::pos2(content.left(), phase.bottom() + 6.0),
+            egui::vec2(remove_width, 12.0),
+        );
+        let response = ui.interact(
+            remove.expand2(egui::vec2(2.0, 3.0)),
+            ui.scope_id().with(("ir-b-remove", &self.block_id.0)),
+            Sense::click(),
+        );
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Remove IR B"));
+        paint_tracked(
+            &painter,
+            remove.left_center(),
+            egui::Align2::LEFT_CENTER,
+            "REMOVE B",
+            &phase_font,
+            if response.hovered() {
+                look.text
+            } else {
+                look.text_muted
+            },
+            0.8,
+        );
+        if response.clicked() {
+            let _ = self.select_second_model(None, session);
+        }
+
+        // A, the BLEND knob, B.
+        let mut painter = painter.clone();
+        painter.multiply_opacity(if landed { 1.0 } else { 0.4 });
+        let letter_font = bold_font(11.0);
+        let b_width = text_width(ui, "B", 11.0);
+        let knob_column = Rect::from_center_size(
+            egui::pos2(content.right() - b_width - 8.0 - BLEND_KNOB / 2.0, cy),
+            egui::vec2(BLEND_KNOB, 14.0 + 6.0 + BLEND_KNOB + 6.0 + 13.0),
+        );
+        painter.text(
+            egui::pos2(content.right(), cy),
+            egui::Align2::RIGHT_CENTER,
+            "B",
+            letter_font.clone(),
+            look.accent,
+        );
+        painter.text(
+            egui::pos2(knob_column.left() - 8.0, cy),
+            egui::Align2::RIGHT_CENTER,
+            "A",
+            letter_font,
+            look.text,
+        );
+        paint_tracked(
+            &painter,
+            egui::pos2(knob_column.center().x, knob_column.top() + 7.0),
+            egui::Align2::CENTER_CENTER,
+            "BLEND",
+            &bold_font(11.0),
+            KNOB_INK,
+            0.44,
+        );
+        let face = Rect::from_min_size(
+            egui::pos2(knob_column.left(), knob_column.top() + 20.0),
+            egui::Vec2::splat(BLEND_KNOB),
+        );
+        let spec = KnobSpec::blend();
+        let id = ui.scope_id().with(("ir-blend", &self.block_id.0));
+        let pass = ui.ctx().cumulative_pass_nr();
+        let blend = self.block.params.ir_blend;
+        let output = ui
+            .add_enabled_ui(landed, |ui| {
+                crate::widgets::knob::show(ui, id, face, &spec, "Blend", blend)
+            })
+            .inner;
+        let edit = output.edit.filter(|_| landed);
+        if let Some(edit) = self.track_trim("Blend", pass, edit) {
+            self.block.params.ir_blend = edit.value;
+            self.write_params_in_gesture(edit.phase);
+        }
+        paint_panel_knob(&painter, face, spec.position(output.shown) as f32);
+        painter.text(
+            egui::pos2(face.center().x, face.bottom() + 6.0 + 6.5),
+            egui::Align2::CENTER_CENTER,
+            spec.format(output.shown),
+            egui::FontId::proportional(11.0),
+            KNOB_INK,
+        );
     }
 
     /// The slots this stage offers, leading and trailing the renders.
@@ -2416,6 +3061,99 @@ fn rounded_outline(rect: Rect, radius: f32) -> Vec<egui::Pos2> {
 
 fn bold_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("arimo-bold".into()))
+}
+
+/// Gives a text that a painter drew its accessible label, as a static label has.
+fn static_text(ui: &egui::Ui, rect: Rect, id: egui::Id, text: &str) {
+    ui.interact(rect, id, Sense::hover())
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text));
+}
+
+/// One line of `text` with `tracking` points between its letters.
+fn tracked_galley(
+    painter: &egui::Painter,
+    text: &str,
+    font: &egui::FontId,
+    color: Color32,
+    tracking: f32,
+) -> Arc<egui::Galley> {
+    let mut format = egui::TextFormat::simple(font.clone(), color);
+    format.extra_letter_spacing = tracking;
+    painter.layout_job(egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        format,
+    ))
+}
+
+/// The width of `text` with `tracking` points between its letters.
+fn tracked_width(painter: &egui::Painter, text: &str, font: &egui::FontId, tracking: f32) -> f32 {
+    tracked_galley(painter, text, font, Color32::WHITE, tracking)
+        .size()
+        .x
+}
+
+/// Paints `text` with `tracking` points between its letters, placed by `align` at `anchor`.
+fn paint_tracked(
+    painter: &egui::Painter,
+    anchor: egui::Pos2,
+    align: egui::Align2,
+    text: &str,
+    font: &egui::FontId,
+    color: Color32,
+    tracking: f32,
+) {
+    let galley = tracked_galley(painter, text, font, color, tracking);
+    let rect = align.anchor_size(anchor, galley.size());
+    painter.galley(rect.min, galley, color);
+}
+
+/// The light knob of a panel: a grey track with a black arc from the start of the travel, and
+/// a light cap with a black pointer.
+fn paint_panel_knob(painter: &egui::Painter, rect: Rect, position: f32) {
+    let center = rect.center();
+    let radius = rect.width() / 2.0 - 3.0;
+    let at = |degrees: f32, radius: f32| {
+        let radians = degrees.to_radians();
+        center + egui::vec2(radians.sin(), -radians.cos()) * radius
+    };
+    let arc = |from: f32, to: f32| -> Vec<egui::Pos2> {
+        let steps = (((to - from).abs() / 4.0).ceil() as usize).max(1);
+        (0..=steps)
+            .map(|step| at(from + (to - from) * step as f32 / steps as f32, radius))
+            .collect()
+    };
+    let end = -135.0 + 270.0 * position.clamp(0.0, 1.0);
+    painter.add(egui::epaint::PathShape::line(
+        arc(-135.0, 135.0),
+        egui::Stroke::new(3.0, Color32::from_rgb(0xe1, 0xe1, 0xde)),
+    ));
+    if end > -134.0 {
+        painter.add(egui::epaint::PathShape::line(
+            arc(-135.0, end),
+            egui::Stroke::new(3.0, Color32::from_rgb(0x11, 0x11, 0x11)),
+        ));
+    }
+    let cap = radius - 6.0;
+    painter.circle_filled(
+        center + egui::vec2(0.0, 1.5),
+        cap,
+        Color32::from_black_alpha(31),
+    );
+    painter.circle(
+        center,
+        cap,
+        Color32::from_rgb(0xe6, 0xe6, 0xe4),
+        egui::Stroke::new(1.0, Color32::from_rgb(0xbd, 0xbd, 0xba)),
+    );
+    painter.circle_filled(
+        center - egui::vec2(cap * 0.25, cap * 0.35),
+        cap * 0.45,
+        Color32::from_rgba_unmultiplied(0xf7, 0xf7, 0xf6, 140),
+    );
+    painter.line_segment(
+        [at(end, cap - 2.5), at(end, cap * 0.35)],
+        egui::Stroke::new(2.2, Color32::from_rgb(0x11, 0x11, 0x11)),
+    );
 }
 
 /// A small uppercase text action of the light page, such as BYPASS.
