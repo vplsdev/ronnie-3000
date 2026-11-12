@@ -55,7 +55,7 @@ search `r.lcd`, `lightList`, `skinList`).
   is ignored (Auto) rather than drawing a pedal skin for an amp.
 - Undo/redo of a skin change and of a capture step each take one step and do not rebuild audio for the skin change.
 - A pedal whose skin has no LCD in its manifest (none today, but the field is optional): no display drawn, no crash.
-- An amp with exactly 8 and with 9+ captures: the light window and paging behave; the active light is always visible.
+- An amp with exactly 8 and with 9+ captures: the light window and paging behave; the window snaps to the active light on every capture change, and manual ‹ › paging may move it out of view until the next change.
 
 ---
 
