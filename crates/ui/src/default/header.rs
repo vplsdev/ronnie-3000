@@ -641,6 +641,12 @@ impl ChromeController {
                     self.load_flow.finish_remote(generation);
                     None
                 }
+                Err(CommunityFailure::Failed(message))
+                    if message == crate::services::community_worker::TARGET_GONE =>
+                {
+                    self.load_flow.drop_load(generation);
+                    None
+                }
                 Err(CommunityFailure::Failed(message)) => {
                     if self.load_flow.fail_load(generation) {
                         self.hints

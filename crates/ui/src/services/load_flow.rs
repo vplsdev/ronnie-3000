@@ -567,6 +567,17 @@ impl LoadFlow {
         true
     }
 
+    /// Ends a background load whose target is gone, with no failure to show. Returns false for a
+    /// generation that is not current.
+    pub fn drop_load(&mut self, generation: u64) -> bool {
+        if self.closed || generation != self.gate.current() {
+            return false;
+        }
+        self.phase = LoadPhase::Idle;
+        self.pending = None;
+        true
+    }
+
     /// Stops the active load and keeps the target and the open browser, for a session change.
     pub fn abandon(&mut self) {
         self.gate.advance();

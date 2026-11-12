@@ -5555,8 +5555,9 @@ fn signed_out_a_downloaded_library_tone_asks_for_sign_in_and_a_local_one_adds() 
         .filter(|block| !block.is_insert)
         .filter_map(|block| block.tone.as_ref().map(|tone| tone.title.clone()))
         .collect();
+    // An amp is placed by type, which is before the cab.
     assert_eq!(
-        lane.last().map(String::as_str),
+        lane.iter().rev().nth(1).map(String::as_str),
         Some("Stashed Twin"),
         "{lane:?}"
     );
@@ -5642,5 +5643,29 @@ fn an_add_while_another_downloads_lands_only_the_newer_tone() {
         chrome.gallery().selection(),
         &ronie_ui::default::GallerySelection::BlockDetail(BlockId(insert)),
         "the new block opens"
+    );
+}
+
+#[test]
+fn a_catalog_replace_of_a_block_that_went_away_ends_quietly() {
+    let mut rig = DetailRig::new();
+    start_held_replace(&mut rig);
+    rig.inner
+        .dispatch(UiAction::RemoveBlock(BlockId(BLOCK.to_owned())))
+        .expect("remove");
+    let revision = rig.inner.chain_state(0).revision;
+    rig.routes.release(PUBLIC_FILE);
+    let_tasks_finish();
+    rig.chrome.poll_community();
+    let_tasks_finish();
+    rig.chrome.poll_community();
+
+    assert_eq!(rig.chrome.toast(), None, "no failure toast");
+    assert_ne!(rig.chrome.load_flow_phase(), LoadPhase::Failed);
+    assert_ne!(rig.chrome.load_flow_phase(), LoadPhase::Loading);
+    assert_eq!(
+        rig.inner.chain_state(0).revision,
+        revision,
+        "nothing landed"
     );
 }

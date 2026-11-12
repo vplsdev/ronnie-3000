@@ -880,8 +880,8 @@ fn lane_picker(ui: &mut egui::Ui, head: Rect, menu: &mut AddMenu, data: &MenuDat
             } else {
                 "to the end of the chain"
             }))
-                .font(sans(10.0))
-                .color(MUTED),
+            .font(sans(10.0))
+            .color(MUTED),
             true,
         );
         return;
