@@ -190,22 +190,46 @@ fn plus_opens_the_add_menu() {
 fn a_second_click_or_escape_closes_the_menu() {
     let (mut driver, _) = archetype_driver("main-mono");
     open_menu(&mut driver);
+    assert!(
+        driver.is_visible("OPEN THE TONE BROWSER"),
+        "the menu is open"
+    );
     let _ = driver.click("Add a block").expect("plus");
     driver.settle();
     assert!(!driver.is_visible("PEDAL"), "the second click closes it");
+    assert!(
+        !driver.is_visible("OPEN THE TONE BROWSER"),
+        "the second click closes it"
+    );
     open_menu(&mut driver);
+    assert!(
+        driver.is_visible("OPEN THE TONE BROWSER"),
+        "the menu is open"
+    );
     let _ = driver.press_key(eframe::egui::Key::Escape);
     driver.settle();
     assert!(!driver.is_visible("PEDAL"), "escape closes it");
+    assert!(
+        !driver.is_visible("OPEN THE TONE BROWSER"),
+        "escape closes it"
+    );
 }
 
 #[test]
 fn clicking_outside_closes_the_menu() {
     let (mut driver, _) = archetype_driver("main-mono");
     open_menu(&mut driver);
+    assert!(
+        driver.is_visible("OPEN THE TONE BROWSER"),
+        "the menu is open"
+    );
     let _ = driver.click_empty_space();
     driver.settle();
     assert!(!driver.is_visible("PEDAL"));
+    assert!(
+        !driver.is_visible("OPEN THE TONE BROWSER"),
+        "outside click closes it"
+    );
 }
 
 fn lane_radio(driver: &UiDriver, label: &str) -> bool {
@@ -1713,6 +1737,10 @@ fn back_returns_to_the_categories() {
     open_amp(&mut driver);
     let _ = driver.click("Back to categories").expect("back");
     driver.settle();
+    assert!(
+        driver.is_visible("OPEN THE TONE BROWSER"),
+        "the categories show again"
+    );
     assert!(!driver.shows_text("YOUR LIBRARY"));
     assert!(
         driver.chrome_mut().add_store_mut().is_none(),
