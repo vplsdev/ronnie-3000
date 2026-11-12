@@ -157,6 +157,9 @@ pub struct ChromeController {
     placement: Placement,
     /// The lane of the pending add.
     added_side: ronie_core::ChainSide,
+    /// Where a tone that the browser loads goes, when a stage slot opened the browser: the
+    /// insert it fills, and its place in the lane of that insert.
+    browser_placement: Option<(String, Placement)>,
     model_switches: ModelSwitchFlow,
     /// Whether the worker can hold a model list or a switch of a detail.
     detail_work_live: bool,
@@ -268,6 +271,7 @@ impl ChromeController {
             added: None,
             placement: Placement::End,
             added_side: ronie_core::ChainSide::Left,
+            browser_placement: None,
             model_switches: ModelSwitchFlow::new(backend.clone()),
             detail_work_live: false,
             images: None,
@@ -1041,11 +1045,13 @@ impl ChromeController {
         &mut self,
         insert_id: &str,
         path: &std::path::Path,
+        placement: Placement,
     ) -> Result<(), UiError> {
         if let Err(error) = self.gallery.drop_file(insert_id, path) {
             self.hints.set_toast(Some(FILE_REFUSED.to_owned()));
             return Err(error);
         }
+        self.place_block(insert_id, placement);
         let chain = self.backend.chain_state(0).chain;
         if let Some(tone) = chain
             .block(&ronie_core::BlockId(insert_id.to_owned()))
@@ -1146,6 +1152,7 @@ impl ChromeController {
                 self.gallery.clear_selection();
             }
         }
+        self.browser_placement = None;
         self.load_flow.select(side, insert_id);
         self.pick_tone(tone);
         self.placement = placement;
@@ -1157,6 +1164,25 @@ impl ChromeController {
             self.remember_tone(tone);
             self.open_added_block();
         }
+    }
+
+    /// Moves block `id`, which an add just filled, to `placement` in the lane that holds it.
+    fn place_block(&mut self, id: &str, placement: Placement) {
+        let chain = self.backend.chain_state(0).chain;
+        let holds = |lane: &[ronie_core::ChainBlock]| {
+            lane.iter()
+                .any(|block| block.id.0 == id && !block.is_insert)
+        };
+        let side = if holds(&chain.left) {
+            ronie_core::ChainSide::Left
+        } else if holds(&chain.right) {
+            ronie_core::ChainSide::Right
+        } else {
+            return;
+        };
+        self.placement = placement;
+        self.added_side = side;
+        self.place_added_block(id);
     }
 
     /// Moves the block that an add filled to its placement, when that is not the end.
@@ -1205,12 +1231,16 @@ impl ChromeController {
     }
 
     /// Opens the tone browser for the insert `insert_id`, narrowed to `category` and `text`.
+    /// The tone that the browser loads lands at `placement` in the lane of the insert.
     pub fn open_browser_for(
         &mut self,
         insert_id: &str,
         category: Option<ronie_core::gear::GearCategory>,
         text: &str,
+        placement: Placement,
     ) {
+        self.browser_placement =
+            (placement != Placement::End).then(|| (insert_id.to_owned(), placement));
         self.gallery.activate(insert_id);
         self.sync_browser();
         let service = self.community.is_some();
@@ -1232,6 +1262,9 @@ impl ChromeController {
         if let Some(tone) = self.load_flow.take_landed() {
             self.remember_tone(tone);
             self.open_added_block();
+            if let Some((insert, placement)) = self.browser_placement.take() {
+                self.place_block(&insert, placement);
+            }
         }
         if self.load_flow.phase() != LoadPhase::Loading
             && self
@@ -1251,6 +1284,7 @@ impl ChromeController {
             )
         {
             let mut closed = self.browser.take();
+            self.browser_placement = None;
             if self.community.is_some() {
                 // A cancelled load leaves the store open, and its worker now stops.
                 if let Some(browser) = &mut closed {
@@ -1310,6 +1344,7 @@ impl ChromeController {
             self.parked_browser = self.browser.take();
             self.cancel_browser_work();
         }
+        self.browser_placement = None;
         if let Some(detail) = &mut self.detail {
             detail.close();
             self.detail = None;

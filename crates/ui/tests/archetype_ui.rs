@@ -1866,7 +1866,7 @@ fn a_loaded_file_lands_at_the_end_of_the_lane_joins_the_library_and_opens() {
 
     driver
         .chrome_mut()
-        .drop_file_into(&insert, &path)
+        .drop_file_into(&insert, &path, Placement::End)
         .expect("the file loads");
     driver.settle();
 
@@ -1901,9 +1901,11 @@ fn a_missing_file_shows_a_toast() {
     let insert = last_insert(&backend);
     let before = backend.chain_state(0).revision;
 
-    let result = driver
-        .chrome_mut()
-        .drop_file_into(&insert, &directory.path().join("gone.nam"));
+    let result = driver.chrome_mut().drop_file_into(
+        &insert,
+        &directory.path().join("gone.nam"),
+        Placement::End,
+    );
     driver.settle();
 
     assert!(result.is_err());
@@ -2218,4 +2220,60 @@ fn a_slot_menu_takes_over_a_download_of_the_plus_menu() {
     assert!(!titles.contains(&"Slow Download".to_owned()), "{titles:?}");
     assert_eq!(driver.chrome().loading_tone(), None);
     assert!(!driver.shows_text("DOWNLOADING"));
+}
+
+#[test]
+fn a_browser_pick_from_a_slot_lands_at_the_slot() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[], add_overdrive);
+    let before = lane_titles(&backend, false);
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("browser link");
+    driver.settle();
+    assert!(
+        driver.chrome_mut().browser_mut().is_some(),
+        "the browser opened"
+    );
+    driver
+        .chrome_mut()
+        .pick_tone(gear_tone(803, "Browser Drive", "pedal"));
+    for _ in 0..20 {
+        driver.settle();
+    }
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles.len(), before.len() + 1, "{titles:?}");
+    assert_eq!(titles[2], "Browser Drive", "{titles:?}");
+    let _ = driver.click("Undo").expect("undo");
+    driver.settle();
+    assert_eq!(lane_titles(&backend, false), before);
+}
+
+#[test]
+fn a_file_from_a_slot_lands_at_the_slot() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[], add_overdrive);
+    let before = lane_titles(&backend, false);
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("closet-cab.wav");
+    write_ir(&path);
+    let insert = last_insert(&backend);
+    driver
+        .chrome_mut()
+        .drop_file_into(
+            &insert,
+            &path,
+            Placement::After(BlockId("blk-od".to_owned())),
+        )
+        .expect("the file loads");
+    driver.settle();
+    let lane = backend.chain_state(0).chain.left.clone();
+    let tones: Vec<_> = lane.iter().filter(|block| !block.is_insert).collect();
+    assert_eq!(tones.len(), before.len() + 1);
+    assert_eq!(tones[2].id.0, insert, "the file sits after the run");
+    assert!(
+        matches!(driver.chrome().gallery().selection(), GallerySelection::BlockDetail(id) if id.0 == insert),
+        "the new block is on the stage"
+    );
+    let _ = driver.click("Undo").expect("undo");
+    driver.settle();
+    assert_eq!(lane_titles(&backend, false), before);
 }

@@ -214,7 +214,7 @@ fn show_add_menu(
             add_menu::AddMenuAction::OpenBrowser(category) => {
                 menu.open = false;
                 if let Some(id) = insert {
-                    chrome.open_browser_for(&id, category, &menu.search);
+                    chrome.open_browser_for(&id, category, &menu.search, menu.placement.clone());
                 }
             }
             add_menu::AddMenuAction::LoadFile => {
@@ -224,7 +224,7 @@ fn show_add_menu(
                     .add_filter("Audio models", &["nam", "wav"])
                     .pick_file();
                 if let (Some(path), Some(id)) = (picked, insert) {
-                    let _ = chrome.drop_file_into(&id, &path);
+                    let _ = chrome.drop_file_into(&id, &path, menu.placement.clone());
                 }
             }
             add_menu::AddMenuAction::Add(tone) => {
