@@ -290,8 +290,11 @@ fn floor_shadows_stay_faint_on_the_light_stage() {
         let darkest_shadow = body
             .pixels
             .iter()
-            .filter(|pixel| pixel.a() < 200 && pixel.r().max(pixel.g()).max(pixel.b()) < 4)
-            .map(|pixel| pixel.a())
+            // Shadow pixels are black; the colour is read unmultiplied so that a dark,
+            // half-covered edge of the gear itself is not taken for shadow.
+            .map(|pixel| pixel.to_srgba_unmultiplied())
+            .filter(|[r, g, b, a]| *a < 200 && (*r).max(*g).max(*b) < 4)
+            .map(|[_, _, _, a]| a)
             .max()
             .unwrap_or(0);
         assert!(

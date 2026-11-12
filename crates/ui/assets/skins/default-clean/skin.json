@@ -1,14 +1,14 @@
 {
   "id": "default-clean",
   "width": 1360,
-  "height": 896,
+  "height": 781,
   "knobs": [
     {
       "control": "gain",
       "label": "GAIN IN",
       "center": [
         327.0,
-        666.0
+        551.0
       ],
       "side": 82,
       "frames": 32,
@@ -19,7 +19,7 @@
       "label": "OUTPUT",
       "center": [
         447.0,
-        666.0
+        551.0
       ],
       "side": 82,
       "frames": 32,
@@ -30,7 +30,7 @@
       "label": "MIX",
       "center": [
         568.0,
-        666.0
+        551.0
       ],
       "side": 82,
       "frames": 32,
