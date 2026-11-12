@@ -2,7 +2,8 @@
 //! drawn with knobs that turn.
 //!
 //! Each skin has a transparent body, a filmstrip of 32 frames for each live knob, and a manifest
-//! that says where each knob sits on the body, in body pixels.
+//! that says where each knob (and, on a pedal, the blank LCD glass) sits on the body, in body
+//! pixels.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -74,7 +75,28 @@ impl SkinKnob {
     }
 }
 
-/// Size of a skin's body and its live knobs.
+/// The blank LCD glass on a pedal skin, where the app draws the active capture's name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkinLcd {
+    /// Centre of the glass, in body pixels.
+    pub center: [f32; 2],
+    /// Width and height of the glass's axis-aligned bounds, in body pixels.
+    pub size: [f32; 2],
+}
+
+impl SkinLcd {
+    /// Where the glass sits when the body is drawn in `body`.
+    #[must_use]
+    pub fn rect_in(&self, body: Rect, manifest: &SkinManifest) -> Rect {
+        let scale = body.width() / manifest.width as f32;
+        Rect::from_center_size(
+            body.min + egui::vec2(self.center[0], self.center[1]) * scale,
+            egui::vec2(self.size[0], self.size[1]) * scale,
+        )
+    }
+}
+
+/// Size of a skin's body, its live knobs and its LCD.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkinManifest {
     /// Skin identity, as from [`ronie_core::gear::GearFamily::skin_id`].
@@ -85,6 +107,8 @@ pub struct SkinManifest {
     pub height: u32,
     /// Live knobs.
     pub knobs: Vec<SkinKnob>,
+    /// The LCD glass, on pedals.
+    pub lcd: Option<SkinLcd>,
 }
 
 impl SkinManifest {
@@ -107,11 +131,23 @@ impl SkinManifest {
                 })
             })
             .collect::<Option<Vec<_>>>()?;
+        // A missing or malformed LCD leaves the skin without one; the body and knobs still draw.
+        let lcd = value.get("lcd").and_then(|lcd| {
+            let pair = |key: &str| -> Option<[f32; 2]> {
+                let pair = lcd.get(key)?.as_array()?;
+                Some([number(pair.first()?)?, number(pair.get(1)?)?])
+            };
+            Some(SkinLcd {
+                center: pair("center")?,
+                size: pair("size")?,
+            })
+        });
         Some(Self {
             id: value.get("id")?.as_str()?.to_owned(),
             width: u32::try_from(value.get("width")?.as_u64()?).ok()?,
             height: u32::try_from(value.get("height")?.as_u64()?).ok()?,
             knobs,
+            lcd,
         })
     }
 
@@ -233,27 +269,88 @@ pub fn knob_strip(id: &str, control: KnobControl) -> Option<ColorImage> {
     })
 }
 
-/// The skin of a block's gear, when the app has a render for its family.
+/// Each skin with a render: its identity, the name the skin picker shows, and the kind of gear
+/// it draws. The order is the order of the picker.
+const SKIN_NAMES: &[(&str, &str, ronie_core::gear::GearCategory)] = {
+    use ronie_core::gear::GearCategory::{Amp, Cab, Pedal};
+    &[
+        ("od-green", "Green overdrive", Pedal),
+        ("od-gold", "Gold overdrive", Pedal),
+        ("dist-black", "Black distortion", Pedal),
+        ("fuzz", "Fuzz", Pedal),
+        ("boost", "Boost", Pedal),
+        ("comp", "Compressor", Pedal),
+        ("default-dark", "Dark pedal", Pedal),
+        ("default-light", "Light pedal", Pedal),
+        ("highgain", "High-gain head", Amp),
+        ("modern-us", "US modern head", Amp),
+        ("british", "British head", Amp),
+        ("chime", "Chime combo", Amp),
+        ("clean", "Clean combo", Amp),
+        ("bass", "Bass head", Amp),
+        ("default-clean", "Clean amp", Amp),
+        ("default-crunch", "Crunch amp", Amp),
+        ("default-hi-gain", "Hi-gain amp", Amp),
+        ("cab-412-modern", "Modern 4x12", Cab),
+        ("cab-412-vintage", "Vintage 4x12", Cab),
+        ("cab-212-chime", "2x12 cab", Cab),
+        ("cab-112-clean", "1x12 cab", Cab),
+        ("cab-810-bass", "8x10 bass cab", Cab),
+        ("cab-default", "Cab", Cab),
+    ]
+};
+
+fn skin_entry(
+    id: &str,
+) -> Option<&'static (&'static str, &'static str, ronie_core::gear::GearCategory)> {
+    SKIN_NAMES.iter().find(|(each, _, _)| *each == id)
+}
+
+/// The name the skin picker shows for a skin, such as "Chime combo"; empty for an unknown skin.
 #[must_use]
-pub fn skin_for(block: &ChainBlock) -> Option<BlockSkin> {
-    use ronie_core::gear::{GearCategory, GearHints, identify};
+pub fn friendly_name(id: &str) -> &'static str {
+    skin_entry(id).map_or("", |(_, name, _)| name)
+}
+
+/// Every skin of one kind of gear, in the order of the picker.
+#[must_use]
+pub fn skins_in(category: ronie_core::gear::GearCategory) -> Vec<&'static str> {
+    SKIN_NAMES
+        .iter()
+        .filter(|(id, _, each)| *each == category && asset(id).is_some())
+        .map(|(id, _, _)| *id)
+        .collect()
+}
+
+/// The skin the block's gear family has, ignoring the block's override: what Auto draws.
+#[must_use]
+pub fn auto_skin_for(block: &ChainBlock) -> Option<BlockSkin> {
+    use ronie_core::gear::{GearHints, identify};
 
     let tone = block.tone.as_ref()?;
     let model = block
         .active_model_id
         .and_then(|id| tone.models.iter().find(|model| model.id == id));
     let family = identify(&GearHints::from_tone(tone, model)).family;
-    let id = asset(family.skin_id()?)?.id;
-    let label = match family.category() {
-        GearCategory::Pedal => "Pedal render",
-        GearCategory::Cab => "Cab render",
-        _ => "Amp render",
-    };
-    Some(BlockSkin {
-        id,
-        label,
-        category: family.category(),
-    })
+    BlockSkin::of(asset(family.skin_id()?)?.id, family.category())
+}
+
+/// The skin of a block's gear, when the app has a render for it: the block's chosen skin when
+/// it draws the same kind of gear as the automatic one, and otherwise the automatic one.
+#[must_use]
+pub fn skin_for(block: &ChainBlock) -> Option<BlockSkin> {
+    let auto = auto_skin_for(block)?;
+    Some(chosen_skin(block, auto).unwrap_or(auto))
+}
+
+/// The block's override, when the app has its render and it is of the automatic skin's kind.
+#[must_use]
+pub fn chosen_skin(block: &ChainBlock, auto: BlockSkin) -> Option<BlockSkin> {
+    let (id, _, category) = skin_entry(block.skin.as_deref()?)?;
+    if *category != auto.category {
+        return None;
+    }
+    BlockSkin::of(asset(id)?.id, *category)
 }
 
 /// The skin a block shows, and the accessible name of its render.
@@ -265,6 +362,23 @@ pub struct BlockSkin {
     pub label: &'static str,
     /// The kind of gear the render shows.
     pub category: ronie_core::gear::GearCategory,
+}
+
+impl BlockSkin {
+    fn of(id: &'static str, category: ronie_core::gear::GearCategory) -> Option<Self> {
+        use ronie_core::gear::GearCategory;
+
+        let label = match category {
+            GearCategory::Pedal => "Pedal render",
+            GearCategory::Cab => "Cab render",
+            _ => "Amp render",
+        };
+        Some(Self {
+            id,
+            label,
+            category,
+        })
+    }
 }
 
 /// A skin's textures, uploaded once per context.
@@ -349,5 +463,140 @@ pub fn paint(
                 tint,
             );
         }
+    }
+}
+
+/// Colour of the text on a pedal's LCD.
+const LCD_INK: Color32 = Color32::from_rgb(0x9e, 0xff, 0xb3);
+/// The glow around the LCD text: the ink at a low alpha, drawn in two rings of offset passes,
+/// fainter further out.
+const LCD_GLOW: [(f32, Color32); 2] = [
+    (
+        0.7,
+        Color32::from_rgba_unmultiplied_const(0x9e, 0xff, 0xb3, 34),
+    ),
+    (
+        1.5,
+        Color32::from_rgba_unmultiplied_const(0x9e, 0xff, 0xb3, 14),
+    ),
+];
+/// The dark pane inside the rendered glass, #0b120d at 85 %.
+const LCD_PANE: Color32 = Color32::from_rgba_unmultiplied_const(0x0b, 0x12, 0x0d, 217);
+/// The smallest LCD text. A longer name is cut, without an ellipsis.
+const LCD_MIN_SIZE: f32 = 7.0;
+/// What a pedal's LCD shows while its capture downloads.
+pub const LCD_LOADING: &str = "\u{b7}\u{b7}\u{b7}";
+
+/// The LCD text of a capture name.
+#[must_use]
+pub fn lcd_text(model_name: &str) -> String {
+    model_name.to_uppercase()
+}
+
+/// Draws `text` on the skin's LCD glass when the skin has one, and returns where the glass is.
+pub fn draw_lcd(
+    painter: &egui::Painter,
+    manifest: &SkinManifest,
+    body: Rect,
+    text: &str,
+) -> Option<Rect> {
+    let glass = manifest.lcd.as_ref()?.rect_in(body, manifest);
+    paint_lcd(painter, glass, text);
+    Some(glass)
+}
+
+/// Draws a dark pane inside the LCD glass in `rect`, and `text` centred on it, green with a soft
+/// glow, at the largest size that fits the width down to 7 pt, and cut at the end when even that
+/// is too wide.
+pub fn paint_lcd(painter: &egui::Painter, rect: Rect, text: &str) {
+    if !rect.is_positive() {
+        return;
+    }
+    // The rendered glass reads mid-grey; a dark pane inside its bezel gives the text contrast.
+    painter.rect_filled(
+        rect.shrink(1.0),
+        (rect.height() * 0.15).clamp(1.0, 3.0),
+        LCD_PANE,
+    );
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    let pad = (rect.height() * 0.2).clamp(1.0, 4.0);
+    let room = rect.width() - 2.0 * pad;
+    let layout = |text: &str, size: f32| {
+        painter.layout_no_wrap(text.to_owned(), egui::FontId::monospace(size), LCD_INK)
+    };
+    let mut size = (rect.height() * 0.62).max(LCD_MIN_SIZE);
+    let mut galley = layout(text, size);
+    while galley.size().x > room && size > LCD_MIN_SIZE {
+        size = (size - 0.25).max(LCD_MIN_SIZE);
+        galley = layout(text, size);
+    }
+    let mut shown = text.to_owned();
+    while galley.size().x > room && shown.chars().count() > 1 {
+        shown.pop();
+        shown.truncate(shown.trim_end().len());
+        galley = layout(&shown, size);
+    }
+    let pos = rect.center() - galley.size() / 2.0;
+    let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
+    for (radius, glow) in LCD_GLOW {
+        for step in 0..8 {
+            let angle = step as f32 * std::f32::consts::FRAC_PI_4;
+            let offset = egui::vec2(angle.cos(), angle.sin()) * radius;
+            painter.galley_with_override_text_color(pos + offset, galley.clone(), glow);
+        }
+    }
+    painter.galley(pos, galley, LCD_INK);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE: &str = r#""id": "x", "width": 600, "height": 800, "knobs": []"#;
+
+    #[test]
+    fn a_malformed_lcd_is_dropped_and_the_rest_of_the_manifest_kept() {
+        for lcd in [
+            r#""lcd": 3"#,
+            r#""lcd": {"center": [1, 2]}"#,
+            r#""lcd": {"center": [1], "size": [3, 4]}"#,
+            r#""lcd": {"center": [1, 2], "size": ["a", 4]}"#,
+        ] {
+            let manifest = SkinManifest::parse(&format!("{{{BASE}, {lcd}}}"))
+                .unwrap_or_else(|| panic!("{lcd} dropped the manifest"));
+            assert_eq!(manifest.width, 600);
+            assert!(manifest.lcd.is_none(), "{lcd}");
+        }
+    }
+
+    #[test]
+    fn every_skin_has_a_friendly_name_and_one_kind() {
+        use ronie_core::gear::GearCategory::{Amp, Cab, Pedal};
+
+        for asset in SKINS {
+            assert!(!friendly_name(asset.id).is_empty(), "{}", asset.id);
+        }
+        assert_eq!(SKIN_NAMES.len(), SKINS.len());
+        assert_eq!(skins_in(Pedal).len(), 8);
+        assert_eq!(skins_in(Amp).len(), 9);
+        assert_eq!(skins_in(Cab).len(), 6);
+        assert_eq!(friendly_name("chime"), "Chime combo");
+        assert_eq!(friendly_name("nope"), "");
+    }
+
+    #[test]
+    fn a_well_formed_lcd_is_parsed() {
+        let text = format!(r#"{{{BASE}, "lcd": {{"center": [1.5, 2], "size": [3, 4.5]}}}}"#);
+        let manifest = SkinManifest::parse(&text).unwrap();
+        assert_eq!(
+            manifest.lcd,
+            Some(SkinLcd {
+                center: [1.5, 2.0],
+                size: [3.0, 4.5],
+            })
+        );
     }
 }

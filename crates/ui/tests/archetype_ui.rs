@@ -2786,3 +2786,852 @@ fn the_reference_layout_has_no_mics_panel() {
     }
     assert!(driver.label_starting_with("Blend:").is_none());
 }
+
+// ---------------------------------------------------------------- The pedal LCD
+
+/// The pedalboard where the fuzz is a local tone with three captures, followed by the
+/// single-capture overdrive.
+fn capture_pedalboard() -> (UiDriver, Arc<MockBackend>) {
+    crowded_capture_pedalboard(0)
+}
+
+/// `capture_pedalboard` with `extra` more overdrives after it, so the renders shrink.
+fn crowded_capture_pedalboard(extra: usize) -> (UiDriver, Arc<MockBackend>) {
+    let mut scenario = scenario("main-mono");
+    let chain = scenario.state["chain"]["chain"]
+        .as_array_mut()
+        .expect("chain");
+    chain[0]["tone"]["local"] = true.into();
+    chain[0]["tone"]["models"] = serde_json::json!([
+        { "id": 1104, "name": "Muff 1" },
+        { "id": 1105, "name": "Muff 2" },
+        { "id": 1106, "name": "Muff 3" },
+    ]);
+    let mut od = chain[0].clone();
+    od["blockId"] = "blk-od".into();
+    od["activeModelId"] = 1199.into();
+    od["tone"]["id"] = 199.into();
+    od["tone"]["title"] = OD.into();
+    od["tone"]["models"] = serde_json::json!([{ "id": 1199, "name": "Drive 5" }]);
+    for index in 0..extra {
+        let mut more = od.clone();
+        more["blockId"] = format!("blk-od{index}").into();
+        more["tone"]["id"] = (300 + index).into();
+        more["tone"]["title"] = format!("Overdrive {index}").into();
+        chain.insert(1, more);
+    }
+    chain.insert(1, od);
+    let backend = Arc::new(MockBackend::from_scenario(&scenario));
+    let mut chrome = ChromeController::new(backend.clone(), Vec::new(), false, true);
+    chrome.set_view_mode(ViewMode::RonieFlow);
+    let mut driver = UiDriver::new(chrome, (*backend).clone());
+    driver.settle();
+    (driver, backend)
+}
+
+fn active_model(backend: &MockBackend, block: &str) -> Option<i64> {
+    backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .find(|each| each.id.0 == block)
+        .and_then(|each| each.active_model_id)
+        .map(|id| id.0)
+}
+
+#[test]
+fn a_pedal_lcd_shows_its_capture() {
+    let (driver, _) = capture_pedalboard();
+    assert!(
+        driver.is_visible("Capture display: Muff 1"),
+        "{:?}",
+        driver.visible_labels()
+    );
+    assert!(driver.shows_text("MUFF 1"));
+}
+
+#[test]
+fn hovering_the_lcd_shows_the_capture_hint() {
+    let (mut driver, _) = capture_pedalboard();
+    driver.hover("Capture display: Muff 1").expect("LCD");
+    driver.settle();
+    assert!(driver.shows_text("CAPTURE 1 / 3 · Muff 1 · click for next"));
+}
+
+#[test]
+fn clicking_the_lcd_steps_to_the_next_capture() {
+    let (mut driver, backend) = capture_pedalboard();
+    let _ = driver.click("Capture display: Muff 1").expect("LCD");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-1"), Some(1105));
+    assert!(driver.shows_text("MUFF 2"));
+    let _ = driver.click("Capture display: Muff 2").expect("LCD");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-1"), Some(1106));
+    let _ = driver.click("Capture display: Muff 3").expect("LCD");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-1"), Some(1104), "wraps");
+    assert!(driver.is_visible("Capture display: Muff 1"));
+}
+
+#[test]
+fn a_single_capture_pedal_does_nothing_on_click() {
+    let (mut driver, backend) = capture_pedalboard();
+    let _ = driver
+        .click(&format!("Pedal render: {OD}"))
+        .expect("neighbour");
+    driver.settle();
+    let revision = backend.chain_state(0).revision;
+    let _ = driver.click("Capture display: Drive 5").expect("LCD");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-od"), Some(1199));
+    assert_eq!(backend.chain_state(0).revision, revision);
+    assert!(driver.shows_text("DRIVE 5"));
+}
+
+#[test]
+fn a_neighbour_lcd_is_shown_but_not_interactive() {
+    let (mut driver, _) = capture_pedalboard();
+    assert!(driver.shows_text("DRIVE 5"), "the neighbour's LCD");
+    assert!(
+        driver
+            .label_starting_with("Capture display: Drive")
+            .is_none(),
+        "no display control on a neighbour"
+    );
+    let _ = driver
+        .click(&format!("Pedal render: {OD}"))
+        .expect("neighbour");
+    driver.settle();
+    assert_eq!(
+        driver.chrome().gallery().selection(),
+        &GallerySelection::BlockDetail(BlockId("blk-od".to_owned()))
+    );
+}
+
+/// The fuzz of main-detail on its own Archetype page, attached to a service that lists
+/// captures 1104 to 1106. Clicks and frames go through `lcd_frame`.
+fn catalog_pedal(backend: &Arc<MockBackend>) -> ronie_ui::default::BlockDetail {
+    use ronie_ui::services::{ModelList, ModelSwitchFlow, session::SessionStatus::SignedIn};
+
+    let shared: Arc<dyn UiBackend> = backend.clone();
+    let mut detail =
+        ronie_ui::default::BlockDetail::new(shared.clone(), "blk-1", false).expect("detail");
+    detail.set_page(ronie_ui::default::block::BlockPage::Archetype);
+    detail.attach_model_switching(ModelSwitchFlow::new(shared));
+    let request = detail.take_models_request(SignedIn).expect("a list is due");
+    let models = [1104, 1105, 1106]
+        .into_iter()
+        .map(|id| {
+            ronie_core::ToneModel::from_value(
+                &serde_json::json!({
+                    "id": id,
+                    "name": format!("Model {id}"),
+                    "model_url": format!("https://models.example/{id}.nam"),
+                }),
+                false,
+            )
+            .expect("model")
+        })
+        .collect();
+    assert!(detail.complete_models(
+        request.generation,
+        request.tone,
+        ModelList { models, total: 3 }
+    ));
+    detail
+}
+
+/// One frame of a lone detail. Returns its controls by label and its static texts.
+fn lcd_frame(
+    context: &eframe::egui::Context,
+    detail: &mut ronie_ui::default::BlockDetail,
+    events: Vec<eframe::egui::Event>,
+) -> (Vec<(String, eframe::egui::Rect)>, Vec<String>) {
+    use eframe::egui;
+    use ronie_ui::services::session::SessionStatus::SignedIn;
+
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1024.0, 614.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    let mut output = context.run_ui(input, |ui| detail.show(ui, SignedIn));
+    output.textures_delta.clear();
+    let Some(update) = output.platform_output.accesskit_update.take() else {
+        return (Vec::new(), Vec::new());
+    };
+    let widgets = context.viewport(|viewport| {
+        viewport
+            .prev_pass
+            .widgets
+            .layers()
+            .flat_map(|(_, widgets)| widgets.iter().copied())
+            .map(|widget| (widget.id.accesskit_id(), widget))
+            .collect::<std::collections::HashMap<_, _>>()
+    });
+    let controls = update
+        .nodes
+        .iter()
+        .filter_map(|(id, node)| {
+            let widget = widgets.get(id)?;
+            Some((node.label()?.to_owned(), widget.interact_rect))
+        })
+        .collect();
+    let texts = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == accesskit::Role::Label)
+        .filter_map(|(_, node)| node.value().map(str::to_owned))
+        .collect();
+    (controls, texts)
+}
+
+/// Clicks the control whose label starts with `prefix`.
+fn lcd_click(
+    context: &eframe::egui::Context,
+    detail: &mut ronie_ui::default::BlockDetail,
+    prefix: &str,
+) {
+    use eframe::egui;
+
+    let (controls, _) = lcd_frame(context, detail, Vec::new());
+    let at = controls
+        .iter()
+        .find(|(label, _)| label.starts_with(prefix))
+        .map(|(_, rect)| rect.center())
+        .unwrap_or_else(|| panic!("no {prefix}: {controls:?}"));
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    lcd_frame(context, detail, vec![egui::Event::PointerMoved(at)]);
+    lcd_frame(context, detail, vec![button(true)]);
+    lcd_frame(context, detail, vec![button(false)]);
+}
+
+fn lcd_context() -> eframe::egui::Context {
+    let context = eframe::egui::Context::default();
+    context.enable_accesskit();
+    ronie_ui::fonts::Fonts::install(&context);
+    context
+}
+
+#[test]
+fn the_lcd_shows_dots_while_the_capture_downloads() {
+    let backend = Arc::new(MockBackend::from_scenario(&scenario("main-detail")));
+    let mut detail = catalog_pedal(&backend);
+    let context = lcd_context();
+    lcd_frame(&context, &mut detail, Vec::new());
+    let (_, texts) = lcd_frame(&context, &mut detail, Vec::new());
+    assert!(texts.iter().any(|text| text == "MODEL 1104"), "{texts:?}");
+
+    lcd_click(&context, &mut detail, "Capture display: Model 1104");
+    let request = detail.take_switch_request().expect("a download");
+    assert_eq!(request.model.id, ronie_core::ModelId(1105));
+    let (_, texts) = lcd_frame(&context, &mut detail, Vec::new());
+    assert!(texts.iter().any(|text| text == "···"), "{texts:?}");
+    assert!(
+        !texts.iter().any(|text| text.starts_with("MODEL")),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn rapid_lcd_clicks_end_on_the_landed_capture() {
+    use ronie_core::{ModelId, Tone};
+
+    let backend = Arc::new(MockBackend::from_scenario(&scenario("main-detail")));
+    let mut detail = catalog_pedal(&backend);
+    let context = lcd_context();
+    lcd_frame(&context, &mut detail, Vec::new());
+
+    lcd_click(&context, &mut detail, "Capture display:");
+    let first = detail.take_switch_request().expect("a download");
+    lcd_click(&context, &mut detail, "Capture display:");
+    let second = detail.take_switch_request().expect("the next download");
+    assert_eq!(first.model.id, ModelId(1105));
+    assert_eq!(
+        second.model.id,
+        ModelId(1106),
+        "steps from the capture on its way"
+    );
+    assert!(
+        detail.take_switch_request().is_none(),
+        "one switch at a time"
+    );
+
+    let stored = |request: &ronie_ui::services::ModelSwitchRequest, id: i64| {
+        Tone {
+            models: vec![request.model.clone()],
+            ..request.tone.clone()
+        }
+        .for_storage(ModelId(id), &[])
+        .expect("stored tone")
+    };
+    let late = first
+        .ticket
+        .publish(stored(&first, 1105), ModelId(1105), vec![1, 2, 3].into());
+    assert!(
+        !matches!(late, Ok(true)),
+        "the superseded switch cannot land"
+    );
+    assert!(!detail.finish_switch(first.ticket.generation()));
+    assert!(
+        second
+            .ticket
+            .publish(stored(&second, 1106), ModelId(1106), vec![1, 2, 3].into())
+            .expect("publish")
+    );
+    assert!(detail.finish_switch(second.ticket.generation()));
+
+    let (controls, texts) = lcd_frame(&context, &mut detail, Vec::new());
+    assert!(texts.iter().any(|text| text == "MODEL 1106"), "{texts:?}");
+    assert!(!texts.iter().any(|text| text == "···"), "{texts:?}");
+    assert!(
+        controls
+            .iter()
+            .any(|(label, _)| label == "Capture display: Model 1106"),
+        "{controls:?}"
+    );
+    assert_eq!(active_model(&backend, "blk-1"), Some(1106));
+}
+
+#[test]
+fn a_knob_beside_a_small_lcd_keeps_its_clicks() {
+    use eframe::egui;
+
+    let (mut driver, backend) = crowded_capture_pedalboard(5);
+    let display = rect_of(&driver, "Capture display: Muff 1").expect("LCD");
+    let render = rect_of(&driver, "Pedal render").expect("render");
+    assert!(render.height() < 190.0, "a small render: {render:?}");
+    // The knob nearest the LCD, and a point that both hit areas cover.
+    let (label, knob) = ["GAIN IN:", "OUTPUT:", "MIX:"]
+        .into_iter()
+        .filter_map(|prefix| {
+            let label = driver.label_starting_with(prefix)?;
+            let rect = rect_of(&driver, &label)?;
+            Some((label, rect))
+        })
+        .min_by(|(_, a), (_, b)| {
+            a.center()
+                .distance(display.center())
+                .total_cmp(&b.center().distance(display.center()))
+        })
+        .expect("a knob");
+    let shared = knob.intersect(display);
+    assert!(shared.is_positive(), "{knob:?} and {display:?} overlap");
+    let at = shared.center();
+    let prefix = label.split(':').next().expect("prefix").to_owned();
+
+    let _ = driver.click_at(at);
+    driver.settle();
+    assert_eq!(
+        active_model(&backend, "blk-1"),
+        Some(1104),
+        "a click on the knob"
+    );
+    assert!(
+        driver
+            .focused()
+            .is_some_and(|focused| focused.starts_with(&prefix)),
+        "the knob takes the click: {:?}",
+        driver.focused()
+    );
+
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    driver.play(vec![egui::Event::PointerMoved(at)]);
+    for _ in 0..2 {
+        driver.play(vec![button(true)]);
+        driver.play(vec![button(false)]);
+    }
+    driver.settle();
+    assert_eq!(
+        active_model(&backend, "blk-1"),
+        Some(1104),
+        "a double-click on the knob"
+    );
+}
+
+#[test]
+fn an_lcd_step_is_one_undo_step() {
+    let (mut driver, backend) = capture_pedalboard();
+    let _ = driver.click("Capture display: Muff 1").expect("LCD");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-1"), Some(1105));
+    let _ = driver.click("Undo").expect("undo");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-1"), Some(1104), "one undo");
+    assert!(driver.is_visible("Capture display: Muff 1"));
+}
+
+#[test]
+fn a_downloading_display_says_so() {
+    let backend = Arc::new(MockBackend::from_scenario(&scenario("main-detail")));
+    let mut detail = catalog_pedal(&backend);
+    let context = lcd_context();
+    lcd_frame(&context, &mut detail, Vec::new());
+    lcd_click(&context, &mut detail, "Capture display: Model 1104");
+    let _request = detail.take_switch_request().expect("a download");
+    let (controls, _) = lcd_frame(&context, &mut detail, Vec::new());
+    assert!(
+        controls
+            .iter()
+            .any(|(label, _)| label == "Capture display: Model 1105 (loading)"),
+        "{controls:?}"
+    );
+}
+
+// ---------------------------------------------------------------- The amp capture lights
+
+/// The amp of main-mono, open on the stage, with `count` captures named "Take 1" and up.
+fn amp_driver(count: usize) -> (UiDriver, Arc<MockBackend>) {
+    let (mut driver, backend) = edited_driver("main-mono", |chain| {
+        let models: Vec<_> = (0..count)
+            .map(|index| serde_json::json!({ "id": 1101 + index, "name": format!("Take {}", index + 1) }))
+            .collect();
+        chain["chain"][1]["tone"]["models"] = models.into();
+        chain["chain"][1]["tone"]["local"] = true.into();
+    });
+    let _ = driver.click(VOX).expect("amp button");
+    driver.settle();
+    (driver, backend)
+}
+
+/// The lights of the open amp: label and whether lit, in order.
+fn lights(driver: &UiDriver, count: usize) -> Vec<(String, bool)> {
+    (1..=count)
+        .filter_map(|index| {
+            let label = format!("Take {index}");
+            driver
+                .controls()
+                .iter()
+                .find(|control| control.label == label)
+                .map(|control| (label, control.checked))
+        })
+        .collect()
+}
+
+#[test]
+fn an_amp_with_captures_shows_its_lights() {
+    let (driver, _) = amp_driver(6);
+    assert!(
+        driver.is_visible("Captures"),
+        "{:?}",
+        driver.visible_labels()
+    );
+    assert!(driver.shows_text("CAPTURE"));
+    let lit = lights(&driver, 6);
+    assert_eq!(lit.len(), 6);
+    assert_eq!(lit.iter().filter(|(_, on)| *on).count(), 1);
+    assert!(lit[0].1, "the active capture is lit");
+    assert!(
+        driver.shows_text("Take 1"),
+        "its short name beside the lights"
+    );
+}
+
+#[test]
+fn clicking_a_light_selects_its_capture() {
+    let (mut driver, backend) = amp_driver(6);
+    let _ = driver.click("Take 4").expect("light");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-2"), Some(1104));
+    let lit = lights(&driver, 6);
+    assert!(lit[3].1 && lit.iter().filter(|(_, on)| *on).count() == 1);
+}
+
+#[test]
+fn a_single_capture_amp_has_no_lights() {
+    let (driver, _) = amp_driver(1);
+    assert!(!driver.is_visible("Captures"));
+    assert!(!driver.shows_text("CAPTURE"));
+    assert!(!driver.is_visible("Take 1"));
+}
+
+#[test]
+fn nine_captures_page_the_light_window() {
+    let (mut driver, _) = amp_driver(9);
+    let shown = lights(&driver, 9);
+    assert_eq!(shown.len(), 8, "at most eight lights");
+    assert!(shown[0].1, "the active light is inside the window");
+    assert!(driver.is_visible("Next captures"));
+    let _ = driver.click("Next captures").expect("page right");
+    driver.settle();
+    let shown = lights(&driver, 9);
+    assert_eq!(shown.len(), 8);
+    assert!(
+        shown.iter().all(|(label, _)| label != "Take 1"),
+        "paged by one"
+    );
+    let _ = driver.click("Take 9").expect("last light");
+    driver.settle();
+    let shown = lights(&driver, 9);
+    assert!(shown.iter().any(|(label, on)| label == "Take 9" && *on));
+    let _ = driver.click("Previous captures").expect("page left");
+    driver.settle();
+    let shown = lights(&driver, 9);
+    assert_eq!(
+        shown.first().map(|(label, _)| label.as_str()),
+        Some("Take 1")
+    );
+    assert!(
+        shown.iter().all(|(_, on)| !*on),
+        "paged past the active one"
+    );
+}
+
+#[test]
+fn eight_captures_need_no_paging() {
+    let (driver, _) = amp_driver(8);
+    assert_eq!(lights(&driver, 8).len(), 8);
+    assert!(!driver.is_visible("Next captures"));
+    assert!(!driver.is_visible("Previous captures"));
+}
+
+/// At 640 the pill only fits without its short name, and at 600 only beside a chip that reads
+/// just "SKIN"; nothing may run past the stage, whose right meter column is 80 pt wide.
+#[test]
+fn the_capture_pill_stays_inside_a_narrow_window() {
+    for width in [700.0, 640.0, 600.0] {
+        let (mut driver, _) = amp_driver(9);
+        driver.set_window_size(eframe::egui::vec2(width, 600.0));
+        let stage_right = width - 80.0;
+        let window = eframe::egui::Rect::from_min_size(
+            eframe::egui::Pos2::ZERO,
+            eframe::egui::vec2(width, 600.0),
+        );
+        let inside = |label: &str| {
+            let rect =
+                rect_of(&driver, label).unwrap_or_else(|| panic!("{label} is drawn at {width}"));
+            assert!(
+                rect.is_positive() && window.contains_rect(rect),
+                "{label} at {rect:?} in a window {width} wide"
+            );
+            rect
+        };
+        let next = inside("Next captures");
+        let previous = inside("Previous captures");
+        assert_eq!(
+            next.size(),
+            previous.size(),
+            "the next arrow is not clipped"
+        );
+        let chip = inside("Skin");
+        let pill = inside("Captures");
+        assert!(
+            pill.right() <= stage_right,
+            "the pill {pill:?} ends inside the stage at {width}"
+        );
+        assert!(
+            pill.left() >= chip.right(),
+            "the pill {pill:?} clears the chip {chip:?} at {width}"
+        );
+        assert!(next.right() <= pill.right(), "the arrow is inside the pill");
+        let shown = lights(&driver, 9);
+        assert_eq!(shown.len(), 8, "{:?}", driver.visible_labels());
+        for (label, _) in &shown {
+            let light = inside(label);
+            assert!(
+                pill.contains_rect(light.shrink(1.0)),
+                "{label} at {light:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_active_light_follows_a_capture_change_from_the_picker() {
+    let (mut driver, backend) = amp_driver(6);
+    driver
+        .chrome_mut()
+        .detail_mut()
+        .expect("detail")
+        .select_model(
+            ronie_core::ModelId(1103),
+            ronie_ui::services::session::SessionStatus::SignedIn,
+        )
+        .expect("picker select");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-2"), Some(1103));
+    let lit = lights(&driver, 6);
+    assert!(lit[2].1, "{lit:?}");
+}
+
+#[test]
+fn cabs_and_pedals_have_no_lights() {
+    let (driver, _) = capture_pedalboard();
+    assert!(driver.is_visible("Capture display: Muff 1"));
+    assert!(!driver.is_visible("Captures"));
+    assert!(!driver.is_visible("Muff 2"));
+    let (mut cab, _) = edited_driver("main-mono", |chain| {
+        chain["chain"][2]["tone"]["models"] = serde_json::json!([
+            { "id": 1103, "name": "Mic 1" }, { "id": 1203, "name": "Mic 2" }, { "id": 1303, "name": "Mic 3" }
+        ]);
+    });
+    let _ = cab
+        .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
+        .expect("cab button");
+    cab.settle();
+    assert!(!cab.is_visible("Captures"));
+}
+
+#[test]
+fn the_edge_of_the_last_light_selects_it_instead_of_paging() {
+    let (mut driver, backend) = amp_driver(9);
+    let rect = rect_of(&driver, "Take 8").expect("last visible light");
+    // The light's hit area reaches 4 pt past its visible edge on the right.
+    let _ = driver.click_at(eframe::egui::pos2(rect.right() - 1.0, rect.center().y));
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-2"), Some(1108));
+    assert_eq!(
+        lights(&driver, 9).first().map(|(l, _)| l.as_str()),
+        Some("Take 1")
+    );
+}
+
+// ---------------------------------------------------------------- The skin picker
+
+const AMP_SKINS: [&str; 9] = [
+    "High-gain head",
+    "US modern head",
+    "British head",
+    "Chime combo",
+    "Clean combo",
+    "Bass head",
+    "Clean amp",
+    "Crunch amp",
+    "Hi-gain amp",
+];
+
+fn block_skin(backend: &MockBackend, block: &str) -> Option<String> {
+    backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .find(|each| each.id.0 == block)
+        .and_then(|each| each.skin.clone())
+}
+
+fn open_skin_list(driver: &mut UiDriver) {
+    let _ = driver.click("Skin").expect("skin chip");
+    driver.settle();
+}
+
+#[test]
+fn auto_shows_the_automatic_family_name() {
+    let (driver, _) = amp_page();
+    assert!(driver.is_visible("Skin"), "{:?}", driver.visible_labels());
+    assert!(
+        driver.shows_text("Auto \u{b7} Chime combo"),
+        "the chip names the automatic family"
+    );
+    let (mut pedal, _) = archetype_driver("main-mono");
+    let _ = pedal
+        .click("Chain: Green Russian Big Muff + BD-2")
+        .expect("pedal");
+    pedal.settle();
+    assert!(pedal.label_starting_with("Skin").is_some());
+    assert!(
+        ronie_ui::default::skins::skins_in(ronie_core::gear::GearCategory::Pedal)
+            .iter()
+            .map(|id| format!(
+                "Auto \u{b7} {}",
+                ronie_ui::default::skins::friendly_name(id)
+            ))
+            .any(|text| pedal.shows_text(&text)),
+        "a pedal's chip names a pedal family"
+    );
+}
+
+#[test]
+fn the_skin_chip_lists_the_category_and_auto() {
+    let (mut driver, _) = amp_page();
+    assert!(!driver.is_visible("Auto"), "the list starts closed");
+    open_skin_list(&mut driver);
+    let auto = driver
+        .controls()
+        .iter()
+        .find(|control| control.label == "Auto")
+        .cloned()
+        .expect("Auto is listed");
+    assert!(auto.checked, "Auto is the current choice");
+    assert!(
+        driver.shows_text("Chime combo"),
+        "Auto names the family on its right"
+    );
+    for name in AMP_SKINS {
+        assert!(driver.is_visible(name), "{name} is listed");
+    }
+    for name in ["Green overdrive", "Modern 4x12"] {
+        assert!(!driver.is_visible(name), "{name} is not an amp");
+    }
+    let chip = rect_of(&driver, "Skin").expect("chip");
+    let auto_rect = auto.rect;
+    assert!(auto_rect.bottom() < chip.top(), "the list opens upward");
+    let _ = driver.click("Skin").expect("close");
+    driver.settle();
+    assert!(!driver.is_visible("Auto"), "a second click closes it");
+}
+
+/// In a short window the list of ten amp skins ends above its chip and scrolls, so a click on
+/// the chip still closes it.
+#[test]
+fn the_skin_list_ends_above_its_chip_in_a_short_window() {
+    let (mut driver, backend) = amp_page();
+    driver.set_window_size(eframe::egui::vec2(1024.0, 400.0));
+    open_skin_list(&mut driver);
+    let chip = rect_of(&driver, "Skin").expect("chip");
+    let list = rect_of(&driver, "Skins").expect("the list is open");
+    assert!(
+        !list.intersects(chip) && list.bottom() < chip.top(),
+        "the list {list:?} ends above the chip {chip:?}"
+    );
+    let last = |driver: &UiDriver| {
+        rect_of(driver, "Hi-gain amp")
+            .filter(|rect| list.contains_rect(*rect) && rect.height() > 20.0)
+    };
+    assert!(last(&driver).is_none(), "the last row starts out of view");
+    driver.play(vec![
+        eframe::egui::Event::PointerMoved(list.center()),
+        eframe::egui::Event::MouseWheel {
+            unit: eframe::egui::MouseWheelUnit::Point,
+            delta: eframe::egui::vec2(0.0, -400.0),
+            phase: eframe::egui::TouchPhase::Move,
+            source: eframe::egui::MouseWheelSource::Wheel,
+            modifiers: eframe::egui::Modifiers::NONE,
+        },
+    ]);
+    driver.settle();
+    assert!(last(&driver).is_some(), "the rows scroll to the last one");
+    let _ = driver.click("Skin").expect("close");
+    driver.settle();
+    assert!(
+        !driver.is_visible("Skins"),
+        "the click on the chip closed it"
+    );
+    assert_eq!(block_skin(&backend, "blk-2"), None, "and picked nothing");
+}
+
+#[test]
+fn the_skin_list_does_not_reopen_after_another_view() {
+    let (mut driver, _) = amp_page();
+    open_skin_list(&mut driver);
+    assert!(driver.is_visible("Auto"));
+    let detail = driver.chrome_mut().detail_mut().expect("detail");
+    detail.set_view(BlockView::Eq);
+    driver.settle();
+    driver
+        .chrome_mut()
+        .detail_mut()
+        .expect("detail")
+        .set_view(BlockView::Tone);
+    driver.settle();
+    assert!(
+        !driver.is_visible("Auto"),
+        "back on GEAR the list is closed"
+    );
+
+    open_skin_list(&mut driver);
+    assert!(driver.is_visible("Auto"));
+    driver.chrome_mut().set_tuner(true);
+    driver.settle();
+    driver.chrome_mut().set_tuner(false);
+    driver.settle();
+    assert!(
+        driver.is_visible("Skin") && !driver.is_visible("Auto"),
+        "after the tuner had the stage the list is closed"
+    );
+}
+
+#[test]
+fn picking_a_skin_redraws_the_render_and_is_one_undo_step() {
+    let (mut driver, backend) = amp_page();
+    let before = rect_of(&driver, "Amp render").expect("render");
+    open_skin_list(&mut driver);
+    let _ = driver.click("High-gain head").expect("pick");
+    driver.settle();
+    assert_eq!(block_skin(&backend, "blk-2").as_deref(), Some("highgain"));
+    assert!(!driver.is_visible("Auto"), "the list closes");
+    assert!(driver.shows_text("High-gain head"), "the chip names it");
+    let after = rect_of(&driver, "Amp render").expect("render");
+    assert_ne!(before, after, "the head draws instead of the combo");
+
+    open_skin_list(&mut driver);
+    let checked: Vec<_> = driver
+        .controls()
+        .iter()
+        .filter(|control| control.checked && AMP_SKINS.contains(&control.label.as_str()))
+        .map(|control| control.label.clone())
+        .collect();
+    assert_eq!(checked, vec!["High-gain head".to_owned()]);
+    let _ = driver.click("Skin").expect("close");
+    driver.settle();
+
+    let _ = driver.click("Undo").expect("undo");
+    driver.settle();
+    assert_eq!(
+        block_skin(&backend, "blk-2"),
+        None,
+        "one undo is Auto again"
+    );
+    assert!(driver.shows_text("Auto \u{b7} Chime combo"));
+    assert_eq!(rect_of(&driver, "Amp render"), Some(before));
+
+    open_skin_list(&mut driver);
+    let _ = driver.click("High-gain head").expect("pick");
+    driver.settle();
+    open_skin_list(&mut driver);
+    let _ = driver.click("Auto").expect("auto");
+    driver.settle();
+    assert_eq!(block_skin(&backend, "blk-2"), None, "Auto clears it");
+}
+
+#[test]
+fn an_override_of_another_category_falls_back_to_auto() {
+    for skin in ["od-green", "cab-412-modern", "no-such-skin"] {
+        let (mut driver, backend) = edited_driver("main-mono", |chain| {
+            chain["chain"][1]["skinOverride"] = skin.into();
+        });
+        let _ = driver.click(VOX).expect("amp");
+        driver.settle();
+        assert!(driver.is_visible("Amp render"), "{skin}");
+        assert!(
+            driver.shows_text("Auto \u{b7} Chime combo"),
+            "{skin} is ignored"
+        );
+        open_skin_list(&mut driver);
+        assert!(
+            driver
+                .controls()
+                .iter()
+                .any(|control| control.label == "Auto" && control.checked),
+            "{skin}"
+        );
+        let _ = driver.click("Auto").expect("auto");
+        driver.settle();
+        assert_eq!(
+            block_skin(&backend, "blk-2"),
+            None,
+            "picking Auto clears the ignored {skin}"
+        );
+    }
+    let (mut driver, _) = edited_driver("main-mono", |chain| {
+        chain["chain"][1]["skinOverride"] = "british".into();
+    });
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    assert!(driver.shows_text("British head"), "an amp skin is honoured");
+}

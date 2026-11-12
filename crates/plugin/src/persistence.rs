@@ -513,6 +513,7 @@ fn encode_block(
         );
         set_property(&mut output, "activeModelId", JuceValue::Int64(active.0));
         block.write_ir_pair_juce(&mut output);
+        block.write_skin_juce(&mut output);
         let eq = encode_eq(block, previous.and_then(|block| child(block, "Eq")));
         upsert_child(&mut output, "Eq", eq);
         let cache = encode_model_cache(
@@ -532,6 +533,7 @@ fn encode_block(
             "irALevel",
             "irBLevel",
             "irBInvert",
+            ronie_core::SKIN_OVERRIDE,
         ] {
             remove_property(&mut output, name);
         }
@@ -1316,6 +1318,37 @@ mod tests {
         for name in IR_PAIR_PROPERTIES {
             assert!(!has(&emptied, name), "an insert keeps no {name}");
         }
+    }
+
+    #[test]
+    fn a_skin_override_is_saved_only_while_set() {
+        let cache = ModelByteCache::new(1024);
+        let mut block = two_mic_block();
+        block.skin = Some("cab-112-clean".to_owned());
+        let saved = encode_block(&block, None, None, &cache).expect("save with a skin");
+        assert!(
+            saved
+                .properties
+                .iter()
+                .any(|(name, value)| name == ronie_core::SKIN_OVERRIDE
+                    && *value == JuceValue::String("cab-112-clean".into())),
+            "{:?}",
+            saved.properties
+        );
+
+        block.skin = None;
+        let resaved = encode_block(&block, None, Some(&saved), &cache).expect("save Auto");
+        assert!(
+            !has(&resaved, ronie_core::SKIN_OVERRIDE),
+            "Auto is not kept"
+        );
+
+        let insert = ChainBlock::insert("cab");
+        let emptied = encode_block(&insert, None, Some(&saved), &cache).expect("save");
+        assert!(
+            !has(&emptied, ronie_core::SKIN_OVERRIDE),
+            "an insert has no skin"
+        );
     }
 
     #[test]

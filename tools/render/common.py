@@ -1,13 +1,15 @@
 """Helpers shared by the Ronnie 3000 skin scripts: live knobs, alpha cleanup, knob filmstrips
 and the skin manifest.
 
-A skin script builds its gear, calls `knob_rig.add(...)` for each knob, and ends with
+A skin script builds its gear, calls `knob_rig.add(...)` for each knob (and
+`lcd_rig.set_glass(...)` for an LCD), and ends with
 `finish(scene, out_dir, skin_id, samples)`, which writes:
 
 - `body.png`: the gear on a transparent background, with no haze at the frame edges;
 - `knob-<control>-NN.png`: FRAMES crops around each live knob, from value 0 to value 1,
   feathered to a circle so that they sit on the body without a seam;
-- `skin.json`: the size of the body and where each knob sits on it, in body pixels.
+- `skin.json`: the size of the body, where each knob sits on it and, for a pedal, the
+  rectangle of its LCD glass, in body pixels.
 """
 import json
 import math
@@ -79,6 +81,20 @@ class KnobRig:
 
 
 knob_rig = KnobRig()
+
+
+class LcdRig:
+    """The LCD glass of a pedal, if it has one: its top face as a world-space rectangle."""
+
+    def __init__(self):
+        self.corners = None
+
+    def set_glass(self, x, y, z, w, h):
+        """Registers the glass top face, centred on (x, y) at height z, w wide and h deep."""
+        self.corners = [(x + sx * w / 2, y + sy * h / 2, z) for sx in (-1, 1) for sy in (-1, 1)]
+
+
+lcd_rig = LcdRig()
 
 
 def fit_resolution(scene):
@@ -259,6 +275,16 @@ def finish(scene, out_dir, skin_id, samples):
         })
 
     manifest = {"id": skin_id, "width": body_width, "height": body_height, "knobs": knobs}
+    if lcd_rig.corners:
+        # The camera looks almost straight down, so the glass projects to a slight trapezoid;
+        # the manifest keeps its axis-aligned bounds, in body pixels like the knob centres.
+        pts = [project(scene, cam, c) for c in lcd_rig.corners]
+        xs = [px - trim_left for px, _ in pts]
+        ys = [py - trim_top for _, py in pts]
+        manifest["lcd"] = {
+            "center": [round((min(xs) + max(xs)) / 2.0, 1), round((min(ys) + max(ys)) / 2.0, 1)],
+            "size": [round(max(xs) - min(xs), 1), round(max(ys) - min(ys), 1)],
+        }
     with open(os.path.join(out_dir, "skin.json"), "w") as f:
         json.dump(manifest, f, indent=2)
     print("WROTE", out_dir)

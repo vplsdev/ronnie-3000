@@ -528,6 +528,15 @@ impl SessionEditor {
             } => self.select_second_model_with_bytes(
                 &block_id, tone, model_id, replaces, bytes, storage,
             ),
+            UiAction::SetBlockSkin { block_id, skin } => {
+                // The skin it already has changes nothing and is no undo step.
+                if self.block(&block_id)?.skin == skin {
+                    Ok(UiEffect::None)
+                } else {
+                    self.change_block(&block_id, |block| block.skin = skin)?;
+                    Ok(self.chain_changed())
+                }
+            }
             UiAction::DuplicateBlock(id) => self.duplicate_block(&id, storage),
             UiAction::DuplicateBlockToLane {
                 block_id,
@@ -1855,6 +1864,44 @@ mod tests {
         assert_eq!(editor.view(0).chain.left[0].id, slot);
         editor.apply_alone(UiAction::Undo).expect("undo");
         assert_eq!(editor.view(0).chain.left, before);
+    }
+
+    #[test]
+    fn setting_a_block_skin_to_its_own_value_adds_no_history_step() {
+        let mut editor = editor();
+        let block = load(&mut editor);
+        let set = |editor: &mut SessionEditor, skin: Option<&str>| {
+            editor
+                .apply_alone(UiAction::SetBlockSkin {
+                    block_id: block.clone(),
+                    skin: skin.map(str::to_owned),
+                })
+                .expect("set skin")
+        };
+        editor.clear_history();
+        let before = editor.view(0);
+        let same = set(&mut editor, None);
+        assert_eq!(same.effect, UiEffect::None);
+        assert_eq!(same.revision, before.revision);
+        assert!(!editor.view(0).can_undo, "Auto over Auto is no step");
+
+        let changed = set(&mut editor, Some("british"));
+        assert_eq!(changed.effect, UiEffect::ChainChanged);
+        let after = editor.view(0);
+        let again = set(&mut editor, Some("british"));
+        assert_eq!(again.effect, UiEffect::None);
+        assert_eq!(editor.view(0).revision, after.revision);
+        editor.apply_alone(UiAction::Undo).expect("undo");
+        assert!(
+            !editor.view(0).can_undo,
+            "one undo takes back the one change"
+        );
+        let skin = editor
+            .view(0)
+            .chain
+            .block(&block)
+            .and_then(|each| each.skin.clone());
+        assert_eq!(skin, None);
     }
 
     #[test]

@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use ronie_core::{
     BlockId, BlockParams, ChainBlock, ChainBranch, ChainSide, ChainSnapshot, InputMode, IrB,
-    JuceTree, JuceValue, MidiSource, ModelId, ModelSource, SessionSnapshot, Tone, ToneError,
-    references_model,
+    JuceTree, JuceValue, MidiSource, ModelId, ModelSource, SKIN_OVERRIDE, SessionSnapshot, Tone,
+    ToneError, references_model,
 };
 use serde_json::{Value, json};
 
@@ -643,4 +643,68 @@ fn references_model_includes_b() {
     assert!(references_model(&block, ModelId(3101)));
     assert!(references_model(&block, ModelId(3102)));
     assert!(!references_model(&block, ModelId(3103)));
+}
+
+#[test]
+fn a_skin_override_round_trips_through_juce() {
+    let mut block = ChainBlock::tone("cab", ir_tone(), ModelId(3101));
+    block.skin = Some("cab-412-vintage".to_owned());
+
+    let mut tree = juce_cab_block(Vec::new());
+    block.write_skin_juce(&mut tree);
+    assert!(
+        tree.properties
+            .iter()
+            .any(|(name, value)| name == SKIN_OVERRIDE
+                && *value == JuceValue::String("cab-412-vintage".into())),
+        "the override is a string property: {:?}",
+        tree.properties
+    );
+    let codec = ronie_core::JuceCodec::default();
+    let bytes = codec.write_tree(&juce_chain(tree.clone())).expect("encode");
+    let decoded = codec.read_tree(&bytes).expect("decode");
+    let snapshot = ChainSnapshot::from_juce_tree(&decoded).expect("the tree parses");
+    assert_eq!(snapshot.left[0].skin.as_deref(), Some("cab-412-vintage"));
+
+    block.skin = None;
+    block.write_skin_juce(&mut tree);
+    assert!(
+        !tree
+            .properties
+            .iter()
+            .any(|(name, _)| name == SKIN_OVERRIDE),
+        "Auto removes the property"
+    );
+
+    let ui = ChainSnapshot::from_ui_value(json!({
+        "chain": [{
+            "blockId": "cab",
+            "kind": "tone",
+            "tone": ir_tone().raw,
+            "activeModelId": 3101,
+            "skinOverride": "cab-112-clean"
+        }]
+    }))
+    .expect("a UI block with a skin parses");
+    assert_eq!(ui.left[0].skin.as_deref(), Some("cab-112-clean"));
+}
+
+#[test]
+fn an_old_block_has_no_skin_override() {
+    let snapshot =
+        ChainSnapshot::from_juce_tree(&juce_chain(juce_cab_block(Vec::new()))).expect("parses");
+    assert_eq!(snapshot.left[0].skin, None, "an old preset loads with Auto");
+    let blank = juce_cab_block(vec![(
+        SKIN_OVERRIDE.into(),
+        JuceValue::String(String::new()),
+    )]);
+    let snapshot = ChainSnapshot::from_juce_tree(&juce_chain(blank)).expect("parses");
+    assert_eq!(snapshot.left[0].skin, None, "an empty override is Auto");
+    let ui = ChainSnapshot::from_ui_value(json!({
+        "chain": [{"blockId": "cab", "kind": "tone", "tone": ir_tone().raw, "activeModelId": 3101}]
+    }))
+    .expect("parses");
+    assert_eq!(ui.left[0].skin, None);
+    assert_eq!(ChainBlock::tone("x", ir_tone(), ModelId(3101)).skin, None);
+    assert_eq!(ChainBlock::insert("x").skin, None);
 }

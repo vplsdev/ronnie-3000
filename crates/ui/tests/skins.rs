@@ -1,7 +1,8 @@
 //! The embedded gear skins: one per rendered family, clean edges, knobs where the manifest says.
 
+use eframe::egui::{Rect, pos2, vec2};
 use ronie_core::gear::{GearCategory, GearFamily};
-use ronie_ui::default::skins::{self, KnobControl};
+use ronie_ui::default::skins::{self, KnobControl, SkinLcd, SkinManifest};
 
 const FAMILIES: [GearFamily; 23] = [
     GearFamily::OdGreen,
@@ -141,6 +142,81 @@ fn knobs_sit_inside_the_body_and_their_strips_hold_every_frame() {
 }
 
 #[test]
+fn every_pedal_skin_has_an_lcd_inside_its_body() {
+    let pedals = [
+        "od-green",
+        "od-gold",
+        "dist-black",
+        "fuzz",
+        "boost",
+        "comp",
+        "default-dark",
+        "default-light",
+    ];
+    for family in FAMILIES {
+        if family.category() == GearCategory::Pedal {
+            assert!(pedals.contains(&family.skin_id().unwrap()));
+        }
+    }
+    for id in pedals {
+        let manifest = skins::manifest(id).unwrap();
+        let lcd = manifest
+            .lcd
+            .as_ref()
+            .unwrap_or_else(|| panic!("{id} has no LCD"));
+        let [w, h] = lcd.size;
+        assert!(w > 0.0 && h > 0.0, "{id} LCD is {w} x {h}");
+        let [x, y] = lcd.center;
+        assert!(
+            x - w / 2.0 >= 0.0 && x + w / 2.0 <= manifest.width as f32,
+            "{id} LCD spans x {} to {}",
+            x - w / 2.0,
+            x + w / 2.0
+        );
+        assert!(
+            y - h / 2.0 >= 0.0 && y + h / 2.0 <= manifest.height as f32,
+            "{id} LCD spans y {} to {}",
+            y - h / 2.0,
+            y + h / 2.0
+        );
+    }
+}
+
+#[test]
+fn amps_and_cabs_have_no_lcd() {
+    for family in FAMILIES {
+        if family.category() == GearCategory::Pedal {
+            continue;
+        }
+        let id = family.skin_id().unwrap();
+        assert!(skins::manifest(id).unwrap().lcd.is_none(), "{id}");
+    }
+}
+
+#[test]
+fn an_lcd_rect_scales_with_the_body() {
+    let manifest = SkinManifest {
+        id: "test".to_owned(),
+        width: 600,
+        height: 800,
+        knobs: Vec::new(),
+        lcd: Some(SkinLcd {
+            center: [300.0, 200.0],
+            size: [90.0, 30.0],
+        }),
+    };
+    let lcd = manifest.lcd.as_ref().unwrap();
+    let full = Rect::from_min_size(pos2(10.0, 20.0), vec2(600.0, 800.0));
+    let rect = lcd.rect_in(full, &manifest);
+    assert_eq!(rect.center(), pos2(310.0, 220.0));
+    assert_eq!(rect.size(), vec2(90.0, 30.0));
+    let half = Rect::from_min_size(pos2(100.0, 50.0), vec2(300.0, 400.0));
+    let rect = lcd.rect_in(half, &manifest);
+    assert_eq!(rect.center(), pos2(250.0, 150.0));
+    assert_eq!(rect.size(), vec2(45.0, 15.0));
+}
+
+#[test]
 fn a_frame_uv_walks_the_strip_row_by_row() {
     let manifest = skins::manifest("od-green").unwrap();
     let knob = &manifest.knobs[0];
@@ -250,4 +326,89 @@ fn floor_shadows_fade_out_before_the_frame_edge() {
             "{id} has a floor shadow of alpha {strongest} at its frame edge"
         );
     }
+}
+
+/// Text shapes that one pass of `paint` adds.
+fn painted_texts(paint: impl FnOnce(&eframe::egui::Painter)) -> Vec<String> {
+    use eframe::egui;
+
+    let context = egui::Context::default();
+    ronie_ui::fonts::Fonts::install(&context);
+    let mut texts = Vec::new();
+    let mut paint = Some(paint);
+    let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+        if let Some(paint) = paint.take() {
+            paint(ui.painter());
+        }
+    });
+    output.textures_delta.clear();
+    for clipped in output.shapes {
+        collect_texts(&clipped.shape, &mut texts);
+    }
+    texts
+}
+
+fn collect_texts(shape: &eframe::egui::Shape, texts: &mut Vec<String>) {
+    match shape {
+        eframe::egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+        eframe::egui::Shape::Vec(shapes) => {
+            for shape in shapes {
+                collect_texts(shape, texts);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lcd_manifest(lcd: Option<SkinLcd>) -> SkinManifest {
+    SkinManifest {
+        id: "test".to_owned(),
+        width: 600,
+        height: 800,
+        knobs: Vec::new(),
+        lcd,
+    }
+}
+
+#[test]
+fn a_skin_without_an_lcd_draws_none() {
+    let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(225.0, 300.0));
+    let manifest = lcd_manifest(None);
+    let mut drawn = Some(Rect::NOTHING);
+    let texts = painted_texts(|painter| {
+        drawn = skins::draw_lcd(painter, &manifest, body, "DRIVE 5");
+    });
+    assert_eq!(drawn, None);
+    assert!(texts.is_empty(), "{texts:?}");
+
+    let manifest = lcd_manifest(Some(SkinLcd {
+        center: [300.0, 200.0],
+        size: [240.0, 60.0],
+    }));
+    let texts = painted_texts(|painter| {
+        drawn = skins::draw_lcd(painter, &manifest, body, "DRIVE 5");
+    });
+    assert!(drawn.is_some());
+    assert!(texts.iter().any(|text| text == "DRIVE 5"), "{texts:?}");
+}
+
+#[test]
+fn lcd_text_is_uppercase() {
+    assert_eq!(skins::lcd_text("Drive 5 (bright)"), "DRIVE 5 (BRIGHT)");
+}
+
+#[test]
+fn lcd_text_shrinks_then_truncates_inside_the_glass() {
+    let glass = Rect::from_min_size(pos2(0.0, 0.0), vec2(40.0, 12.0));
+    let texts = painted_texts(|painter| {
+        skins::paint_lcd(painter, glass, "A VERY LONG CAPTURE NAME INDEED");
+    });
+    let shown = texts.first().expect("text").clone();
+    assert!(texts.iter().all(|text| *text == shown), "{texts:?}");
+    assert!(
+        "A VERY LONG CAPTURE NAME INDEED".starts_with(&shown) && !shown.is_empty(),
+        "{shown}"
+    );
+    assert!(!shown.contains('…'), "no ellipsis");
+    assert!(shown.len() < 31, "truncated: {shown}");
 }

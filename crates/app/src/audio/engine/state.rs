@@ -2452,6 +2452,35 @@ mod tests {
     }
 
     #[test]
+    fn a_skin_change_needs_no_new_chain() {
+        let session = session();
+        let (mut engine, _directory) = plain_engine_of(&session);
+        let target = session.chain_state(0).chain.left[0].id.clone();
+        session
+            .dispatch(UiAction::LoadToneWithBytes {
+                target_insert_id: target.clone(),
+                tone: ir_tone(),
+                model_id: ronie_core::ModelId(8),
+                bytes: ir_bytes(),
+            })
+            .expect("load");
+        engine.sync().expect("sync");
+        let first = engine.status().published_generation;
+
+        session
+            .dispatch(UiAction::SetBlockSkin {
+                block_id: target,
+                skin: Some("cab-112-clean".to_owned()),
+            })
+            .expect("skin");
+        engine.sync().expect("sync");
+
+        assert_eq!(engine.status().published_generation, first, "no new chain");
+        assert!(engine.outbox.chain.is_none());
+        assert!(engine.outbox.block_params.is_none());
+    }
+
+    #[test]
     fn a_structure_edit_during_a_deferred_preparation_asks_for_another_preparation() {
         let session = session();
         let (mut engine, _directory) = engine_with_deferred_load(&session);
