@@ -52,7 +52,7 @@ pub use banners::{
     AudioDeviceState, BANNER_HEIGHT, BannerAction, BannerSpec, BannerStore, BannerVariant,
     BannerViewAction, WindowStep, banner_window_transition,
 };
-pub use block::{BlockDetail, BlockView};
+pub use block::{BlockDetail, BlockView, SlotRequest, StageSlots};
 pub use block_info::{BlockInfoPanel, InfoAction, InfoLayout, InfoPrompt};
 pub use browser::{BrowserAction, BrowserController, BrowserView};
 pub use chain::{ChainGallery, GallerySelection, TileVisualState};

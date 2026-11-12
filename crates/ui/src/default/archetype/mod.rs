@@ -85,6 +85,8 @@ pub(super) fn show(
         detail.set_page(super::block::BlockPage::Archetype);
         let (before, after) = pedal_run(state, detail.block_id());
         detail.set_stage_neighbours(before, after);
+        let slots = stage_slots(state, detail.block_id());
+        detail.set_stage_slots(slots);
     }
     show_stage(ui, chrome, now_ms);
     if let Some(id) = chrome
@@ -379,4 +381,45 @@ pub(super) fn pedal_run(
         return (before, after);
     }
     (Vec::new(), Vec::new())
+}
+
+/// Where the stage of block `id` offers a slot: a pedal after the last pedal of a run, and for
+/// an amp a pedal before it and, unless a cab follows it in its lane, a cab after it.
+pub(super) fn stage_slots(
+    state: &crate::backend::ChainViewState,
+    id: &ronie_core::BlockId,
+) -> super::block::StageSlots {
+    use ronie_core::gear::GearCategory::{Amp, Cab, Pedal};
+    let category = |block: &ronie_core::ChainBlock| {
+        if block.is_insert {
+            return None;
+        }
+        super::skins::skin_for(block).map(|skin| skin.category)
+    };
+    for lane in [&state.chain.left, &state.chain.right] {
+        let Some(index) = lane.iter().position(|block| &block.id == id) else {
+            continue;
+        };
+        let mut slots = super::block::StageSlots::default();
+        match category(&lane[index]) {
+            Some(Pedal) => {
+                let last = lane[index..]
+                    .iter()
+                    .take_while(|block| category(block) == Some(Pedal))
+                    .last()
+                    .unwrap_or(&lane[index]);
+                slots.pedal_after = Some(last.id.clone());
+            }
+            Some(Amp) => {
+                slots.pedal_before = Some(id.clone());
+                let next = lane[index + 1..].iter().find(|block| !block.is_insert);
+                if next.and_then(category) != Some(Cab) {
+                    slots.cab_after = Some(id.clone());
+                }
+            }
+            _ => {}
+        }
+        return slots;
+    }
+    super::block::StageSlots::default()
 }

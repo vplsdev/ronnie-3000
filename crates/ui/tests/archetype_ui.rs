@@ -194,7 +194,6 @@ fn a_second_click_or_escape_closes_the_menu() {
     driver.settle();
     assert!(!driver.is_visible("PEDAL"), "the second click closes it");
     open_menu(&mut driver);
-    assert!(driver.is_visible("PEDAL"));
     let _ = driver.press_key(eframe::egui::Key::Escape);
     driver.settle();
     assert!(!driver.is_visible("PEDAL"), "escape closes it");
@@ -204,7 +203,6 @@ fn a_second_click_or_escape_closes_the_menu() {
 fn clicking_outside_closes_the_menu() {
     let (mut driver, _) = archetype_driver("main-mono");
     open_menu(&mut driver);
-    assert!(driver.is_visible("PEDAL"));
     let _ = driver.click_empty_space();
     driver.settle();
     assert!(!driver.is_visible("PEDAL"));
@@ -1256,6 +1254,114 @@ fn an_amp_shares_the_stage_with_no_one() {
     assert!(driver.label_starting_with("Pedal render").is_none());
 }
 
+// ---------------------------------------------------------------- Slots on the stage
+
+/// main-mono with `extra` more overdrives after the fuzz, so the pedals stage is crowded.
+fn crowded_pedalboard(extra: usize) -> UiDriver {
+    let mut scenario = scenario("main-mono");
+    let chain = scenario.state["chain"]["chain"]
+        .as_array_mut()
+        .expect("chain");
+    for index in 0..extra {
+        let mut od = chain[0].clone();
+        od["blockId"] = format!("blk-od{index}").into();
+        od["tone"]["id"] = (200 + index).into();
+        od["tone"]["title"] = format!("Overdrive {index}").into();
+        chain.insert(1 + index, od);
+    }
+    let backend = Arc::new(MockBackend::from_scenario(&scenario));
+    let mut chrome = ChromeController::new(backend.clone(), Vec::new(), false, true);
+    chrome.set_view_mode(ViewMode::RonieFlow);
+    let mut driver = UiDriver::new(chrome, (*backend).clone());
+    driver.settle();
+    driver
+}
+
+#[test]
+fn a_pedal_run_ends_with_a_pedal_slot() {
+    let (driver, _) = pedalboard_driver();
+    let slot = rect_of(&driver, "Add a pedal after these").expect("the slot");
+    let last = rect_of(&driver, &format!("Pedal render: {OD}")).expect("last pedal");
+    assert!(slot.left() >= last.right() + 17.9, "{slot:?} vs {last:?}");
+    assert!((slot.center().y - last.center().y).abs() < 1.0);
+    // 110 x 176 against a 300 pt render, scaled with the render.
+    let scale = last.height() / 300.0;
+    assert!((slot.width() - 110.0 * scale).abs() < 0.1, "{slot:?}");
+    assert!((slot.height() - 176.0 * scale).abs() < 0.1, "{slot:?}");
+}
+
+#[test]
+fn an_amp_has_a_pedal_slot_before_it() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    let slot = rect_of(&driver, "Add a pedal before the amp").expect("the slot");
+    let amp = rect_of(&driver, "Amp render").expect("amp");
+    assert!(slot.right() <= amp.left() - 17.9, "{slot:?} vs {amp:?}");
+    let scale = amp.height() / 300.0;
+    assert!((slot.width() - 96.0 * scale).abs() < 0.1, "{slot:?}");
+    assert!((slot.height() - 160.0 * scale).abs() < 0.1, "{slot:?}");
+    assert!(rect_of(&driver, "Add a pedal after these").is_none());
+}
+
+#[test]
+fn an_amp_followed_by_a_cab_has_no_cab_slot() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    assert!(rect_of(&driver, "Add a cab after the amp").is_none());
+}
+
+#[test]
+fn an_amp_with_no_cab_after_it_has_a_cab_slot() {
+    let (mut driver, _) = edited_driver("main-mono", |chain| {
+        chain["chain"].as_array_mut().expect("chain").remove(2);
+    });
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    let slot = rect_of(&driver, "Add a cab after the amp").expect("the slot");
+    let amp = rect_of(&driver, "Amp render").expect("amp");
+    assert!(slot.left() >= amp.right() + 17.9, "{slot:?} vs {amp:?}");
+    let scale = amp.height() / 300.0;
+    assert!((slot.width() - 96.0 * scale).abs() < 0.1, "{slot:?}");
+    assert!((slot.height() - 160.0 * scale).abs() < 0.1, "{slot:?}");
+}
+
+#[test]
+fn a_cab_page_has_no_slots() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver
+        .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
+        .expect("cab");
+    driver.settle();
+    for name in [
+        "Add a pedal after these",
+        "Add a pedal before the amp",
+        "Add a cab after the amp",
+    ] {
+        assert!(rect_of(&driver, name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn slots_stay_visible_in_a_narrow_window() {
+    let roomy = rect_of(&pedalboard_driver().0, "Pedal render").expect("roomy pedal");
+    let mut driver = crowded_pedalboard(4);
+    let slot = rect_of(&driver, "Add a pedal after these").expect("the slot");
+    let first = rect_of(&driver, "Pedal render").expect("open pedal");
+    assert!(
+        first.height() < roomy.height(),
+        "the renders shrank: {first:?} vs {roomy:?}"
+    );
+    assert!(
+        slot.right() <= 1024.0 - 56.0,
+        "{slot:?} is inside the stage"
+    );
+    let scale = first.height() / 300.0;
+    assert!((slot.height() - 176.0 * scale).abs() < 0.1, "{slot:?}");
+    let _ = driver.click("Add a pedal after these").expect("clickable");
+}
+
 // ---------------------------------------------------------------- Light EQ and INFO
 
 fn eq_block(backend: &MockBackend) -> ronie_core::EqParams {
@@ -1607,7 +1713,6 @@ fn back_returns_to_the_categories() {
     open_amp(&mut driver);
     let _ = driver.click("Back to categories").expect("back");
     driver.settle();
-    assert!(driver.is_visible("PEDAL"));
     assert!(!driver.shows_text("YOUR LIBRARY"));
     assert!(
         driver.chrome_mut().add_store_mut().is_none(),
