@@ -327,3 +327,88 @@ fn floor_shadows_fade_out_before_the_frame_edge() {
         );
     }
 }
+
+/// Text shapes that one pass of `paint` adds.
+fn painted_texts(paint: impl FnOnce(&eframe::egui::Painter)) -> Vec<String> {
+    use eframe::egui;
+
+    let context = egui::Context::default();
+    ronie_ui::fonts::Fonts::install(&context);
+    let mut texts = Vec::new();
+    let mut paint = Some(paint);
+    let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+        if let Some(paint) = paint.take() {
+            paint(ui.painter());
+        }
+    });
+    output.textures_delta.clear();
+    for clipped in output.shapes {
+        collect_texts(&clipped.shape, &mut texts);
+    }
+    texts
+}
+
+fn collect_texts(shape: &eframe::egui::Shape, texts: &mut Vec<String>) {
+    match shape {
+        eframe::egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+        eframe::egui::Shape::Vec(shapes) => {
+            for shape in shapes {
+                collect_texts(shape, texts);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lcd_manifest(lcd: Option<SkinLcd>) -> SkinManifest {
+    SkinManifest {
+        id: "test".to_owned(),
+        width: 600,
+        height: 800,
+        knobs: Vec::new(),
+        lcd,
+    }
+}
+
+#[test]
+fn a_skin_without_an_lcd_draws_none() {
+    let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(225.0, 300.0));
+    let manifest = lcd_manifest(None);
+    let mut drawn = Some(Rect::NOTHING);
+    let texts = painted_texts(|painter| {
+        drawn = skins::draw_lcd(painter, &manifest, body, "DRIVE 5");
+    });
+    assert_eq!(drawn, None);
+    assert!(texts.is_empty(), "{texts:?}");
+
+    let manifest = lcd_manifest(Some(SkinLcd {
+        center: [300.0, 200.0],
+        size: [240.0, 60.0],
+    }));
+    let texts = painted_texts(|painter| {
+        drawn = skins::draw_lcd(painter, &manifest, body, "DRIVE 5");
+    });
+    assert!(drawn.is_some());
+    assert!(texts.iter().any(|text| text == "DRIVE 5"), "{texts:?}");
+}
+
+#[test]
+fn lcd_text_is_uppercase() {
+    assert_eq!(skins::lcd_text("Drive 5 (bright)"), "DRIVE 5 (BRIGHT)");
+}
+
+#[test]
+fn lcd_text_shrinks_then_truncates_inside_the_glass() {
+    let glass = Rect::from_min_size(pos2(0.0, 0.0), vec2(40.0, 12.0));
+    let texts = painted_texts(|painter| {
+        skins::paint_lcd(painter, glass, "A VERY LONG CAPTURE NAME INDEED");
+    });
+    let shown = texts.first().expect("text").clone();
+    assert!(texts.iter().all(|text| *text == shown), "{texts:?}");
+    assert!(
+        "A VERY LONG CAPTURE NAME INDEED".starts_with(&shown) && !shown.is_empty(),
+        "{shown}"
+    );
+    assert!(!shown.contains('…'), "no ellipsis");
+    assert!(shown.len() < 31, "truncated: {shown}");
+}

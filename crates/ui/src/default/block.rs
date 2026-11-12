@@ -50,6 +50,10 @@ pub enum BlockPage {
 
 /// Smallest hit square of a knob on a render, in points.
 const MIN_KNOB_TARGET: f32 = 28.0;
+/// The least height that a click on a pedal's LCD can land in.
+const MIN_LCD_TARGET_HEIGHT: f32 = 20.0;
+/// The ring around a pedal's LCD under the pointer.
+const LCD_RING: Color32 = Color32::from_rgb(0xff, 0x6a, 0x1a);
 
 /// Space between pedals that share the stage, in points.
 const PEDAL_GAP: f32 = 6.0;
@@ -2072,7 +2076,7 @@ impl BlockDetail {
                 } else {
                     textures.manifest.fit(stage, RENDER_HEIGHT)
                 };
-                self.show_render(ui, body, *skin, textures);
+                self.show_render(ui, body, *skin, textures, session);
                 if textures.manifest.knobs.is_empty() {
                     self.show_trims_beside(ui, body, stage);
                 }
@@ -2890,6 +2894,16 @@ impl BlockDetail {
             },
             tint,
         );
+        // Its LCD shows its capture, and a click on it still opens the neighbour.
+        let text = super::skins::lcd_text(&capture_name(block).unwrap_or_default());
+        if let Some(glass) = super::skins::draw_lcd(ui.painter(), &textures.manifest, rect, &text) {
+            static_text(
+                ui,
+                glass,
+                ui.scope_id().with(("neighbour-lcd", &block.id.0)),
+                &text,
+            );
+        }
     }
 
     /// GAIN IN / OUTPUT / MIX trims in a column to the right of `gear`, for gear whose render
@@ -2925,14 +2939,15 @@ impl BlockDetail {
         }
     }
 
-    /// Draws the render in `body` with its live knobs, and a value hint over the knob under the
-    /// pointer, being dragged, or holding keyboard focus.
+    /// Draws the render in `body` with its live knobs and its capture display, and a hint over
+    /// the knob or the display under the pointer, being dragged, or holding keyboard focus.
     fn show_render(
         &mut self,
         ui: &mut egui::Ui,
         body: Rect,
         skin: super::skins::BlockSkin,
         textures: &super::skins::SkinTextures,
+        session: SessionStatus,
     ) {
         use super::skins::KnobControl;
 
@@ -2996,18 +3011,101 @@ impl BlockDetail {
             },
             tint,
         );
-        if let Some((knob_rect, text)) = hint {
-            let galley =
-                painter.layout_no_wrap(text.clone(), egui::FontId::monospace(10.0), Color32::WHITE);
-            let bubble = Rect::from_center_size(
-                egui::pos2(knob_rect.center().x, knob_rect.top() - 14.0),
-                galley.size() + egui::vec2(16.0, 8.0),
-            );
-            painter.rect_filled(bubble, 4.0, Color32::from_rgb(0x11, 0x11, 0x11));
-            painter.galley(bubble.min + egui::vec2(8.0, 4.0), galley, Color32::WHITE);
-            ui.interact(bubble, id.with("hint"), Sense::hover())
-                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text.as_str()));
+        if let Some(lcd_hint) = self.show_capture_display(ui, &painter, body, textures, session) {
+            hint = hint.or(Some(lcd_hint));
         }
+        if let Some((anchor, text)) = hint {
+            hint_bubble(ui, &painter, anchor, &text, id.with("hint"));
+        }
+    }
+
+    /// The LCD of the open pedal: its capture, or dots while one downloads. A click steps to
+    /// the next capture, wrapping, when the tone has more than one. Returns the hint to show
+    /// while the pointer or the keyboard focus is on it.
+    fn show_capture_display(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        body: Rect,
+        textures: &super::skins::SkinTextures,
+        session: SessionStatus,
+    ) -> Option<(Rect, String)> {
+        let manifest = &textures.manifest;
+        let glass = manifest.lcd.as_ref()?.rect_in(body, manifest);
+        let id = ui.scope_id().with(("capture-display", &self.block_id.0));
+        let hit = Rect::from_center_size(
+            glass.center(),
+            glass
+                .size()
+                .max(egui::vec2(MIN_KNOB_TARGET, MIN_LCD_TARGET_HEIGHT)),
+        );
+        let (label, ..) = self.capture_shown();
+        let response = ui.interact(hit, id, Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+        let count = self.models.options().len();
+        let steps = count > 1 && !self.models.disabled(session);
+        let response = if steps {
+            response.on_hover_cursor(egui::CursorIcon::PointingHand)
+        } else {
+            response
+        };
+        if steps && response.clicked() {
+            let next = self.capture_index().map_or(0, |index| (index + 1) % count);
+            let id = self.models.options()[next].id;
+            let _ = self.select_model(id, session);
+        }
+        let (_, name, text) = self.capture_shown();
+        super::skins::paint_lcd(painter, glass, &text);
+        static_text(ui, glass, id.with("text"), &text);
+        if !(response.hovered() || response.has_focus()) {
+            return None;
+        }
+        let index = self.capture_index().map_or(1, |index| index + 1);
+        let place = format!("CAPTURE {index} / {} \u{b7} {name}", count.max(1));
+        if !steps {
+            return Some((glass.expand(4.0), place));
+        }
+        painter.rect_stroke(
+            glass.expand(2.0),
+            4.0,
+            egui::Stroke::new(2.0, LCD_RING),
+            egui::StrokeKind::Outside,
+        );
+        // The bubble sits above the ring.
+        Some((glass.expand(4.0), format!("{place} \u{b7} click for next")))
+    }
+
+    /// The capture the display shows: the one on its way, or else the one the block plays.
+    fn capture_shown_id(&self) -> Option<ModelId> {
+        self.models.target().or(self.block.active_model_id)
+    }
+
+    /// Where the shown capture is in the picker's list.
+    fn capture_index(&self) -> Option<usize> {
+        let shown = self.capture_shown_id()?;
+        self.models
+            .options()
+            .iter()
+            .position(|option| option.id == shown)
+    }
+
+    /// The display's accessible name, the shown capture's full name, and the LCD text.
+    fn capture_shown(&self) -> (String, String, String) {
+        let shown = self.capture_shown_id();
+        let name = self
+            .models
+            .options()
+            .iter()
+            .find(|option| Some(option.id) == shown)
+            .map(|option| option.name.clone())
+            .or_else(|| capture_name(&self.block))
+            .unwrap_or_default();
+        let text = if self.models.target().is_some() {
+            super::skins::LCD_LOADING.to_owned()
+        } else {
+            super::skins::lcd_text(&name)
+        };
+        (format!("Capture display: {name}"), name, text)
     }
 
     fn write_params(&mut self) -> Result<(), UiError> {
@@ -3061,6 +3159,34 @@ fn rounded_outline(rect: Rect, radius: f32) -> Vec<egui::Pos2> {
 
 fn bold_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("arimo-bold".into()))
+}
+
+/// The name of the capture a block plays.
+fn capture_name(block: &ChainBlock) -> Option<String> {
+    let active = block.active_model_id?;
+    block
+        .tone
+        .as_ref()?
+        .models
+        .iter()
+        .find(|model| model.id == active)
+        .map(|model| model.name.clone())
+}
+
+/// The dark hint bubble 14 pt above `anchor`, with its text as a static label.
+fn hint_bubble(ui: &egui::Ui, painter: &egui::Painter, anchor: Rect, text: &str, id: egui::Id) {
+    let galley = painter.layout_no_wrap(
+        text.to_owned(),
+        egui::FontId::monospace(10.0),
+        Color32::WHITE,
+    );
+    let bubble = Rect::from_center_size(
+        egui::pos2(anchor.center().x, anchor.top() - 14.0),
+        galley.size() + egui::vec2(16.0, 8.0),
+    );
+    painter.rect_filled(bubble, 4.0, Color32::from_rgb(0x11, 0x11, 0x11));
+    painter.galley(bubble.min + egui::vec2(8.0, 4.0), galley, Color32::WHITE);
+    static_text(ui, bubble, id, text);
 }
 
 /// Gives a text that a painter drew its accessible label, as a static label has.

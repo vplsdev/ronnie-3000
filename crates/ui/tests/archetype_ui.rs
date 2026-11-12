@@ -2786,3 +2786,307 @@ fn the_reference_layout_has_no_mics_panel() {
     }
     assert!(driver.label_starting_with("Blend:").is_none());
 }
+
+// ---------------------------------------------------------------- The pedal LCD
+
+/// The pedalboard where the fuzz is a local tone with three captures, followed by the
+/// single-capture overdrive.
+fn capture_pedalboard() -> (UiDriver, Arc<MockBackend>) {
+    let mut scenario = scenario("main-mono");
+    let chain = scenario.state["chain"]["chain"]
+        .as_array_mut()
+        .expect("chain");
+    chain[0]["tone"]["local"] = true.into();
+    chain[0]["tone"]["models"] = serde_json::json!([
+        { "id": 1104, "name": "Muff 1" },
+        { "id": 1105, "name": "Muff 2" },
+        { "id": 1106, "name": "Muff 3" },
+    ]);
+    let mut od = chain[0].clone();
+    od["blockId"] = "blk-od".into();
+    od["activeModelId"] = 1199.into();
+    od["tone"]["id"] = 199.into();
+    od["tone"]["title"] = OD.into();
+    od["tone"]["models"] = serde_json::json!([{ "id": 1199, "name": "Drive 5" }]);
+    chain.insert(1, od);
+    let backend = Arc::new(MockBackend::from_scenario(&scenario));
+    let mut chrome = ChromeController::new(backend.clone(), Vec::new(), false, true);
+    chrome.set_view_mode(ViewMode::RonieFlow);
+    let mut driver = UiDriver::new(chrome, (*backend).clone());
+    driver.settle();
+    (driver, backend)
+}
+
+fn active_model(backend: &MockBackend, block: &str) -> Option<i64> {
+    backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .find(|each| each.id.0 == block)
+        .and_then(|each| each.active_model_id)
+        .map(|id| id.0)
+}
+
+#[test]
+fn a_pedal_lcd_shows_its_capture() {
+    let (driver, _) = capture_pedalboard();
+    assert!(
+        driver.is_visible("Capture display: Muff 1"),
+        "{:?}",
+        driver.visible_labels()
+    );
+    assert!(driver.shows_text("MUFF 1"));
+}
+
+#[test]
+fn hovering_the_lcd_shows_the_capture_hint() {
+    let (mut driver, _) = capture_pedalboard();
+    driver.hover("Capture display: Muff 1").expect("LCD");
+    driver.settle();
+    assert!(driver.shows_text("CAPTURE 1 / 3 · Muff 1 · click for next"));
+}
+
+#[test]
+fn clicking_the_lcd_steps_to_the_next_capture() {
+    let (mut driver, backend) = capture_pedalboard();
+    let _ = driver.click("Capture display: Muff 1").expect("LCD");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-1"), Some(1105));
+    assert!(driver.shows_text("MUFF 2"));
+    let _ = driver.click("Capture display: Muff 2").expect("LCD");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-1"), Some(1106));
+    let _ = driver.click("Capture display: Muff 3").expect("LCD");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-1"), Some(1104), "wraps");
+    assert!(driver.is_visible("Capture display: Muff 1"));
+}
+
+#[test]
+fn a_single_capture_pedal_does_nothing_on_click() {
+    let (mut driver, backend) = capture_pedalboard();
+    let _ = driver
+        .click(&format!("Pedal render: {OD}"))
+        .expect("neighbour");
+    driver.settle();
+    let revision = backend.chain_state(0).revision;
+    let _ = driver.click("Capture display: Drive 5").expect("LCD");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-od"), Some(1199));
+    assert_eq!(backend.chain_state(0).revision, revision);
+    assert!(driver.shows_text("DRIVE 5"));
+}
+
+#[test]
+fn a_neighbour_lcd_is_shown_but_not_interactive() {
+    let (mut driver, _) = capture_pedalboard();
+    assert!(driver.shows_text("DRIVE 5"), "the neighbour's LCD");
+    assert!(
+        driver
+            .label_starting_with("Capture display: Drive")
+            .is_none(),
+        "no display control on a neighbour"
+    );
+    let _ = driver
+        .click(&format!("Pedal render: {OD}"))
+        .expect("neighbour");
+    driver.settle();
+    assert_eq!(
+        driver.chrome().gallery().selection(),
+        &GallerySelection::BlockDetail(BlockId("blk-od".to_owned()))
+    );
+}
+
+/// The fuzz of main-detail on its own Archetype page, attached to a service that lists
+/// captures 1104 to 1106. Clicks and frames go through `lcd_frame`.
+fn catalog_pedal(backend: &Arc<MockBackend>) -> ronie_ui::default::BlockDetail {
+    use ronie_ui::services::{ModelList, ModelSwitchFlow, session::SessionStatus::SignedIn};
+
+    let shared: Arc<dyn UiBackend> = backend.clone();
+    let mut detail =
+        ronie_ui::default::BlockDetail::new(shared.clone(), "blk-1", false).expect("detail");
+    detail.set_page(ronie_ui::default::block::BlockPage::Archetype);
+    detail.attach_model_switching(ModelSwitchFlow::new(shared));
+    let request = detail.take_models_request(SignedIn).expect("a list is due");
+    let models = [1104, 1105, 1106]
+        .into_iter()
+        .map(|id| {
+            ronie_core::ToneModel::from_value(
+                &serde_json::json!({
+                    "id": id,
+                    "name": format!("Model {id}"),
+                    "model_url": format!("https://models.example/{id}.nam"),
+                }),
+                false,
+            )
+            .expect("model")
+        })
+        .collect();
+    assert!(detail.complete_models(
+        request.generation,
+        request.tone,
+        ModelList { models, total: 3 }
+    ));
+    detail
+}
+
+/// One frame of a lone detail. Returns its controls by label and its static texts.
+fn lcd_frame(
+    context: &eframe::egui::Context,
+    detail: &mut ronie_ui::default::BlockDetail,
+    events: Vec<eframe::egui::Event>,
+) -> (Vec<(String, eframe::egui::Rect)>, Vec<String>) {
+    use eframe::egui;
+    use ronie_ui::services::session::SessionStatus::SignedIn;
+
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1024.0, 614.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    let mut output = context.run_ui(input, |ui| detail.show(ui, SignedIn));
+    output.textures_delta.clear();
+    let Some(update) = output.platform_output.accesskit_update.take() else {
+        return (Vec::new(), Vec::new());
+    };
+    let widgets = context.viewport(|viewport| {
+        viewport
+            .prev_pass
+            .widgets
+            .layers()
+            .flat_map(|(_, widgets)| widgets.iter().copied())
+            .map(|widget| (widget.id.accesskit_id(), widget))
+            .collect::<std::collections::HashMap<_, _>>()
+    });
+    let controls = update
+        .nodes
+        .iter()
+        .filter_map(|(id, node)| {
+            let widget = widgets.get(id)?;
+            Some((node.label()?.to_owned(), widget.interact_rect))
+        })
+        .collect();
+    let texts = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == accesskit::Role::Label)
+        .filter_map(|(_, node)| node.value().map(str::to_owned))
+        .collect();
+    (controls, texts)
+}
+
+/// Clicks the control whose label starts with `prefix`.
+fn lcd_click(
+    context: &eframe::egui::Context,
+    detail: &mut ronie_ui::default::BlockDetail,
+    prefix: &str,
+) {
+    use eframe::egui;
+
+    let (controls, _) = lcd_frame(context, detail, Vec::new());
+    let at = controls
+        .iter()
+        .find(|(label, _)| label.starts_with(prefix))
+        .map(|(_, rect)| rect.center())
+        .unwrap_or_else(|| panic!("no {prefix}: {controls:?}"));
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    lcd_frame(context, detail, vec![egui::Event::PointerMoved(at)]);
+    lcd_frame(context, detail, vec![button(true)]);
+    lcd_frame(context, detail, vec![button(false)]);
+}
+
+fn lcd_context() -> eframe::egui::Context {
+    let context = eframe::egui::Context::default();
+    context.enable_accesskit();
+    ronie_ui::fonts::Fonts::install(&context);
+    context
+}
+
+#[test]
+fn the_lcd_shows_dots_while_the_capture_downloads() {
+    let backend = Arc::new(MockBackend::from_scenario(&scenario("main-detail")));
+    let mut detail = catalog_pedal(&backend);
+    let context = lcd_context();
+    lcd_frame(&context, &mut detail, Vec::new());
+    let (_, texts) = lcd_frame(&context, &mut detail, Vec::new());
+    assert!(texts.iter().any(|text| text == "MODEL 1104"), "{texts:?}");
+
+    lcd_click(&context, &mut detail, "Capture display: Model 1104");
+    let request = detail.take_switch_request().expect("a download");
+    assert_eq!(request.model.id, ronie_core::ModelId(1105));
+    let (_, texts) = lcd_frame(&context, &mut detail, Vec::new());
+    assert!(texts.iter().any(|text| text == "···"), "{texts:?}");
+    assert!(
+        !texts.iter().any(|text| text.starts_with("MODEL")),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn rapid_lcd_clicks_end_on_the_landed_capture() {
+    use ronie_core::{ModelId, Tone};
+
+    let backend = Arc::new(MockBackend::from_scenario(&scenario("main-detail")));
+    let mut detail = catalog_pedal(&backend);
+    let context = lcd_context();
+    lcd_frame(&context, &mut detail, Vec::new());
+
+    lcd_click(&context, &mut detail, "Capture display:");
+    let first = detail.take_switch_request().expect("a download");
+    lcd_click(&context, &mut detail, "Capture display:");
+    let second = detail.take_switch_request().expect("the next download");
+    assert_eq!(first.model.id, ModelId(1105));
+    assert_eq!(
+        second.model.id,
+        ModelId(1106),
+        "steps from the capture on its way"
+    );
+    assert!(
+        detail.take_switch_request().is_none(),
+        "one switch at a time"
+    );
+
+    let stored = |request: &ronie_ui::services::ModelSwitchRequest, id: i64| {
+        Tone {
+            models: vec![request.model.clone()],
+            ..request.tone.clone()
+        }
+        .for_storage(ModelId(id), &[])
+        .expect("stored tone")
+    };
+    let late = first
+        .ticket
+        .publish(stored(&first, 1105), ModelId(1105), vec![1, 2, 3].into());
+    assert!(
+        !matches!(late, Ok(true)),
+        "the superseded switch cannot land"
+    );
+    assert!(!detail.finish_switch(first.ticket.generation()));
+    assert!(
+        second
+            .ticket
+            .publish(stored(&second, 1106), ModelId(1106), vec![1, 2, 3].into())
+            .expect("publish")
+    );
+    assert!(detail.finish_switch(second.ticket.generation()));
+
+    let (controls, texts) = lcd_frame(&context, &mut detail, Vec::new());
+    assert!(texts.iter().any(|text| text == "MODEL 1106"), "{texts:?}");
+    assert!(!texts.iter().any(|text| text == "···"), "{texts:?}");
+    assert!(
+        controls
+            .iter()
+            .any(|(label, _)| label == "Capture display: Model 1106"),
+        "{controls:?}"
+    );
+    assert_eq!(active_model(&backend, "blk-1"), Some(1106));
+}

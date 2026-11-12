@@ -388,6 +388,79 @@ pub fn paint(
     }
 }
 
+/// Colour of the text on a pedal's LCD.
+const LCD_INK: Color32 = Color32::from_rgb(0x9e, 0xff, 0xb3);
+/// The glow around the LCD text: the ink at a low alpha, drawn in two rings of offset passes,
+/// fainter further out.
+const LCD_GLOW: [(f32, Color32); 2] = [
+    (
+        0.7,
+        Color32::from_rgba_unmultiplied_const(0x9e, 0xff, 0xb3, 34),
+    ),
+    (
+        1.5,
+        Color32::from_rgba_unmultiplied_const(0x9e, 0xff, 0xb3, 14),
+    ),
+];
+/// The smallest LCD text. A longer name is cut, without an ellipsis.
+const LCD_MIN_SIZE: f32 = 7.0;
+/// What a pedal's LCD shows while its capture downloads.
+pub const LCD_LOADING: &str = "\u{b7}\u{b7}\u{b7}";
+
+/// The LCD text of a capture name.
+#[must_use]
+pub fn lcd_text(model_name: &str) -> String {
+    model_name.to_uppercase()
+}
+
+/// Draws `text` on the skin's LCD glass when the skin has one, and returns where the glass is.
+pub fn draw_lcd(
+    painter: &egui::Painter,
+    manifest: &SkinManifest,
+    body: Rect,
+    text: &str,
+) -> Option<Rect> {
+    let glass = manifest.lcd.as_ref()?.rect_in(body, manifest);
+    paint_lcd(painter, glass, text);
+    Some(glass)
+}
+
+/// Draws `text` centred on the LCD glass in `rect`, green with a soft glow, at the largest size
+/// that fits the glass's width down to 7 pt, and cut at the end when even that is too wide.
+pub fn paint_lcd(painter: &egui::Painter, rect: Rect, text: &str) {
+    let text = text.trim();
+    if !rect.is_positive() || text.is_empty() {
+        return;
+    }
+    let pad = (rect.height() * 0.2).clamp(1.0, 4.0);
+    let room = rect.width() - 2.0 * pad;
+    let layout = |text: &str, size: f32| {
+        painter.layout_no_wrap(text.to_owned(), egui::FontId::monospace(size), LCD_INK)
+    };
+    let mut size = (rect.height() * 0.62).max(LCD_MIN_SIZE);
+    let mut galley = layout(text, size);
+    while galley.size().x > room && size > LCD_MIN_SIZE {
+        size = (size - 0.25).max(LCD_MIN_SIZE);
+        galley = layout(text, size);
+    }
+    let mut shown = text.to_owned();
+    while galley.size().x > room && shown.chars().count() > 1 {
+        shown.pop();
+        shown.truncate(shown.trim_end().len());
+        galley = layout(&shown, size);
+    }
+    let pos = rect.center() - galley.size() / 2.0;
+    let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
+    for (radius, glow) in LCD_GLOW {
+        for step in 0..8 {
+            let angle = step as f32 * std::f32::consts::FRAC_PI_4;
+            let offset = egui::vec2(angle.cos(), angle.sin()) * radius;
+            painter.galley_with_override_text_color(pos + offset, galley.clone(), glow);
+        }
+    }
+    painter.galley(pos, galley, LCD_INK);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
