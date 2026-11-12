@@ -535,6 +535,34 @@ fn a_ui_block_with_b_reads_its_blend() {
 }
 
 #[test]
+fn a_b_the_tone_does_not_list_is_dropped() {
+    let ui = ChainSnapshot::from_ui_value(json!({
+        "chain": [{
+            "blockId": "cab",
+            "kind": "tone",
+            "tone": ir_tone().raw,
+            "activeModelId": 3101,
+            "irBModelId": 9999,
+            "params": {"irBlend": 0.25}
+        }]
+    }))
+    .expect("a UI block with an unknown B parses");
+    assert_eq!(ui.left[0].ir_b, None, "a UI B outside the tone is dropped");
+    assert_eq!(ui.left[0].params.ir_blend, 0.25, "the blend is kept");
+
+    let tree = juce_cab_block(vec![
+        ("irBModelId".into(), JuceValue::Int64(9999)),
+        ("irBlend".into(), JuceValue::Double(0.25)),
+    ]);
+    let snapshot = ChainSnapshot::from_juce_tree(&juce_chain(tree)).expect("the tree parses");
+    assert_eq!(
+        snapshot.left[0].ir_b, None,
+        "a stored B outside the tone is dropped"
+    );
+    assert_eq!(snapshot.left[0].params.ir_blend, 0.25, "the blend is kept");
+}
+
+#[test]
 fn a_block_with_b_round_trips_through_juce() {
     let mut block = ChainBlock::tone("cab", ir_tone(), ModelId(3101));
     block.ir_b = Some(IrB {

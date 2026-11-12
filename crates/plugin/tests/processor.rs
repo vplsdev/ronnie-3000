@@ -1790,3 +1790,59 @@ fn a_preset_keeps_b_and_a_preset_with_a_missing_b_plays_a_alone() {
         assert!((tail(&chain.change) - expected).abs() < 1e-9);
     }
 }
+
+/// Names model `b` as IR B of the saved tone block without adding it to the saved tone, as a
+/// session re-saved by a plugin that keeps only the active model would.
+fn name_unlisted_b(root: &std::path::Path, b: i64) {
+    let path = root.join("session.state");
+    let mut document = ronie_core::StateCodec::new()
+        .decode_session(&std::fs::read(&path).expect("saved session"))
+        .expect("session")
+        .raw;
+    document
+        .children
+        .iter_mut()
+        .filter(|child| child.identifier == "ChainSnapshot")
+        .flat_map(|snapshot| &mut snapshot.children)
+        .flat_map(|lane| &mut lane.children)
+        .find(|block| block.properties.iter().any(|(name, _)| name == "toneId"))
+        .expect("tone block")
+        .properties
+        .push(("irBModelId".to_owned(), ronie_core::JuceValue::Int64(b)));
+    let mut encoded = b"T3KB".to_vec();
+    encoded.extend_from_slice(
+        &ronie_core::JuceCodec::default()
+            .write_tree(&document)
+            .expect("session bytes"),
+    );
+    std::fs::write(path, encoded).expect("write session");
+}
+
+#[test]
+fn a_b_that_the_stored_tone_does_not_list_never_stops_a_save() {
+    let directory = tempfile::tempdir().expect("root");
+    let root = directory.path();
+    let backend = restored_backend(root);
+    load_with_bytes(&backend, catalog_ir_tone(), wav_bytes());
+    drop(backend);
+    name_unlisted_b(root, 9);
+
+    let restarted = restored_backend(root);
+    let block = restarted.chain_state(0).chain.left[0].clone();
+    let mut params = block.params.clone();
+    params.ir_blend = 0.85;
+    restarted
+        .dispatch(params::UiAction::SetBlockParams {
+            block_id: block.id.clone(),
+            params,
+        })
+        .expect("blend");
+    drop(restarted);
+
+    assert_eq!(
+        saved_block(root).params.ir_blend,
+        0.85,
+        "the session is saved again"
+    );
+    assert_eq!(block.ir_b, None, "an unlisted B is dropped");
+}

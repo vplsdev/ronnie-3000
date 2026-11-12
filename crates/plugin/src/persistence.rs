@@ -496,7 +496,10 @@ fn encode_block(
         })?;
         let stored = tone
             .clone()
-            .for_storage(active, block.ir_b.map(|ir_b| ir_b.model_id).as_slice())
+            .for_storage(
+                active,
+                block.stored_ir_b().map(|ir_b| ir_b.model_id).as_slice(),
+            )
             .map_err(|error| UiError::Control(error.to_string()))?;
         set_property(&mut output, "toneId", JuceValue::Int64(tone.id.0));
         set_property(
@@ -524,7 +527,7 @@ fn encode_block(
             "toneId",
             "toneJson",
             "activeModelId",
-            "irBModelId",
+            ronie_core::IR_B_MODEL_ID,
             "irBlend",
             "irALevel",
             "irBLevel",
@@ -1258,8 +1261,13 @@ fn compile_block_model(
 mod tests {
     use super::*;
 
-    const IR_PAIR_PROPERTIES: [&str; 5] =
-        ["irBModelId", "irBlend", "irALevel", "irBLevel", "irBInvert"];
+    const IR_PAIR_PROPERTIES: [&str; 5] = [
+        ronie_core::IR_B_MODEL_ID,
+        "irBlend",
+        "irALevel",
+        "irBLevel",
+        "irBInvert",
+    ];
 
     fn two_mic_block() -> ChainBlock {
         let tone = Tone::from_value(serde_json::json!({
@@ -1289,7 +1297,7 @@ mod tests {
         let cache = ModelByteCache::new(1024);
         let block = two_mic_block();
         let saved = encode_block(&block, None, None, &cache).expect("save with B");
-        assert_eq!(integer_property(&saved, "irBModelId"), Some(8));
+        assert_eq!(integer_property(&saved, ronie_core::IR_B_MODEL_ID), Some(8));
         assert_eq!(number_property(&saved, "irBlend"), Some(0.7));
         for name in IR_PAIR_PROPERTIES {
             assert!(has(&saved, name), "{name} is written");
@@ -1298,12 +1306,75 @@ mod tests {
         let mut cleared = block.clone();
         cleared.ir_b = None;
         let resaved = encode_block(&cleared, None, Some(&saved), &cache).expect("save");
-        assert!(!has(&resaved, "irBModelId"), "a cleared B is not kept");
+        assert!(
+            !has(&resaved, ronie_core::IR_B_MODEL_ID),
+            "a cleared B is not kept"
+        );
 
         let insert = ChainBlock::insert("cab");
         let emptied = encode_block(&insert, None, Some(&saved), &cache).expect("save");
         for name in IR_PAIR_PROPERTIES {
             assert!(!has(&emptied, name), "an insert keeps no {name}");
+        }
+    }
+
+    #[test]
+    fn a_b_outside_the_tone_is_not_saved() {
+        let cache = ModelByteCache::new(1024);
+        let mut block = two_mic_block();
+        block.ir_b = Some(ronie_core::IrB {
+            model_id: ModelId(9),
+        });
+        let saved = encode_block(&block, None, None, &cache).expect("save without B");
+        assert!(
+            !has(&saved, ronie_core::IR_B_MODEL_ID),
+            "an absent B is not named"
+        );
+        assert_eq!(number_property(&saved, "irBlend"), Some(0.7));
+    }
+
+    fn empty_frame() -> SessionFrame {
+        ronie_ui::session_edit::SessionEditor::new(ronie_dsp::PrepareSpec {
+            host_sample_rate: 48_000.0,
+            max_host_frames: 64,
+            oversampling: 1,
+            input_mode: ronie_core::InputMode::Stereo,
+            stereo_input: false,
+            stereo_output: true,
+        })
+        .current()
+        .clone()
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            failure_persistence: Some(Box::new(
+                proptest::test_runner::FileFailurePersistence::Off,
+            )),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn any_b_id_saves_and_restores(
+            b in proptest::prop_oneof![5_i64..10, proptest::prelude::any::<i64>()],
+        ) {
+            let cache = ModelByteCache::new(1024);
+            let mut frame = empty_frame();
+            let mut block = two_mic_block();
+            block.ir_b = Some(ronie_core::IrB { model_id: ModelId(b) });
+            frame.session.chain.left = vec![block];
+            let bytes = encode_session(&frame, 0, None, None, &cache).expect("a B never stops a save");
+            let decoded = decode_session(&bytes, &frame).expect("restore");
+            let restored = &decoded.frame.session.chain.left[0];
+            let listed = [7, 8].contains(&b);
+            proptest::prop_assert_eq!(
+                restored.ir_b.map(|ir_b| ir_b.model_id.0),
+                listed.then_some(b)
+            );
+            let again = encode_session(&decoded.frame, 0, None, Some(&decoded.document.raw), &cache)
+                .expect("a restored B never stops a save");
+            let twice = decode_session(&again, &frame).expect("restore again");
+            proptest::prop_assert_eq!(&twice.frame.session.chain.left[0], restored);
         }
     }
 

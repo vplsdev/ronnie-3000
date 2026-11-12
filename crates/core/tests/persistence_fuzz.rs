@@ -39,7 +39,7 @@ proptest! {
 
     #[test]
     fn a_persistence_fuzz_case_with_b(
-        b in proptest::option::of(any::<i64>()),
+        b in proptest::option::of(prop_oneof![0_i64..4, any::<i64>()]),
         blend in juce_value(),
         a_level in juce_value(),
         b_level in juce_value(),
@@ -82,7 +82,9 @@ proptest! {
         let codec = StateCodec::new();
         let document = codec.decode_session(&encoded).expect("a B never breaks a session");
         let cab = &document.snapshot.chain.left[0];
-        prop_assert_eq!(cab.ir_b.map(|ir_b| ir_b.model_id.0), b);
+        // A B that the stored tone does not list is dropped, so a later save cannot fail on it.
+        let kept = b.filter(|id| [1, 2].contains(id));
+        prop_assert_eq!(cab.ir_b.map(|ir_b| ir_b.model_id.0), kept);
         let again = codec
             .decode_session(&codec.encode_session(&document).expect("re-encode"))
             .expect("re-decode");

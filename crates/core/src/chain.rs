@@ -362,12 +362,7 @@ impl ChainBlock {
             .and_then(Value::as_i64)
             .map(ModelId);
         let params = BlockParams::from_value(value.get("params").unwrap_or(&Value::Null))?;
-        let ir_b = value
-            .get("irBModelId")
-            .and_then(Value::as_i64)
-            .map(|id| IrB {
-                model_id: ModelId(id),
-            });
+        let ir_b = listed_ir_b(&tone, value.get(IR_B_MODEL_ID).and_then(Value::as_i64));
         Ok(Self {
             id,
             is_insert: false,
@@ -876,9 +871,7 @@ impl ChainBlock {
         let tone_json = juce_string_prop(tree, "toneJson").unwrap_or_default();
         let tone = Tone::from_json(tone_json)?;
         let active_model_id = juce_int_prop(tree, "activeModelId").map(ModelId);
-        let ir_b = juce_int_prop(tree, IR_B_MODEL_ID).map(|id| IrB {
-            model_id: ModelId(id),
-        });
+        let ir_b = listed_ir_b(&tone, juce_int_prop(tree, IR_B_MODEL_ID));
         Ok(Self {
             id,
             is_insert: false,
@@ -893,6 +886,16 @@ impl ChainBlock {
         })
     }
 
+    /// The IR B that a save keeps: the block's B when its tone lists that model.
+    ///
+    /// A B outside the tone has nothing to store or download, so a save leaves it out rather
+    /// than fail on it.
+    #[must_use]
+    pub fn stored_ir_b(&self) -> Option<IrB> {
+        let tone = self.tone.as_ref()?;
+        listed_ir_b(tone, self.ir_b.map(|ir_b| ir_b.model_id.0))
+    }
+
     /// Writes IR B and the blend settings into a persisted `ChainBlock` tree.
     ///
     /// `irBModelId` (Int64) is present only while the block has an IR B and is removed when B is
@@ -900,7 +903,7 @@ impl ChainBlock {
     /// `irALevel`, `irBLevel` and `irBInvert` are always written. The other block properties are
     /// left as they are.
     pub fn write_ir_pair_juce(&self, tree: &mut JuceTree) {
-        match self.ir_b {
+        match self.stored_ir_b() {
             Some(ir_b) => set_juce_prop(tree, IR_B_MODEL_ID, JuceValue::Int64(ir_b.model_id.0)),
             None => tree.properties.retain(|(name, _)| name != IR_B_MODEL_ID),
         }
@@ -911,7 +914,18 @@ impl ChainBlock {
     }
 }
 
-const IR_B_MODEL_ID: &str = "irBModelId";
+/// IR B for model `id`, when `tone` lists that model. A B outside the tone is dropped, so a
+/// later save never has to store a model the tone cannot give.
+fn listed_ir_b(tone: &Tone, id: Option<i64>) -> Option<IrB> {
+    let model_id = ModelId(id?);
+    tone.models
+        .iter()
+        .any(|model| model.id == model_id)
+        .then_some(IrB { model_id })
+}
+
+/// The persisted `ChainBlock` property that names a cab block's IR B.
+pub const IR_B_MODEL_ID: &str = "irBModelId";
 
 fn set_juce_prop(tree: &mut JuceTree, name: &str, value: JuceValue) {
     if let Some((_, existing)) = tree.properties.iter_mut().find(|(key, _)| key == name) {
