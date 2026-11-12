@@ -14,8 +14,8 @@ use std::{
 
 use ronie_core::{
     ActivePreset, BlockId, BlockParams, ChainBlock, ChainBranch, ChainSide, ChainSnapshot,
-    EqParams, InputMode, MidiMapping, ModelBytes, ModelId, ModelSource, PresetInfo,
-    SessionSnapshot, Tone,
+    EqParams, InputMode, IrB, MidiMapping, ModelBytes, ModelId, ModelKind, ModelSource, PresetInfo,
+    SessionSnapshot, Tone, ToneModel,
     params::{ParameterCatalog, ParameterId, ParameterValue},
 };
 use ronie_dsp::PrepareSpec;
@@ -516,6 +516,18 @@ impl SessionEditor {
                 replaces,
                 bytes,
             } => self.select_model_with_bytes(&block_id, tone, model_id, replaces, bytes, storage),
+            UiAction::SelectSecondModel { block_id, model_id } => {
+                self.select_second_model(&block_id, model_id)
+            }
+            UiAction::SelectSecondModelWithBytes {
+                block_id,
+                tone,
+                model_id,
+                replaces,
+                bytes,
+            } => self.select_second_model_with_bytes(
+                &block_id, tone, model_id, replaces, bytes, storage,
+            ),
             UiAction::DuplicateBlock(id) => self.duplicate_block(&id, storage),
             UiAction::DuplicateBlockToLane {
                 block_id,
@@ -871,6 +883,18 @@ impl SessionEditor {
         }
         check_downloaded_model(&tone, model_id, &bytes)?;
         storage.keep_model_bytes(block_id, model_id, bytes)?;
+        // A catalog tone stores only the models that the block names, so B stays in it.
+        let mut tone = tone;
+        if let Some(b_model) = held.ir_b.and_then(|ir_b| {
+            held.tone
+                .as_ref()?
+                .models
+                .iter()
+                .find(|model| model.id == ir_b.model_id)
+                .cloned()
+        }) {
+            keep_model(&mut tone, b_model);
+        }
         self.change_block(block_id, |block| {
             block.tone = Some(tone);
             block.active_model_id = Some(model_id);
@@ -878,6 +902,103 @@ impl SessionEditor {
             block.model_loading = false;
             block.load_failed = false;
         })?;
+        Ok(self.chain_changed())
+    }
+
+    /// Sets or clears the second IR of a cab block. A new or removed B is no longer missing.
+    fn select_second_model(
+        &mut self,
+        block_id: &BlockId,
+        model_id: Option<ModelId>,
+    ) -> Result<UiEffect, UiError> {
+        let block = self.tone_block(block_id)?;
+        match model_id {
+            None => {
+                if block.ir_b.is_none() {
+                    return Err(UiError::InvalidAction(
+                        "the block has no second IR".to_owned(),
+                    ));
+                }
+                self.change_block(block_id, |block| {
+                    block.ir_b = None;
+                    block.ir_b_missing = false;
+                    reset_ir_pair(&mut block.params);
+                })?;
+            }
+            Some(model_id) => {
+                let offered = block.tone.as_ref().is_some_and(|tone| {
+                    tone.kind == ModelKind::Ir
+                        && tone.models.iter().any(|model| model.id == model_id)
+                });
+                if !offered || block.active_model_id == Some(model_id) {
+                    return Err(UiError::InvalidAction(
+                        "the second IR must be another model of the IR tone".to_owned(),
+                    ));
+                }
+                self.change_block(block_id, |block| {
+                    block.ir_b = Some(IrB { model_id });
+                    block.ir_b_missing = false;
+                })?;
+            }
+        }
+        Ok(self.chain_changed())
+    }
+
+    /// Sets the second IR of a cab block to a downloaded catalog model, which joins the stored
+    /// tone. Each snapshot of this block that names the same B then has its bytes, so none of
+    /// them keeps B marked missing.
+    fn select_second_model_with_bytes(
+        &mut self,
+        block_id: &BlockId,
+        tone: Tone,
+        model_id: ModelId,
+        replaces: Option<ModelId>,
+        bytes: ModelBytes,
+        storage: &mut impl SessionStorage,
+    ) -> Result<UiEffect, UiError> {
+        let held = self.block(block_id)?;
+        let current = held.ir_b.map(|ir_b| ir_b.model_id) == replaces
+            && held.tone.as_ref().is_some_and(|held| {
+                held.id == tone.id && !held.local && held.kind == ModelKind::Ir
+            });
+        if !current {
+            return Err(UiError::InvalidAction(
+                "the block no longer holds this second IR".to_owned(),
+            ));
+        }
+        if held.active_model_id == Some(model_id) {
+            return Err(UiError::InvalidAction(
+                "the second IR must be another model of the IR tone".to_owned(),
+            ));
+        }
+        check_downloaded_model(&tone, model_id, &bytes)?;
+        let model = tone
+            .models
+            .iter()
+            .find(|model| model.id == model_id)
+            .cloned()
+            .ok_or_else(|| UiError::InvalidAction("the tone lacks the model".to_owned()))?;
+        storage.keep_model_bytes(block_id, model_id, bytes)?;
+        self.change_block(block_id, |block| {
+            if let Some(stored) = &mut block.tone {
+                keep_model(stored, model);
+            }
+            block.ir_b = Some(IrB { model_id });
+            block.ir_b_missing = false;
+        })?;
+        let landed = |block: &mut ChainBlock| {
+            if block.id == *block_id && block.ir_b.map(|ir_b| ir_b.model_id) == Some(model_id) {
+                block.ir_b_missing = false;
+            }
+        };
+        for frame in self.frames_mut() {
+            if let Some(block) = frame.session.chain.block_mut(block_id) {
+                landed(block);
+            }
+        }
+        if let Some(block) = &mut self.clipboard {
+            landed(block);
+        }
         Ok(self.chain_changed())
     }
 
@@ -1417,6 +1538,35 @@ impl SessionEditor {
 }
 
 /// Refuses bytes that cannot belong to one catalog model of `tone`.
+/// Adds `model` to a stored tone, in its models and its JSON, unless the tone holds it.
+fn keep_model(tone: &mut Tone, model: ToneModel) {
+    if tone.models.iter().any(|known| known.id == model.id) {
+        return;
+    }
+    if let Some(models) = tone
+        .raw
+        .get_mut("models")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        models.push(model.raw.clone());
+    } else if let Some(object) = tone.raw.as_object_mut() {
+        object.insert(
+            "models".to_owned(),
+            serde_json::Value::Array(vec![model.raw.clone()]),
+        );
+    }
+    tone.models.push(model);
+}
+
+/// Puts the blend, the levels and the invert of a cab's two IRs back to their defaults.
+fn reset_ir_pair(params: &mut BlockParams) {
+    let defaults = BlockParams::default();
+    params.ir_blend = defaults.ir_blend;
+    params.ir_a_level = defaults.ir_a_level;
+    params.ir_b_level = defaults.ir_b_level;
+    params.ir_b_invert = defaults.ir_b_invert;
+}
+
 fn check_downloaded_model(
     tone: &Tone,
     model_id: ModelId,
@@ -2958,6 +3108,304 @@ mod tests {
         while editor.view(0).can_redo {
             editor.apply_alone(UiAction::Redo).expect("redo");
             assert_eq!(active_name(&editor), None);
+        }
+    }
+
+    // ------------------------------------------------------------ A cab's second IR
+
+    /// A catalog IR pack with three mic positions, as the service lists it.
+    fn cab_pack() -> Tone {
+        Tone::from_value(serde_json::json!({
+            "id": 7,
+            "title": "Cab",
+            "format": "ir",
+            "models": [
+                {"id": 71, "name": "SM57 cap edge", "model_url": "https://models.example/71.wav"},
+                {"id": 72, "name": "R121 center", "model_url": "https://models.example/72.wav"},
+                {"id": 73, "name": "U87 far", "model_url": "https://models.example/73.wav"},
+            ],
+        }))
+        .expect("cab")
+    }
+
+    /// The pack as a block stores it after a download: only `model` of its models.
+    fn stored_cab(model: i64) -> Tone {
+        let mut tone = cab_pack();
+        tone.models.retain(|each| each.id == ModelId(model));
+        tone.for_storage(ModelId(model), &[]).expect("stored")
+    }
+
+    /// Loads the whole pack into the first slot, with mic 71 active.
+    fn load_cab(editor: &mut SessionEditor) -> BlockId {
+        let slot = editor.view(0).chain.left[0].id.clone();
+        editor
+            .apply_alone(UiAction::LoadTone {
+                target_insert_id: slot.clone(),
+                tone: cab_pack(),
+                model_id: ModelId(71),
+            })
+            .expect("load");
+        slot
+    }
+
+    fn cab_block(editor: &SessionEditor, id: &BlockId) -> ChainBlock {
+        editor.view(0).chain.block(id).expect("block").clone()
+    }
+
+    fn stored_ids(block: &ChainBlock) -> Vec<i64> {
+        block
+            .tone
+            .as_ref()
+            .expect("tone")
+            .models
+            .iter()
+            .map(|model| model.id.0)
+            .collect()
+    }
+
+    #[test]
+    fn a_second_ir_is_another_mic_of_the_tone_and_its_removal_resets_the_blend() {
+        let mut editor = editor();
+        let block = load_cab(&mut editor);
+        for refused in [ModelId(71), ModelId(99)] {
+            assert!(
+                editor
+                    .apply_alone(UiAction::SelectSecondModel {
+                        block_id: block.clone(),
+                        model_id: Some(refused),
+                    })
+                    .is_err(),
+                "{refused:?} is not another mic of the tone"
+            );
+        }
+        editor
+            .apply_alone(UiAction::SelectSecondModel {
+                block_id: block.clone(),
+                model_id: Some(ModelId(72)),
+            })
+            .expect("add B");
+        assert_eq!(
+            cab_block(&editor, &block).ir_b,
+            Some(ronie_core::IrB {
+                model_id: ModelId(72)
+            })
+        );
+        let mut params = cab_block(&editor, &block).params;
+        params.ir_blend = 0.8;
+        params.ir_a_level = 0.3;
+        params.ir_b_level = 0.7;
+        params.ir_b_invert = true;
+        editor
+            .apply_alone(UiAction::SetBlockParams {
+                block_id: block.clone(),
+                params,
+            })
+            .expect("blend");
+
+        editor
+            .apply_alone(UiAction::SelectSecondModel {
+                block_id: block.clone(),
+                model_id: None,
+            })
+            .expect("remove B");
+        let alone = cab_block(&editor, &block);
+        assert_eq!(alone.ir_b, None);
+        let defaults = BlockParams::default();
+        assert_eq!(
+            (
+                alone.params.ir_blend,
+                alone.params.ir_a_level,
+                alone.params.ir_b_level,
+                alone.params.ir_b_invert
+            ),
+            (
+                defaults.ir_blend,
+                defaults.ir_a_level,
+                defaults.ir_b_level,
+                defaults.ir_b_invert
+            )
+        );
+        editor.apply_alone(UiAction::Undo).expect("undo");
+        assert_eq!(cab_block(&editor, &block).params.ir_blend, 0.8);
+    }
+
+    #[test]
+    fn a_nam_block_has_no_second_ir() {
+        let mut editor = editor();
+        let slot = editor.view(0).chain.left[0].id.clone();
+        let mut nam = cab_pack().raw;
+        nam["format"] = "nam".into();
+        editor
+            .apply_alone(UiAction::LoadTone {
+                target_insert_id: slot.clone(),
+                tone: Tone::from_value(nam).expect("nam"),
+                model_id: ModelId(71),
+            })
+            .expect("load");
+        assert!(
+            editor
+                .apply_alone(UiAction::SelectSecondModel {
+                    block_id: slot,
+                    model_id: Some(ModelId(72)),
+                })
+                .is_err()
+        );
+    }
+
+    /// Ruling: a catalog block stores only its active model, so a downloaded B joins the stored
+    /// tone, and a later switch of A keeps it there.
+    #[test]
+    fn a_downloaded_b_joins_the_stored_tone_and_a_switch_of_a_keeps_it() {
+        let mut editor = editor();
+        let slot = editor.view(0).chain.left[0].id.clone();
+        editor
+            .apply_alone(UiAction::LoadTone {
+                target_insert_id: slot.clone(),
+                tone: stored_cab(71),
+                model_id: ModelId(71),
+            })
+            .expect("load");
+        let mut storage = FakeStorage::default();
+        let stale = editor.apply(
+            UiAction::SelectSecondModelWithBytes {
+                block_id: slot.clone(),
+                tone: stored_cab(72),
+                model_id: ModelId(72),
+                replaces: Some(ModelId(73)),
+                bytes: bytes(),
+            },
+            &mut storage,
+        );
+        assert!(stale.is_err(), "the block does not hold B 73");
+        assert!(storage.calls.is_empty());
+
+        editor
+            .apply(
+                UiAction::SelectSecondModelWithBytes {
+                    block_id: slot.clone(),
+                    tone: stored_cab(72),
+                    model_id: ModelId(72),
+                    replaces: None,
+                    bytes: bytes(),
+                },
+                &mut storage,
+            )
+            .expect("B lands");
+        assert_eq!(storage.calls, vec!["keep".to_owned()]);
+        let block = cab_block(&editor, &slot);
+        assert_eq!(block.active_model_id, Some(ModelId(71)));
+        assert_eq!(block.ir_b.map(|b| b.model_id), Some(ModelId(72)));
+        assert_eq!(stored_ids(&block), vec![71, 72]);
+        let raw_ids: Vec<i64> = block.tone.as_ref().expect("tone").raw["models"]
+            .as_array()
+            .expect("raw models")
+            .iter()
+            .filter_map(|model| model["id"].as_i64())
+            .collect();
+        assert_eq!(raw_ids, vec![71, 72], "the stored JSON holds B too");
+
+        editor
+            .apply(
+                UiAction::SelectModelWithBytes {
+                    block_id: slot.clone(),
+                    tone: stored_cab(73),
+                    model_id: ModelId(73),
+                    replaces: Some(ModelId(71)),
+                    bytes: bytes(),
+                },
+                &mut storage,
+            )
+            .expect("A switches");
+        let block = cab_block(&editor, &slot);
+        assert_eq!(block.active_model_id, Some(ModelId(73)));
+        assert_eq!(block.ir_b.map(|b| b.model_id), Some(ModelId(72)));
+        assert_eq!(stored_ids(&block), vec![73, 72]);
+        let tone = block.tone.clone().expect("tone");
+        assert!(tone.for_storage(ModelId(73), &[ModelId(72)]).is_ok());
+    }
+
+    /// Ruling: the missing flag of B clears when its bytes land, when B changes and when B goes,
+    /// and no undo step, redo step or clipboard copy brings back a flag whose bytes landed.
+    #[test]
+    fn no_snapshot_brings_back_a_stale_missing_flag() {
+        let mut editor = editor();
+        let slot = editor.view(0).chain.left[0].id.clone();
+        editor
+            .apply_alone(UiAction::LoadTone {
+                target_insert_id: slot.clone(),
+                tone: stored_cab(71),
+                model_id: ModelId(71),
+            })
+            .expect("load");
+        // A restore found B 72 with no bytes.
+        {
+            let block = editor
+                .current
+                .session
+                .chain
+                .block_mut(&slot)
+                .expect("block");
+            block.tone = Some(
+                cab_pack()
+                    .for_storage(ModelId(71), &[ModelId(72), ModelId(73)])
+                    .expect("tone"),
+            );
+            block.ir_b = Some(ronie_core::IrB {
+                model_id: ModelId(72),
+            });
+            block.ir_b_missing = true;
+        }
+        editor
+            .apply_alone(UiAction::CopyBlock(slot.clone()))
+            .expect("copy");
+        editor
+            .apply_alone(UiAction::SetMultiCore(false))
+            .expect("an edit");
+        editor.apply_alone(UiAction::Undo).expect("undo");
+
+        editor
+            .apply_alone(UiAction::SelectSecondModelWithBytes {
+                block_id: slot.clone(),
+                tone: stored_cab(72),
+                model_id: ModelId(72),
+                replaces: Some(ModelId(72)),
+                bytes: bytes(),
+            })
+            .expect("B's bytes land");
+        assert!(!cab_block(&editor, &slot).ir_b_missing);
+
+        editor.apply_alone(UiAction::Undo).expect("undo");
+        assert!(
+            !cab_block(&editor, &slot).ir_b_missing,
+            "the step before the bytes landed"
+        );
+        editor.apply_alone(UiAction::Redo).expect("redo");
+        editor
+            .apply_alone(UiAction::PasteBlock {
+                side: ChainSide::Left,
+                index: 1,
+            })
+            .expect("paste");
+        let pasted = editor.view(0).chain.left[1].clone();
+        assert!(pasted.id.0.contains("-paste-"));
+        assert!(!pasted.ir_b_missing, "the clipboard copy");
+
+        // A change or a removal of B clears the flag too.
+        for model_id in [Some(ModelId(73)), None] {
+            editor
+                .current
+                .session
+                .chain
+                .block_mut(&slot)
+                .expect("block")
+                .ir_b_missing = true;
+            editor
+                .apply_alone(UiAction::SelectSecondModel {
+                    block_id: slot.clone(),
+                    model_id,
+                })
+                .expect("change B");
+            assert!(!cab_block(&editor, &slot).ir_b_missing, "{model_id:?}");
         }
     }
 }

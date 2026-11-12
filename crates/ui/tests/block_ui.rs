@@ -750,3 +750,93 @@ fn capture_eq_at_two_times_scale() {
     .expect("native EQ capture");
     assert!(capture.exists());
 }
+
+fn cab_pack_model(id: i64) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "name": format!("Mic {id}"),
+        "model_url": format!("https://models.example/{id}.wav"),
+    })
+}
+
+/// blk-1 of main-detail replaced by a catalog cab that stores only mic 71, attached to a
+/// service that lists mics 71, 72 and 73.
+fn cab_detail(backend: &Arc<MockBackend>) -> BlockDetail {
+    let tone = Tone::from_value(serde_json::json!({
+        "id": 7,
+        "title": "Cab",
+        "format": "ir",
+        "gear": "cab",
+        "models": [cab_pack_model(71)],
+    }))
+    .expect("cab");
+    backend
+        .dispatch(UiAction::LoadTone {
+            target_insert_id: BlockId("blk-1".to_owned()),
+            tone,
+            model_id: ModelId(71),
+        })
+        .expect("cab");
+    let mut detail = attached_detail(backend);
+    let request = detail.take_models_request(SignedIn).expect("a list is due");
+    let list = ModelList {
+        models: [71, 72, 73]
+            .into_iter()
+            .map(|id| ToneModel::from_value(&cab_pack_model(id), false).expect("model"))
+            .collect(),
+        total: 3,
+    };
+    assert!(detail.complete_models(request.generation, request.tone, list));
+    detail
+}
+
+#[test]
+fn a_catalog_b_waits_for_its_bytes_and_lands_in_b() {
+    let backend = mock_backend(&scenario("main-detail"));
+    let mut detail = cab_detail(&backend);
+    let revision = backend.chain_state(0).revision;
+
+    detail
+        .select_second_model(Some(ModelId(72)), SignedIn)
+        .expect("B");
+    let request = detail.take_switch_request().expect("a download of B");
+    assert_eq!(request.ticket.slot(), ronie_ui::services::ModelSlot::B);
+    assert_eq!(request.ticket.replaces(), None);
+    assert_eq!(request.model.id, ModelId(72));
+    assert_eq!(backend.chain_state(0).revision, revision, "no change yet");
+    assert_eq!(
+        detail.load_state(),
+        TileVisualState::Ready,
+        "A plays on while B downloads"
+    );
+    assert_eq!(detail.second_model_select().target(), Some(ModelId(72)));
+
+    let stored = Tone {
+        models: vec![request.model.clone()],
+        ..request.tone.clone()
+    }
+    .for_storage(ModelId(72), &[])
+    .expect("stored");
+    assert!(
+        request
+            .ticket
+            .publish(stored, ModelId(72), vec![1, 2, 3].into())
+            .expect("publish")
+    );
+    assert!(detail.finish_switch(request.ticket.generation()));
+
+    let block = detail.block().clone();
+    assert_eq!(block.active_model_id, Some(ModelId(71)));
+    assert_eq!(block.ir_b.map(|b| b.model_id), Some(ModelId(72)));
+    let stored_ids: Vec<i64> = block
+        .tone
+        .expect("tone")
+        .models
+        .iter()
+        .map(|model| model.id.0)
+        .collect();
+    assert_eq!(stored_ids, [71, 72], "B joins the stored tone");
+    assert_eq!(detail.second_model_select().active(), Some(ModelId(72)));
+    assert_eq!(detail.second_model_select().target(), None);
+    assert_eq!(detail.model_select().active(), Some(ModelId(71)));
+}

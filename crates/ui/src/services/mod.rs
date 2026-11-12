@@ -28,7 +28,7 @@ pub use images::{
 };
 pub use key_setup::{CommunityParts, KeySetup, KeySetupError, is_publishable_key};
 pub use load_flow::{
-    LoadFlow, LoadPhase, LoadTarget, LoadTicket, ModelSwitchFlow, ModelSwitchTicket,
+    LoadFlow, LoadPhase, LoadTarget, LoadTicket, ModelSlot, ModelSwitchFlow, ModelSwitchTicket,
 };
 pub use recent_tones::RecentTones;
 pub use session::{AuthPhase, AuthSnapshot, Session, SessionStatus};
