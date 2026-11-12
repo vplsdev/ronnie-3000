@@ -1700,6 +1700,50 @@ fn a_cab_and_a_reverb_are_not_blended() {
 }
 
 #[test]
+fn changing_the_skin_does_not_rebuild_the_chain() {
+    let backend = ProcessorBackend::new(RonieProcessor::new(spec()));
+    let tone = ronie_core::Tone::from_value(serde_json::json!({
+        "id": 42,
+        "title": "Remote tone",
+        "format": "ir",
+        "models": [{"id": 7, "name": "Remote"}]
+    }))
+    .expect("tone");
+    let target = backend.chain_state(0).chain.left[0].id.clone();
+    backend
+        .dispatch(params::UiAction::LoadTone {
+            target_insert_id: target.clone(),
+            tone,
+            model_id: ronie_core::ModelId(7),
+        })
+        .expect("load tone");
+    let before = audio_state(&backend);
+
+    backend
+        .dispatch(params::UiAction::SetBlockSkin {
+            block_id: target.clone(),
+            skin: Some("cab-412-vintage".to_owned()),
+        })
+        .expect("skin");
+    assert_eq!(
+        backend.chain_state(0).chain.left[0].skin.as_deref(),
+        Some("cab-412-vintage")
+    );
+    let after = audio_state(&backend);
+    assert_eq!(after.fingerprint, before.fingerprint, "no new chain");
+    assert_eq!(after.block_params, before.block_params);
+    assert_eq!(after.controls, before.controls);
+
+    backend
+        .dispatch(params::UiAction::SetBlockSkin {
+            block_id: target,
+            skin: None,
+        })
+        .expect("Auto");
+    assert_eq!(audio_state(&backend).fingerprint, before.fingerprint);
+}
+
+#[test]
 fn a_blend_edit_is_a_block_setting_and_b_is_structure() {
     let b_bytes = cab_wav_of(B_FRAMES);
     let with_b = tempfile::tempdir().expect("root");

@@ -392,6 +392,14 @@ pub enum UiAction {
         /// Complete model bytes.
         bytes: ModelBytes,
     },
+    /// Choose the skin a block's render uses, or `None` for Auto: the skin of the gear family
+    /// the tone identifies. One undo step; the audio chain is not touched.
+    SetBlockSkin {
+        /// Block to edit.
+        block_id: BlockId,
+        /// Skin identity, such as `"british"`, or `None` for Auto.
+        skin: Option<String>,
+    },
     /// Save or update a user preset.
     SavePreset {
         /// Preset display name.

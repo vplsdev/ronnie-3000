@@ -297,6 +297,10 @@ pub struct ChainBlock {
     /// Whether IR B has no usable bytes, so the block plays the active model alone until they
     /// arrive. A restore sets it; it is never stored.
     pub ir_b_missing: bool,
+    /// The skin the user chose for the block's render, as a skin identity such as `"british"`.
+    /// `None` is Auto: the skin of the gear family the tone identifies. It changes only the
+    /// drawing, never the audio.
+    pub skin: Option<String>,
     /// Persisted block parameters.
     pub params: BlockParams,
 }
@@ -315,6 +319,7 @@ impl ChainBlock {
             load_failed: false,
             ir_b: None,
             ir_b_missing: false,
+            skin: None,
             params: BlockParams::default(),
         }
     }
@@ -332,6 +337,7 @@ impl ChainBlock {
             load_failed: false,
             ir_b: None,
             ir_b_missing: false,
+            skin: None,
             params: BlockParams::default(),
         }
     }
@@ -353,6 +359,7 @@ impl ChainBlock {
                 load_failed: false,
                 ir_b: None,
                 ir_b_missing: false,
+                skin: None,
                 params: BlockParams::default(),
             });
         }
@@ -373,6 +380,7 @@ impl ChainBlock {
             load_failed: bool_field(value.get("loadFailed"), false),
             ir_b,
             ir_b_missing: false,
+            skin: skin_override(value.get(SKIN_OVERRIDE).and_then(Value::as_str)),
             params,
         })
     }
@@ -865,6 +873,7 @@ impl ChainBlock {
                 load_failed: false,
                 ir_b: None,
                 ir_b_missing: false,
+                skin: None,
                 params: BlockParams::default(),
             });
         }
@@ -882,6 +891,7 @@ impl ChainBlock {
             load_failed: false,
             ir_b,
             ir_b_missing: false,
+            skin: skin_override(juce_string_prop(tree, SKIN_OVERRIDE)),
             params: BlockParams::from_juce_tree(tree)?,
         })
     }
@@ -912,7 +922,29 @@ impl ChainBlock {
         set_juce_prop(tree, "irBLevel", JuceValue::Double(self.params.ir_b_level));
         set_juce_prop(tree, "irBInvert", JuceValue::Bool(self.params.ir_b_invert));
     }
+
+    /// Writes the skin override into a persisted `ChainBlock` tree.
+    ///
+    /// `skinOverride` (String) is present only while the block has an override and is removed
+    /// for Auto, so a tree reused from an earlier save never keeps a stale skin.
+    pub fn write_skin_juce(&self, tree: &mut JuceTree) {
+        match skin_override(self.skin.as_deref()) {
+            Some(skin) => set_juce_prop(tree, SKIN_OVERRIDE, JuceValue::String(skin)),
+            None => tree.properties.retain(|(name, _)| name != SKIN_OVERRIDE),
+        }
+    }
 }
+
+/// A stored skin override; an empty one is Auto.
+fn skin_override(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|skin| !skin.is_empty())
+        .map(str::to_owned)
+}
+
+/// The persisted `ChainBlock` property that names the skin a block's render uses.
+pub const SKIN_OVERRIDE: &str = "skinOverride";
 
 /// IR B for model `id`, when `tone` lists that model. A B outside the tone is dropped, so a
 /// later save never has to store a model the tone cannot give.

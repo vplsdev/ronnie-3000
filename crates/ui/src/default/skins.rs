@@ -269,27 +269,88 @@ pub fn knob_strip(id: &str, control: KnobControl) -> Option<ColorImage> {
     })
 }
 
-/// The skin of a block's gear, when the app has a render for its family.
+/// Each skin with a render: its identity, the name the skin picker shows, and the kind of gear
+/// it draws. The order is the order of the picker.
+const SKIN_NAMES: &[(&str, &str, ronie_core::gear::GearCategory)] = {
+    use ronie_core::gear::GearCategory::{Amp, Cab, Pedal};
+    &[
+        ("od-green", "Green overdrive", Pedal),
+        ("od-gold", "Gold overdrive", Pedal),
+        ("dist-black", "Black distortion", Pedal),
+        ("fuzz", "Fuzz", Pedal),
+        ("boost", "Boost", Pedal),
+        ("comp", "Compressor", Pedal),
+        ("default-dark", "Dark pedal", Pedal),
+        ("default-light", "Light pedal", Pedal),
+        ("highgain", "High-gain head", Amp),
+        ("modern-us", "US modern head", Amp),
+        ("british", "British head", Amp),
+        ("chime", "Chime combo", Amp),
+        ("clean", "Clean combo", Amp),
+        ("bass", "Bass head", Amp),
+        ("default-clean", "Clean amp", Amp),
+        ("default-crunch", "Crunch amp", Amp),
+        ("default-hi-gain", "Hi-gain amp", Amp),
+        ("cab-412-modern", "Modern 4x12", Cab),
+        ("cab-412-vintage", "Vintage 4x12", Cab),
+        ("cab-212-chime", "2x12 cab", Cab),
+        ("cab-112-clean", "1x12 cab", Cab),
+        ("cab-810-bass", "8x10 bass cab", Cab),
+        ("cab-default", "Cab", Cab),
+    ]
+};
+
+fn skin_entry(
+    id: &str,
+) -> Option<&'static (&'static str, &'static str, ronie_core::gear::GearCategory)> {
+    SKIN_NAMES.iter().find(|(each, _, _)| *each == id)
+}
+
+/// The name the skin picker shows for a skin, such as "Chime combo"; empty for an unknown skin.
 #[must_use]
-pub fn skin_for(block: &ChainBlock) -> Option<BlockSkin> {
-    use ronie_core::gear::{GearCategory, GearHints, identify};
+pub fn friendly_name(id: &str) -> &'static str {
+    skin_entry(id).map_or("", |(_, name, _)| name)
+}
+
+/// Every skin of one kind of gear, in the order of the picker.
+#[must_use]
+pub fn skins_in(category: ronie_core::gear::GearCategory) -> Vec<&'static str> {
+    SKIN_NAMES
+        .iter()
+        .filter(|(id, _, each)| *each == category && asset(id).is_some())
+        .map(|(id, _, _)| *id)
+        .collect()
+}
+
+/// The skin the block's gear family has, ignoring the block's override: what Auto draws.
+#[must_use]
+pub fn auto_skin_for(block: &ChainBlock) -> Option<BlockSkin> {
+    use ronie_core::gear::{GearHints, identify};
 
     let tone = block.tone.as_ref()?;
     let model = block
         .active_model_id
         .and_then(|id| tone.models.iter().find(|model| model.id == id));
     let family = identify(&GearHints::from_tone(tone, model)).family;
-    let id = asset(family.skin_id()?)?.id;
-    let label = match family.category() {
-        GearCategory::Pedal => "Pedal render",
-        GearCategory::Cab => "Cab render",
-        _ => "Amp render",
-    };
-    Some(BlockSkin {
-        id,
-        label,
-        category: family.category(),
-    })
+    BlockSkin::of(asset(family.skin_id()?)?.id, family.category())
+}
+
+/// The skin of a block's gear, when the app has a render for it: the block's chosen skin when
+/// it draws the same kind of gear as the automatic one, and otherwise the automatic one.
+#[must_use]
+pub fn skin_for(block: &ChainBlock) -> Option<BlockSkin> {
+    let auto = auto_skin_for(block)?;
+    Some(chosen_skin(block, auto).unwrap_or(auto))
+}
+
+/// The block's override, when the app has its render and it is of the automatic skin's kind.
+#[must_use]
+pub fn chosen_skin(block: &ChainBlock, auto: BlockSkin) -> Option<BlockSkin> {
+    let (id, _, category) = skin_entry(block.skin.as_deref()?)?;
+    if *category != auto.category {
+        return None;
+    }
+    BlockSkin::of(asset(id)?.id, *category)
 }
 
 /// The skin a block shows, and the accessible name of its render.
@@ -301,6 +362,23 @@ pub struct BlockSkin {
     pub label: &'static str,
     /// The kind of gear the render shows.
     pub category: ronie_core::gear::GearCategory,
+}
+
+impl BlockSkin {
+    fn of(id: &'static str, category: ronie_core::gear::GearCategory) -> Option<Self> {
+        use ronie_core::gear::GearCategory;
+
+        let label = match category {
+            GearCategory::Pedal => "Pedal render",
+            GearCategory::Cab => "Cab render",
+            _ => "Amp render",
+        };
+        Some(Self {
+            id,
+            label,
+            category,
+        })
+    }
 }
 
 /// A skin's textures, uploaded once per context.
@@ -492,6 +570,21 @@ mod tests {
             assert_eq!(manifest.width, 600);
             assert!(manifest.lcd.is_none(), "{lcd}");
         }
+    }
+
+    #[test]
+    fn every_skin_has_a_friendly_name_and_one_kind() {
+        use ronie_core::gear::GearCategory::{Amp, Cab, Pedal};
+
+        for asset in SKINS {
+            assert!(!friendly_name(asset.id).is_empty(), "{}", asset.id);
+        }
+        assert_eq!(SKIN_NAMES.len(), SKINS.len());
+        assert_eq!(skins_in(Pedal).len(), 8);
+        assert_eq!(skins_in(Amp).len(), 9);
+        assert_eq!(skins_in(Cab).len(), 6);
+        assert_eq!(friendly_name("chime"), "Chime combo");
+        assert_eq!(friendly_name("nope"), "");
     }
 
     #[test]

@@ -66,8 +66,26 @@ const BYPASSED_TINT: Color32 = Color32::from_rgb(0xb4, 0xb4, 0xb2);
 
 /// Tallest a rendered skin draws, in points (the design's stage height).
 const RENDER_HEIGHT: f32 = 300.0;
-/// What an amp's stage keeps free under its render for the capture lights.
+/// What a stage with a render keeps free under it, for the SKIN chip at the left and an amp's
+/// capture lights in the middle.
 const CAPTURE_LIGHTS_ROOM: f32 = 28.0;
+/// Height of the SKIN chip at the bottom left of the stage.
+const SKIN_CHIP_HEIGHT: f32 = 26.0;
+/// Width of the skin list that opens above the chip, the height of one of its rows, and its
+/// inner padding.
+const SKIN_LIST_WIDTH: f32 = 230.0;
+const SKIN_ROW: f32 = 28.0;
+const SKIN_LIST_PAD: f32 = 6.0;
+/// The space between the chip and the list above it.
+const SKIN_LIST_GAP: f32 = 8.0;
+/// Tracking of the chip's SKIN caption.
+const SKIN_TRACKING: f32 = 1.33;
+/// Colours of the chip and the list: the panel, its border, the chosen row and secondary text.
+const SKIN_PANEL: Color32 = Color32::from_rgb(0xfb, 0xfb, 0xfa);
+const SKIN_BORDER: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcc);
+const SKIN_CHOSEN: Color32 = Color32::from_rgb(0xe5, 0xe5, 0xe2);
+const SKIN_HOVER: Color32 = Color32::from_rgb(0xef, 0xef, 0xec);
+const SKIN_MUTED: Color32 = Color32::from_rgb(0x5f, 0x5f, 0x5c);
 /// The most capture lights a pill shows at once.
 const CAPTURE_LIGHT_COUNT: usize = 8;
 const LIGHT_SIZE: f32 = 12.0;
@@ -180,6 +198,8 @@ pub struct BlockDetail {
     /// the capture the window last followed.
     light_start: usize,
     light_followed: Option<usize>,
+    /// Whether the skin list over the stage's SKIN chip is open.
+    skin_open: bool,
 }
 
 /// The model list and the switch of one detail.
@@ -268,6 +288,7 @@ impl BlockDetail {
             synced_revision: None,
             light_start: 0,
             light_followed: None,
+            skin_open: false,
         })
     }
 
@@ -2086,17 +2107,17 @@ impl BlockDetail {
         let lights = skin.as_ref().is_some_and(|(skin, _)| {
             skin.category == ronie_core::gear::GearCategory::Amp && self.models.options().len() >= 2
         });
+        // The SKIN chip sits at the bottom left of the stage, level with the lights.
+        let chip = skin
+            .as_ref()
+            .map(|(shown, _)| self.skin_chip_rect(ui, stage, *shown));
         let gear = match &skin {
             Some((skin, textures)) => {
-                // An amp with lights leaves room under its render for them.
-                let render_stage = if lights {
-                    Rect::from_min_max(
-                        stage.min,
-                        egui::pos2(stage.right(), stage.bottom() - CAPTURE_LIGHTS_ROOM),
-                    )
-                } else {
-                    stage
-                };
+                // The render leaves room under it for the chip and an amp's lights.
+                let render_stage = Rect::from_min_max(
+                    stage.min,
+                    egui::pos2(stage.right(), stage.bottom() - CAPTURE_LIGHTS_ROOM),
+                );
                 let body = if matches!(
                     skin.category,
                     ronie_core::gear::GearCategory::Pedal | ronie_core::gear::GearCategory::Amp
@@ -2107,7 +2128,10 @@ impl BlockDetail {
                 };
                 // The lights register first, so a knob keeps the clicks where they overlap.
                 if lights {
-                    self.show_capture_lights(ui, body, stage.bottom() - 2.0, session);
+                    let clear_of = chip
+                        .as_ref()
+                        .map_or(stage.left(), |(rect, _)| rect.right() + 12.0);
+                    self.show_capture_lights(ui, body, stage.bottom() - 2.0, clear_of, session);
                 }
                 self.show_render(ui, body, *skin, textures, session);
                 if textures.manifest.knobs.is_empty() {
@@ -2126,6 +2150,12 @@ impl BlockDetail {
         let _ = gear;
         if mics {
             self.show_mics_panel(ui, stage_full, session, look);
+        }
+        match (&skin, chip) {
+            (Some((shown, _)), Some((rect, value))) => {
+                self.show_skin_chip(ui, rect, &value, *shown, look);
+            }
+            _ => self.skin_open = false,
         }
 
         // The row under the stage.
@@ -2184,6 +2214,229 @@ impl BlockDetail {
             let pos = egui::pos2(note_right - galley.size().x, cy - galley.size().y / 2.0);
             ui.painter().galley(pos, galley, look.text_muted);
         }
+    }
+
+    /// Where the SKIN chip goes at the bottom left of `stage`, and the choice it reads:
+    /// "Auto · <family>" or the chosen family.
+    fn skin_chip_rect(
+        &self,
+        ui: &egui::Ui,
+        stage: Rect,
+        shown: super::skins::BlockSkin,
+    ) -> (Rect, String) {
+        let value = if super::skins::auto_skin_for(&self.block)
+            .and_then(|auto| super::skins::chosen_skin(&self.block, auto))
+            .is_some()
+        {
+            super::skins::friendly_name(shown.id).to_owned()
+        } else {
+            format!("Auto \u{b7} {}", super::skins::friendly_name(shown.id))
+        };
+        let caption = tracked_width(ui.painter(), "SKIN", &bold_font(9.5), SKIN_TRACKING);
+        let width = 10.0 + caption + 8.0 + text_width(ui, &value, 11.0) + 8.0 + 10.0 + 10.0;
+        let rect = Rect::from_min_size(
+            egui::pos2(stage.left(), stage.bottom() - 2.0 - SKIN_CHIP_HEIGHT),
+            egui::vec2(width.min(stage.width()), SKIN_CHIP_HEIGHT),
+        );
+        (rect, value)
+    }
+
+    /// The SKIN chip, and the list of the skins of the block's kind of gear that it opens
+    /// upward: Auto first, with the automatic family on its right, then each skin by name.
+    fn show_skin_chip(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        value: &str,
+        shown: super::skins::BlockSkin,
+        look: crate::theme::Look,
+    ) {
+        let id = ui.scope_id().with(("skin-chip", &self.block_id.0));
+        let response = ui.interact(rect, id, Sense::click());
+        let open = self.skin_open;
+        response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, open, "Skin"));
+        let border = if response.hovered() || open {
+            Color32::from_rgb(0xa9, 0xa9, 0xa6)
+        } else {
+            SKIN_BORDER
+        };
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            SKIN_CHIP_HEIGHT / 2.0,
+            SKIN_PANEL,
+            egui::Stroke::new(1.0, border),
+            egui::StrokeKind::Inside,
+        );
+        let clip = painter.with_clip_rect(rect.shrink(1.0).intersect(painter.clip_rect()));
+        let caption_font = bold_font(9.5);
+        let caption = tracked_width(&clip, "SKIN", &caption_font, SKIN_TRACKING);
+        let mut x = rect.left() + 10.0;
+        paint_tracked(
+            &clip,
+            egui::pos2(x, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            "SKIN",
+            &caption_font,
+            SKIN_MUTED,
+            SKIN_TRACKING,
+        );
+        x += caption + 8.0;
+        let galley = clip.layout_no_wrap(
+            value.to_owned(),
+            egui::FontId::proportional(11.0),
+            Color32::from_rgb(0x33, 0x33, 0x33),
+        );
+        let value_rect = Rect::from_min_size(
+            egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+            galley.size(),
+        );
+        clip.galley(value_rect.min, galley, look.text);
+        static_text(ui, value_rect, id.with("value"), value);
+        // The chevron points up, where the list opens.
+        let chevron = Rect::from_center_size(
+            egui::pos2(rect.right() - 15.0, rect.center().y),
+            egui::Vec2::splat(10.0),
+        );
+        let at = |x: f32, y: f32| chevron.min + egui::vec2(x, y) * (10.0 / 24.0);
+        clip.line(
+            vec![at(6.0, 15.0), at(12.0, 9.0), at(18.0, 15.0)],
+            egui::Stroke::new(1.2, Color32::from_rgb(0x11, 0x11, 0x11)),
+        );
+        if response.clicked() {
+            self.skin_open = !self.skin_open;
+        }
+        if !self.skin_open {
+            return;
+        }
+
+        let Some(auto) = super::skins::auto_skin_for(&self.block) else {
+            self.skin_open = false;
+            return;
+        };
+        let chosen = super::skins::chosen_skin(&self.block, auto).map(|skin| skin.id);
+        let rows: Vec<(Option<&'static str>, &'static str, &'static str)> =
+            std::iter::once((None, "Auto", super::skins::friendly_name(auto.id)))
+                .chain(
+                    super::skins::skins_in(shown.category)
+                        .into_iter()
+                        .map(|id| (Some(id), super::skins::friendly_name(id), "")),
+                )
+                .collect();
+        let height = 2.0 * SKIN_LIST_PAD + rows.len() as f32 * SKIN_ROW;
+        let screen = ui.ctx().content_rect();
+        let bottom = rect.top() - SKIN_LIST_GAP;
+        let top = (bottom - height).max(screen.top() + 4.0);
+        let list = Rect::from_min_size(
+            egui::pos2(rect.left(), top),
+            egui::vec2(SKIN_LIST_WIDTH, height),
+        );
+        let mut picked = None;
+        egui::Area::new(id.with("list"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(list.min)
+            .show(ui.ctx(), |ui| {
+                ui.set_min_size(list.size());
+                ui.set_max_size(list.size());
+                let painter = ui.painter();
+                painter.add(
+                    egui::epaint::Shadow {
+                        offset: [0, 10],
+                        blur: 24,
+                        spread: 0,
+                        color: Color32::from_black_alpha(31),
+                    }
+                    .as_shape(list, 8.0),
+                );
+                painter.rect(
+                    list,
+                    8.0,
+                    SKIN_PANEL,
+                    egui::Stroke::new(1.0, SKIN_BORDER),
+                    egui::StrokeKind::Inside,
+                );
+                let group = ui.interact(list, id.with("list-group"), Sense::hover());
+                group.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ListBox, true, "Skins"));
+                for (index, (skin, name, note)) in rows.iter().enumerate() {
+                    let row = Rect::from_min_size(
+                        egui::pos2(
+                            list.left() + SKIN_LIST_PAD,
+                            list.top() + SKIN_LIST_PAD + index as f32 * SKIN_ROW,
+                        ),
+                        egui::vec2(list.width() - 2.0 * SKIN_LIST_PAD, SKIN_ROW),
+                    );
+                    let selected = *skin == chosen;
+                    let response = ui.interact(row, id.with(("row", index)), Sense::click());
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(egui::Role::ListBoxOption, true, selected, *name)
+                    });
+                    let painter = ui.painter();
+                    if selected {
+                        painter.rect_filled(row, 5.0, SKIN_CHOSEN);
+                    } else if response.hovered() {
+                        painter.rect_filled(row, 5.0, SKIN_HOVER);
+                    }
+                    let font = if selected {
+                        bold_font(11.5)
+                    } else {
+                        egui::FontId::proportional(11.5)
+                    };
+                    painter.text(
+                        egui::pos2(row.left() + 10.0, row.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        *name,
+                        font,
+                        look.text,
+                    );
+                    if !note.is_empty() {
+                        let note_rect = painter.text(
+                            egui::pos2(row.right() - 10.0, row.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            *note,
+                            egui::FontId::proportional(10.0),
+                            SKIN_MUTED,
+                        );
+                        static_text(ui, note_rect, id.with(("note", index)), note);
+                    }
+                    if response.clicked() {
+                        picked = Some(*skin);
+                    }
+                }
+            });
+        if let Some(skin) = picked {
+            self.skin_open = false;
+            if skin != chosen {
+                let _ = self.set_skin(skin.map(str::to_owned));
+            }
+            return;
+        }
+        let (escape, clicked_at) = ui.input(|input| {
+            (
+                input.key_pressed(egui::Key::Escape),
+                input
+                    .pointer
+                    .primary_clicked()
+                    .then(|| input.pointer.latest_pos())
+                    .flatten(),
+            )
+        });
+        if escape || clicked_at.is_some_and(|pos| !list.contains(pos) && !rect.contains(pos)) {
+            self.skin_open = false;
+        }
+    }
+
+    /// Chooses the skin of the block's render, or Auto with `None`. Only the drawing changes.
+    ///
+    /// # Errors
+    /// Returns a backend error.
+    pub fn set_skin(&mut self, skin: Option<String>) -> Result<(), UiError> {
+        self.backend.dispatch(UiAction::SetBlockSkin {
+            block_id: self.block_id.clone(),
+            skin: skin.clone(),
+        })?;
+        self.block.skin = skin;
+        self.synced_revision = None;
+        Ok(())
     }
 
     /// Whether the stage shows the MICS panel: an IR cab whose tone has more than one mic
@@ -3143,6 +3396,7 @@ impl BlockDetail {
         ui: &mut egui::Ui,
         body: Rect,
         bottom: f32,
+        clear_of: f32,
         session: SessionStatus,
     ) {
         let look = crate::theme::Look::get(ui.ctx());
@@ -3191,8 +3445,10 @@ impl BlockDetail {
         let pad = 14.0;
         let gap = 12.0;
         let width = pad * 2.0 + label_width + gap + lights_width + gap + name_width;
+        // Centred under the render, unless that would put it over the SKIN chip at the left.
+        let center_x = body.center().x.max(clear_of + width / 2.0);
         let pill = Rect::from_center_size(
-            egui::pos2(body.center().x, bottom - CAPTURE_PILL_HEIGHT / 2.0),
+            egui::pos2(center_x, bottom - CAPTURE_PILL_HEIGHT / 2.0),
             egui::vec2(width, CAPTURE_PILL_HEIGHT),
         );
         let painter = ui.painter().clone();

@@ -3349,3 +3349,161 @@ fn the_edge_of_the_last_light_selects_it_instead_of_paging() {
         Some("Take 1")
     );
 }
+
+// ---------------------------------------------------------------- The skin picker
+
+const AMP_SKINS: [&str; 9] = [
+    "High-gain head",
+    "US modern head",
+    "British head",
+    "Chime combo",
+    "Clean combo",
+    "Bass head",
+    "Clean amp",
+    "Crunch amp",
+    "Hi-gain amp",
+];
+
+fn block_skin(backend: &MockBackend, block: &str) -> Option<String> {
+    backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .find(|each| each.id.0 == block)
+        .and_then(|each| each.skin.clone())
+}
+
+fn open_skin_list(driver: &mut UiDriver) {
+    let _ = driver.click("Skin").expect("skin chip");
+    driver.settle();
+}
+
+#[test]
+fn auto_shows_the_automatic_family_name() {
+    let (driver, _) = amp_page();
+    assert!(driver.is_visible("Skin"), "{:?}", driver.visible_labels());
+    assert!(
+        driver.shows_text("Auto \u{b7} Chime combo"),
+        "the chip names the automatic family"
+    );
+    let (mut pedal, _) = archetype_driver("main-mono");
+    let _ = pedal
+        .click("Chain: Green Russian Big Muff + BD-2")
+        .expect("pedal");
+    pedal.settle();
+    assert!(pedal.label_starting_with("Skin").is_some());
+    assert!(
+        ronie_ui::default::skins::skins_in(ronie_core::gear::GearCategory::Pedal)
+            .iter()
+            .map(|id| format!(
+                "Auto \u{b7} {}",
+                ronie_ui::default::skins::friendly_name(id)
+            ))
+            .any(|text| pedal.shows_text(&text)),
+        "a pedal's chip names a pedal family"
+    );
+}
+
+#[test]
+fn the_skin_chip_lists_the_category_and_auto() {
+    let (mut driver, _) = amp_page();
+    assert!(!driver.is_visible("Auto"), "the list starts closed");
+    open_skin_list(&mut driver);
+    let auto = driver
+        .controls()
+        .iter()
+        .find(|control| control.label == "Auto")
+        .cloned()
+        .expect("Auto is listed");
+    assert!(auto.checked, "Auto is the current choice");
+    assert!(
+        driver.shows_text("Chime combo"),
+        "Auto names the family on its right"
+    );
+    for name in AMP_SKINS {
+        assert!(driver.is_visible(name), "{name} is listed");
+    }
+    for name in ["Green overdrive", "Modern 4x12"] {
+        assert!(!driver.is_visible(name), "{name} is not an amp");
+    }
+    let chip = rect_of(&driver, "Skin").expect("chip");
+    let auto_rect = auto.rect;
+    assert!(auto_rect.bottom() < chip.top(), "the list opens upward");
+    let _ = driver.click("Skin").expect("close");
+    driver.settle();
+    assert!(!driver.is_visible("Auto"), "a second click closes it");
+}
+
+#[test]
+fn picking_a_skin_redraws_the_render_and_is_one_undo_step() {
+    let (mut driver, backend) = amp_page();
+    let before = rect_of(&driver, "Amp render").expect("render");
+    open_skin_list(&mut driver);
+    let _ = driver.click("High-gain head").expect("pick");
+    driver.settle();
+    assert_eq!(block_skin(&backend, "blk-2").as_deref(), Some("highgain"));
+    assert!(!driver.is_visible("Auto"), "the list closes");
+    assert!(driver.shows_text("High-gain head"), "the chip names it");
+    let after = rect_of(&driver, "Amp render").expect("render");
+    assert_ne!(before, after, "the head draws instead of the combo");
+
+    open_skin_list(&mut driver);
+    let checked: Vec<_> = driver
+        .controls()
+        .iter()
+        .filter(|control| control.checked && AMP_SKINS.contains(&control.label.as_str()))
+        .map(|control| control.label.clone())
+        .collect();
+    assert_eq!(checked, vec!["High-gain head".to_owned()]);
+    let _ = driver.click("Skin").expect("close");
+    driver.settle();
+
+    let _ = driver.click("Undo").expect("undo");
+    driver.settle();
+    assert_eq!(
+        block_skin(&backend, "blk-2"),
+        None,
+        "one undo is Auto again"
+    );
+    assert!(driver.shows_text("Auto \u{b7} Chime combo"));
+    assert_eq!(rect_of(&driver, "Amp render"), Some(before));
+
+    open_skin_list(&mut driver);
+    let _ = driver.click("High-gain head").expect("pick");
+    driver.settle();
+    open_skin_list(&mut driver);
+    let _ = driver.click("Auto").expect("auto");
+    driver.settle();
+    assert_eq!(block_skin(&backend, "blk-2"), None, "Auto clears it");
+}
+
+#[test]
+fn an_override_of_another_category_falls_back_to_auto() {
+    for skin in ["od-green", "cab-412-modern", "no-such-skin"] {
+        let (mut driver, _) = edited_driver("main-mono", |chain| {
+            chain["chain"][1]["skinOverride"] = skin.into();
+        });
+        let _ = driver.click(VOX).expect("amp");
+        driver.settle();
+        assert!(driver.is_visible("Amp render"), "{skin}");
+        assert!(
+            driver.shows_text("Auto \u{b7} Chime combo"),
+            "{skin} is ignored"
+        );
+        open_skin_list(&mut driver);
+        assert!(
+            driver
+                .controls()
+                .iter()
+                .any(|control| control.label == "Auto" && control.checked),
+            "{skin}"
+        );
+    }
+    let (mut driver, _) = edited_driver("main-mono", |chain| {
+        chain["chain"][1]["skinOverride"] = "british".into();
+    });
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    assert!(driver.shows_text("British head"), "an amp skin is honoured");
+}

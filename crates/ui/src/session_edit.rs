@@ -528,6 +528,10 @@ impl SessionEditor {
             } => self.select_second_model_with_bytes(
                 &block_id, tone, model_id, replaces, bytes, storage,
             ),
+            UiAction::SetBlockSkin { block_id, skin } => {
+                self.change_block(&block_id, |block| block.skin = skin)?;
+                Ok(self.chain_changed())
+            }
             UiAction::DuplicateBlock(id) => self.duplicate_block(&id, storage),
             UiAction::DuplicateBlockToLane {
                 block_id,
