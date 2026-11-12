@@ -11,7 +11,7 @@ mod utility;
 
 use eframe::egui;
 
-use super::header::{ChromeController, show_faceplate, show_overlay, show_stage};
+use super::header::{ChromeController, Placement, show_faceplate, show_overlay, show_stage};
 use crate::services::load_flow::LoadPhase;
 
 /// Header height in design points.
@@ -161,7 +161,7 @@ fn show_add_menu(
             }
             add_menu::AddMenuAction::Add(tone) => {
                 if let Some(id) = insert {
-                    chrome.add_tone(menu.lane, &id, tone);
+                    chrome.add_tone(menu.lane, &id, tone, Placement::End);
                 }
                 // A download keeps the menu open, so that its row shows the load, and a failed
                 // load keeps it open beside its toast, so that the player can try again.

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use ronie_ui::{
     backend::{MockBackend, UiBackend},
-    default::ChromeController,
+    default::{ChromeController, Placement},
     driver::UiDriver,
     shell::ViewMode,
     testbed::{UiScenario, load_scenarios},
@@ -1169,6 +1169,53 @@ fn pedalboard_driver() -> (UiDriver, Arc<MockBackend>) {
     let mut driver = UiDriver::new(chrome, (*backend).clone());
     driver.settle();
     (driver, backend)
+}
+
+fn add_beside(
+    placement: impl FnOnce(&ronie_core::ChainSnapshot) -> Placement,
+) -> (Vec<String>, String) {
+    let (mut driver, backend) = pedalboard_driver();
+    let chain = backend.chain_state(0).chain;
+    let insert = chain
+        .left
+        .iter()
+        .find(|block| block.is_insert)
+        .map(|block| block.id.0.clone())
+        .expect("insert");
+    let tone = ronie_core::Tone::from_value(serde_json::json!({
+        "id": 4243, "title": "Placed amp", "format": "nam", "gear": "amp",
+        "models": [{"id": 424301, "name": "One", "model_url": "https://fixtures.invalid/m/424301.nam"}]
+    }))
+    .expect("tone");
+    let placement = placement(&chain);
+    driver
+        .chrome_mut()
+        .add_tone(ronie_core::ChainSide::Left, &insert, tone, placement);
+    for _ in 0..20 {
+        driver.settle();
+    }
+    let titles = backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .filter_map(|block| block.tone.as_ref().map(|tone| tone.title.clone()))
+        .collect();
+    (titles, "Placed amp".to_owned())
+}
+
+#[test]
+fn a_tone_added_after_a_block_lands_after_it() {
+    let (titles, added) = add_beside(|chain| Placement::After(chain.left[0].id.clone()));
+    assert_eq!(titles.len(), 5, "{titles:?}");
+    assert_eq!(titles[1], added, "{titles:?}");
+}
+
+#[test]
+fn a_vanished_anchor_falls_back_to_the_end() {
+    let (titles, added) = add_beside(|_| Placement::After(ronie_core::BlockId("gone".to_owned())));
+    assert_eq!(titles.len(), 5, "{titles:?}");
+    assert_eq!(titles[4], added, "{titles:?}");
 }
 
 #[test]

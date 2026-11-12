@@ -286,6 +286,15 @@ pub enum UiAction {
         /// Destination zero-based index.
         target_index: usize,
     },
+    /// Place a block that was just added, without an undo step of its own.
+    PlaceAddedBlock {
+        /// The added block.
+        block_id: BlockId,
+        /// Destination lane.
+        side: ChainSide,
+        /// Destination zero-based index, clamped before the trailing insert.
+        index: usize,
+    },
     /// Load and stash a local file or folder into one insert.
     DropFile {
         /// Destination insert.

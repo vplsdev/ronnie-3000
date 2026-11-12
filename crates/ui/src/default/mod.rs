@@ -41,6 +41,7 @@ pub mod update;
 
 pub use self::decks::DeckKind;
 pub use self::filters::FilterMenu;
+pub use self::header::Placement;
 pub use crate::services::{
     ART_SIDE, AVATAR_SIDE, AuthPhase, AuthService, AuthSnapshot,
     BrowserController as CatalogBrowserController, CatalogSeed, CatalogStatus, CatalogStore,
