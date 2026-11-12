@@ -316,7 +316,7 @@ fn a_finished_switch_shows_the_new_model() {
         models: vec![request.model.clone()],
         ..tone
     }
-    .for_storage(ModelId(1105))
+    .for_storage(ModelId(1105), &[])
     .expect("stored tone");
     tone.title = "Stored".to_owned();
 

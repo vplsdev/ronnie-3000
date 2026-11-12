@@ -496,7 +496,7 @@ fn encode_block(
         })?;
         let stored = tone
             .clone()
-            .for_storage(active)
+            .for_storage(active, block.ir_b.map(|ir_b| ir_b.model_id).as_slice())
             .map_err(|error| UiError::Control(error.to_string()))?;
         set_property(&mut output, "toneId", JuceValue::Int64(tone.id.0));
         set_property(

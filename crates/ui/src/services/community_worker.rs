@@ -886,7 +886,7 @@ async fn download_catalog_model<T: HttpTransport + Send + Sync + 'static>(
 fn stored_tone(mut tone: Tone, model: ToneModel) -> Result<Tone, CommunityFailure> {
     let model_id = model.id;
     tone.models = vec![model];
-    tone.for_storage(model_id)
+    tone.for_storage(model_id, &[])
         .map_err(|_| CommunityFailure::Failed(SERVICE_INVALID))
 }
 

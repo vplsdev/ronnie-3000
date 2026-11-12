@@ -69,8 +69,8 @@ pub use cache::{
 };
 pub use chain::{
     ActivePreset, BlockId, BlockParams, ChainBlock, ChainBranch, ChainSide, ChainSnapshot, EqBand,
-    EqBandType, EqParams, InputMode, MidiMapping, MidiSource, SessionSnapshot, model_namespace,
-    references_model,
+    EqBandType, EqParams, InputMode, IrB, MidiMapping, MidiSource, SessionSnapshot,
+    model_namespace, references_model,
 };
 pub use download::{DecodedImage, DownloadClient};
 pub use error::{
