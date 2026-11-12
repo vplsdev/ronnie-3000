@@ -33,6 +33,11 @@ EDGE_FADE = 12
 SHADOW_SCALE = 0.4
 SHADOW_MAX_ALPHA = 0.85
 SHADOW_MAX_RGB = 0.08
+# The floor shadow is then blurred by SHADOW_BLUR of the body's short side, so that the edge of the
+# shadow catcher reads as a soft falloff, and it fades out over SHADOW_EDGE of the short side
+# before the frame edge, so that the frame never cuts it.
+SHADOW_BLUR = 0.03
+SHADOW_EDGE = 0.10
 # The body is trimmed to what has alpha above TRIM_ALPHA, plus TRIM_PAD px.
 TRIM_ALPHA = 8.0 / 255.0
 TRIM_PAD = 24
@@ -138,6 +143,7 @@ def clean_body(path):
     ys = np.arange(ch, dtype=np.float32)[:, None]
     xs = np.arange(cw, dtype=np.float32)[None, :]
     edge = np.minimum(np.minimum(xs, cw - 1 - xs), np.minimum(ys, ch - 1 - ys))
+    px = soften_shadow(px, edge)
     # The outer 2 px are fully clear, then alpha ramps up over EDGE_FADE px.
     px[..., 3] *= np.clip((edge - 1.0) / EDGE_FADE, 0.0, 1.0)
     bpy.data.images.remove(img)
@@ -149,6 +155,34 @@ def clean_body(path):
     out.save()
     bpy.data.images.remove(out)
     return left, top, cw, ch
+
+
+def box_blur(img, radius, axis):
+    pad = [(0, 0), (0, 0)]
+    pad[axis] = (radius + 1, radius)
+    summed = np.cumsum(np.pad(img, pad, mode="edge"), axis=axis)
+    n = img.shape[axis]
+    hi = np.take(summed, np.arange(2 * radius + 1, 2 * radius + 1 + n), axis=axis)
+    lo = np.take(summed, np.arange(0, n), axis=axis)
+    return (hi - lo) / (2 * radius + 1)
+
+
+def soften_shadow(px, edge):
+    """Blurs the black floor shadow and fades it out before the frame edge; the gear is kept."""
+    a = px[..., 3]
+    shadow = (a < SHADOW_MAX_ALPHA) & (px[..., :3].max(axis=2) < SHADOW_MAX_RGB)
+    short = min(px.shape[0], px.shape[1])
+    soft = np.where(shadow, a, 0.0)
+    radius = max(1, int(SHADOW_BLUR * short * 0.58))
+    # Three box passes approximate a Gaussian of SHADOW_BLUR * short.
+    for _ in range(3):
+        soft = box_blur(box_blur(soft, radius, 0), radius, 1)
+    t = np.clip((edge - 1.0) / (SHADOW_EDGE * short), 0.0, 1.0)
+    soft *= t * t * (3.0 - 2.0 * t)
+    gear = np.where(shadow, 0.0, a)
+    px[..., :3] = np.where(shadow[..., None], 0.0, px[..., :3])
+    px[..., 3] = gear + (1.0 - gear) * soft
+    return px
 
 
 def feather(path):
