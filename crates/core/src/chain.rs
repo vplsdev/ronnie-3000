@@ -294,6 +294,9 @@ pub struct ChainBlock {
     /// Second IR of a cab block, blended with the active model. `None` plays the active model
     /// alone, exactly as a block without dual-IR support does.
     pub ir_b: Option<IrB>,
+    /// Whether IR B has no usable bytes, so the block plays the active model alone until they
+    /// arrive. A restore sets it; it is never stored.
+    pub ir_b_missing: bool,
     /// Persisted block parameters.
     pub params: BlockParams,
 }
@@ -311,6 +314,7 @@ impl ChainBlock {
             model_loading: false,
             load_failed: false,
             ir_b: None,
+            ir_b_missing: false,
             params: BlockParams::default(),
         }
     }
@@ -327,6 +331,7 @@ impl ChainBlock {
             model_loading: false,
             load_failed: false,
             ir_b: None,
+            ir_b_missing: false,
             params: BlockParams::default(),
         }
     }
@@ -347,6 +352,7 @@ impl ChainBlock {
                 model_loading: false,
                 load_failed: false,
                 ir_b: None,
+                ir_b_missing: false,
                 params: BlockParams::default(),
             });
         }
@@ -371,6 +377,7 @@ impl ChainBlock {
             model_loading: bool_field(value.get("modelLoading"), false),
             load_failed: bool_field(value.get("loadFailed"), false),
             ir_b,
+            ir_b_missing: false,
             params,
         })
     }
@@ -862,6 +869,7 @@ impl ChainBlock {
                 model_loading: false,
                 load_failed: false,
                 ir_b: None,
+                ir_b_missing: false,
                 params: BlockParams::default(),
             });
         }
@@ -880,6 +888,7 @@ impl ChainBlock {
             model_loading: false,
             load_failed: false,
             ir_b,
+            ir_b_missing: false,
             params: BlockParams::from_juce_tree(tree)?,
         })
     }

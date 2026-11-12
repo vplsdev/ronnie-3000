@@ -291,7 +291,7 @@ impl RonieProcessor {
     }
 
     pub(crate) fn restore_session_bytes(&mut self, bytes: &[u8]) -> Result<(), UiError> {
-        let decoded = crate::persistence::decode_session(bytes, self.editor.current())?;
+        let mut decoded = crate::persistence::decode_session(bytes, self.editor.current())?;
         let storage = &mut self.storage;
         // A tone without usable bytes runs as bypass in a live session, so it must not stop the
         // next launch. The audio engine prepares that session from its own sources, and the
@@ -317,6 +317,14 @@ impl RonieProcessor {
             )?
         };
         storage.prepare_generation += 1;
+        crate::persistence::mark_missing_ir_b(
+            &mut decoded.frame.session,
+            &crate::persistence::ModelSources {
+                stash: storage.stash.as_deref(),
+                document: Some(&decoded.document.raw),
+                cache: &storage.model_bytes,
+            },
+        );
         storage.session_document = Some(Arc::new(decoded.document.raw));
         storage.pending_restore = change.map(|change| SessionRestore::Prepared(Box::new(change)));
         self.editor
@@ -449,8 +457,16 @@ impl SessionStorage for ProcessorStorage {
                 .ok_or_else(|| UiError::UnknownTarget(id.to_owned()))?;
             (info, Arc::new(document))
         };
-        let decoded = crate::persistence::decode_preset(&document, current)?;
+        let mut decoded = crate::persistence::decode_preset(&document, current)?;
         crate::persistence::check_restore(&decoded.document, current, &self.model_bytes)?;
+        crate::persistence::mark_missing_ir_b(
+            &mut decoded.frame.session,
+            &crate::persistence::ModelSources {
+                stash: self.stash.as_deref(),
+                document: Some(&decoded.document.raw),
+                cache: &self.model_bytes,
+            },
+        );
         // The live chain reads the embedded models from this document and from the byte cache.
         let document = Arc::new(decoded.document.raw);
         self.session_document = Some(Arc::clone(&document));

@@ -136,11 +136,12 @@ pub struct RestorePlan {
 }
 
 /// Builds a cache-first restoration plan without mutating the current snapshot or cache.
-/// Byte publication happens only after every active model and IR B has bytes or a retry source.
+/// Byte publication happens only after every active model has bytes or a retry source. An IR B
+/// with neither gets no job, and its block plays the active model alone.
 ///
 /// # Errors
 ///
-/// Returns [`RestoreError::MissingModel`] for an unrecoverable model, or a cache error.
+/// Returns [`RestoreError::MissingModel`] for an unrecoverable active model, or a cache error.
 pub fn restore_offline(
     document: &SessionDocument,
     caches: RestoreCaches<'_>,
@@ -180,6 +181,10 @@ pub fn restore_offline(
                 .map(|entry| entry.bytes.clone())
                 .or_else(|| caches.bytes.get(&key));
             if bytes.is_none() && source.is_none() {
+                // A missing IR B must not stop the restore: the block plays A alone.
+                if Some(model_id) != block.active_model_id {
+                    continue;
+                }
                 return Err(RestoreError::MissingModel {
                     block_id: block.id.clone(),
                     model_id,
@@ -246,11 +251,14 @@ pub fn restore_offline(
                                 model_id,
                                 namespace: crate::model_namespace(block, model_id),
                             };
-                            let restored = jobs
+                            let Some(job) = jobs
                                 .iter()
                                 .find(|job| job.block_id == block.id && job.model_id == model_id)
-                                .and_then(|job| job.bytes.as_ref());
-                            match (restored, caches.bytes.get(&key)) {
+                            else {
+                                // Only an IR B is skipped, and it has no bytes to compare.
+                                return true;
+                            };
+                            match (job.bytes.as_ref(), caches.bytes.get(&key)) {
                                 (Some(restored), Some(current)) => {
                                     restored.as_ref() == current.as_ref()
                                 }

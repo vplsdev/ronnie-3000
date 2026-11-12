@@ -638,7 +638,7 @@ fn restore_offline_prepares_b() {
 }
 
 #[test]
-fn restore_offline_refuses_a_b_without_bytes_or_source() {
+fn restore_offline_plays_a_alone_when_b_has_no_bytes_or_source() {
     let bytes = state_bytes(
         1,
         with_b(
@@ -648,20 +648,25 @@ fn restore_offline_refuses_a_b_without_bytes_or_source() {
         false,
     );
     let document = StateCodec::new().decode_session(&bytes).expect("document");
+    let current = document.snapshot.clone();
 
-    let result = ronie_core::restore_offline(
+    let plan = ronie_core::restore_offline(
         &document,
         RestoreCaches {
             bytes: &ModelByteCache::new(1024),
-            current: None,
+            current: Some(&current),
         },
-    );
+    )
+    .expect("a missing B does not fail the restore");
 
-    assert!(matches!(
-        result,
-        Err(RestoreError::MissingModel {
-            model_id: ModelId(101),
-            ..
-        })
-    ));
+    let jobs: Vec<_> = plan
+        .jobs
+        .iter()
+        .map(|job| (job.block_id.0.as_str(), job.model_id))
+        .collect();
+    assert_eq!(jobs, vec![("cab", ModelId(100))], "only A is prepared");
+    assert!(
+        plan.reconciled_block_ids.contains(&BlockId("cab".into())),
+        "a skipped B does not force a recompile"
+    );
 }
