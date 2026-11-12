@@ -3526,6 +3526,37 @@ fn the_skin_list_ends_above_its_chip_in_a_short_window() {
 }
 
 #[test]
+fn the_skin_list_does_not_reopen_after_another_view() {
+    let (mut driver, _) = amp_page();
+    open_skin_list(&mut driver);
+    assert!(driver.is_visible("Auto"));
+    let detail = driver.chrome_mut().detail_mut().expect("detail");
+    detail.set_view(BlockView::Eq);
+    driver.settle();
+    driver
+        .chrome_mut()
+        .detail_mut()
+        .expect("detail")
+        .set_view(BlockView::Tone);
+    driver.settle();
+    assert!(
+        !driver.is_visible("Auto"),
+        "back on GEAR the list is closed"
+    );
+
+    open_skin_list(&mut driver);
+    assert!(driver.is_visible("Auto"));
+    driver.chrome_mut().set_tuner(true);
+    driver.settle();
+    driver.chrome_mut().set_tuner(false);
+    driver.settle();
+    assert!(
+        driver.is_visible("Skin") && !driver.is_visible("Auto"),
+        "after the tuner had the stage the list is closed"
+    );
+}
+
+#[test]
 fn picking_a_skin_redraws_the_render_and_is_one_undo_step() {
     let (mut driver, backend) = amp_page();
     let before = rect_of(&driver, "Amp render").expect("render");

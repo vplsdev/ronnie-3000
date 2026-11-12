@@ -203,6 +203,9 @@ pub struct BlockDetail {
     light_followed: Option<usize>,
     /// Whether the skin list over the stage's SKIN chip is open.
     skin_open: bool,
+    /// The pass that last drew the SKIN chip; the list closes when a pass went without it, as
+    /// when another tab or the tuner had the stage.
+    skin_drawn: Option<u64>,
 }
 
 /// The model list and the switch of one detail.
@@ -292,6 +295,7 @@ impl BlockDetail {
             light_start: 0,
             light_followed: None,
             skin_open: false,
+            skin_drawn: None,
         })
     }
 
@@ -2287,6 +2291,11 @@ impl BlockDetail {
         shown: super::skins::BlockSkin,
         look: crate::theme::Look,
     ) {
+        let pass = ui.ctx().cumulative_pass_nr();
+        if self.skin_drawn.is_none_or(|drawn| drawn + 1 < pass) {
+            self.skin_open = false;
+        }
+        self.skin_drawn = Some(pass);
         let id = ui.scope_id().with(("skin-chip", &self.block_id.0));
         let response = ui.interact(rect, id, Sense::click());
         let open = self.skin_open;
