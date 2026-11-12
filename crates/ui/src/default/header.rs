@@ -134,6 +134,9 @@ pub struct ChromeController {
     recent_tones: RecentTones,
     /// The TONE3000 results of the Archetype add menu, while it shows a category.
     add_store: Option<CatalogStore>,
+    /// The newest query generation of an add menu store that closed. The next store counts on
+    /// from it, so a late answer of a closed store never matches a query of the next one.
+    add_generation: u64,
     /// The block that an add from the menu fills, and the load generation that fills it, so that
     /// the block opens when that load lands.
     added: Option<(String, u64)>,
@@ -244,6 +247,7 @@ impl ChromeController {
                 .text_preference(RecentTones::KEY)
                 .map_or_else(RecentTones::default, |text| RecentTones::from_text(&text)),
             add_store: None,
+            add_generation: 0,
             added: None,
             model_switches: ModelSwitchFlow::new(backend.clone()),
             detail_work_live: false,
@@ -1035,7 +1039,10 @@ impl ChromeController {
     /// whose category or text changed, or whose store holds no answer. A call each frame is
     /// cheap.
     pub fn open_add_results(&mut self, category: ronie_core::gear::GearCategory, text: &str) {
-        let store = self.add_store.get_or_insert_with(CatalogStore::new);
+        let after = self.add_generation;
+        let store = self
+            .add_store
+            .get_or_insert_with(|| CatalogStore::after_generation(after));
         let gear = gear_value(category);
         let sort = text
             .trim()
@@ -1070,9 +1077,12 @@ impl ChromeController {
         self.add_store.as_ref()
     }
 
-    /// Forgets the add menu results. A late answer then finds no store.
+    /// Forgets the add menu results. A late answer then finds no store, or a store whose
+    /// generations it cannot match.
     pub fn close_add_results(&mut self) {
-        self.add_store = None;
+        if let Some(store) = self.add_store.take() {
+            self.add_generation = store.current_generation();
+        }
     }
 
     /// The tone that a load is fetching now.

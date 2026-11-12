@@ -5253,6 +5253,50 @@ fn an_add_menu_query_fills_the_menu_store_and_not_the_browser() {
     assert!(seen[0].target.contains("gears=amp"), "{}", seen[0].target);
 }
 
+fn menu_titles(chrome: &ChromeController) -> Vec<String> {
+    chrome
+        .add_store()
+        .and_then(|store| store.result())
+        .map(|page| page.data.iter().map(|tone| tone.title.clone()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_late_answer_of_a_closed_category_does_not_fill_the_next_one() {
+    let directory = tempfile::tempdir().expect("settings root");
+    let routes = signed_in_routes(&directory);
+    routes
+        .respond(SEARCH, page_of(&[(1, "Pedal row")]))
+        .respond(SEARCH, page_of(&[(2, "Amp row")]));
+    routes.hold(SEARCH);
+    let mut chrome = chrome_over(&routes, &directory);
+
+    chrome.open_add_results(ronie_core::gear::GearCategory::Pedal, "");
+    let waiting = routes.clone();
+    pump(&mut chrome, "the pedal query", move |_| {
+        waiting.count(SEARCH) == 1
+    });
+    // Back to the categories before the answer, then another category.
+    chrome.close_add_results();
+    routes.release(SEARCH);
+    let_tasks_finish();
+    chrome.open_add_results(ronie_core::gear::GearCategory::Amp, "");
+    chrome.poll_community();
+
+    assert!(
+        menu_titles(&chrome).is_empty(),
+        "the pedal answer is refused: {:?}",
+        menu_titles(&chrome)
+    );
+    pump(&mut chrome, "the amp answer", |chrome| {
+        !menu_titles(chrome).is_empty()
+    });
+    assert_eq!(menu_titles(&chrome), ["Amp row"]);
+    let seen = routes.seen(SEARCH);
+    assert_eq!(seen.len(), 2);
+    assert!(seen[1].target.contains("gears=amp"), "{}", seen[1].target);
+}
+
 #[test]
 fn an_add_while_another_downloads_lands_only_the_newer_tone() {
     let directory = tempfile::tempdir().expect("settings root");
