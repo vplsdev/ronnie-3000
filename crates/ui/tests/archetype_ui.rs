@@ -63,6 +63,8 @@ fn the_global_panel_hides_while_the_browser_is_open() {
     );
     let _ = driver.click("Add a block").expect("the + button");
     driver.settle();
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("browser link");
+    driver.settle();
     assert!(
         driver.chrome_mut().browser_mut().is_some(),
         "the tone browser opened"
@@ -160,12 +162,171 @@ fn right_clicking_a_block_bypasses_it() {
     assert!(!enabled, "the block is bypassed");
 }
 
-#[test]
-fn add_a_block_opens_the_tone_browser() {
-    let (mut driver, _) = archetype_driver("main-mono");
+const CATEGORY_ROWS: [&str; 6] = ["PEDAL", "AMP", "AMP + CAB", "CAB", "OUTBOARD", "SPACE"];
+
+fn open_menu(driver: &mut UiDriver) {
     let _ = driver.click("Add a block").expect("plus");
     driver.settle();
+}
+
+#[test]
+fn plus_opens_the_add_menu() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    open_menu(&mut driver);
+    for label in CATEGORY_ROWS
+        .into_iter()
+        .chain(["LOAD A FILE\u{2026}", "OPEN THE TONE BROWSER"])
+    {
+        assert!(driver.is_visible(label), "{label} is missing");
+    }
+    assert!(driver.chrome_mut().browser_mut().is_none());
+    assert!(
+        driver.chrome_mut().detail_mut().is_some(),
+        "the stage still shows the amp page"
+    );
+}
+
+#[test]
+fn a_second_click_or_escape_closes_the_menu() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    open_menu(&mut driver);
+    let _ = driver.click("Add a block").expect("plus");
+    driver.settle();
+    assert!(!driver.is_visible("PEDAL"), "the second click closes it");
+    open_menu(&mut driver);
+    assert!(driver.is_visible("PEDAL"));
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+    driver.settle();
+    assert!(!driver.is_visible("PEDAL"), "escape closes it");
+}
+
+#[test]
+fn clicking_outside_closes_the_menu() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    open_menu(&mut driver);
+    assert!(driver.is_visible("PEDAL"));
+    let _ = driver.click_empty_space();
+    driver.settle();
+    assert!(!driver.is_visible("PEDAL"));
+}
+
+fn lane_radio(driver: &UiDriver, label: &str) -> bool {
+    driver
+        .controls()
+        .iter()
+        .find(|control| control.label == label)
+        .unwrap_or_else(|| panic!("{label} is missing"))
+        .checked
+}
+
+#[test]
+fn stereo_menu_offers_lane_a_and_b() {
+    let (mut driver, _) = archetype_driver("main-stereo");
+    open_menu(&mut driver);
+    assert!(lane_radio(&driver, "LANE A"), "lane A holds the selection");
+    assert!(!lane_radio(&driver, "LANE B"));
+    let _ = driver.click("Chain: Roland JC-40").expect("lane B block");
+    driver.settle();
+    let _ = driver.click("Add a block").expect("plus");
+    driver.settle();
+    if !driver.is_visible("LANE B") {
+        open_menu(&mut driver);
+    }
+    assert!(lane_radio(&driver, "LANE B"), "lane B holds the selection");
+    assert!(!lane_radio(&driver, "LANE A"));
+}
+
+#[test]
+fn mono_menu_adds_to_the_end_of_the_chain() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    open_menu(&mut driver);
+    assert!(driver.shows_text("to the end of the chain"));
+    assert!(!driver.is_visible("LANE A") && !driver.is_visible("LANE B"));
+}
+
+fn remembered_driver(tones: &[(i64, &str)]) -> UiDriver {
+    use ronie_core::gear::GearCategory;
+    use ronie_ui::{backend::UiAction, services::recent_tones::RecentTones};
+    let mut recent = RecentTones::default();
+    for (id, gear) in tones {
+        recent.remember(
+            ronie_core::Tone::from_value(serde_json::json!({
+                "id": id, "title": format!("Tone {id}"), "format": "nam", "gear": gear,
+                "models": [{"id": id * 10, "name": "m",
+                    "model_url": format!("https://fixtures.invalid/m/{id}.nam")}]
+            }))
+            .expect("tone"),
+        );
+    }
+    assert_eq!(recent.count(GearCategory::Amp), 2);
+    let backend = Arc::new(MockBackend::from_scenario(&scenario("main-mono")));
+    backend
+        .dispatch(UiAction::SetTextPreference {
+            key: RecentTones::KEY.to_owned(),
+            value: recent.to_text(),
+        })
+        .expect("seed");
+    let mut chrome = ChromeController::new(backend.clone(), Vec::new(), false, true);
+    chrome.set_view_mode(ViewMode::RonieFlow);
+    let mut driver = UiDriver::new(chrome, (*backend).clone());
+    driver.settle();
+    driver
+}
+
+#[test]
+fn category_rows_count_the_library() {
+    let mut driver = remembered_driver(&[(1, "amp"), (2, "amp")]);
+    open_menu(&mut driver);
+    assert!(driver.shows_text("2"), "the AMP row counts two tones");
+    assert!(
+        driver.shows_text("\u{2014}"),
+        "an empty category shows a dash"
+    );
+    let (mut empty, _) = archetype_driver("main-mono");
+    open_menu(&mut empty);
+    assert!(!empty.shows_text("2"));
+}
+
+#[test]
+fn mono_falls_back_to_lane_a() {
+    let (mut driver, _) = archetype_driver("main-stereo");
+    let _ = driver.click("Chain: Roland JC-40").expect("lane B block");
+    driver.settle();
+    open_menu(&mut driver);
+    assert!(lane_radio(&driver, "LANE B"));
+    // A click on the switch would close the menu, so the chain changes behind it.
+    let _ = driver.chrome_mut().set_stereo(false);
+    driver.settle();
+    assert!(driver.shows_text("to the end of the chain"));
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("link");
+    driver.settle();
     assert!(driver.chrome_mut().browser_mut().is_some());
+    let target = driver
+        .chrome_mut()
+        .load_flow_mut()
+        .pending_target()
+        .cloned()
+        .expect("a target");
+    assert_eq!(target.side, ronie_core::ChainSide::Left);
+}
+
+#[test]
+fn open_the_tone_browser_opens_it_for_the_lane() {
+    let (mut driver, _) = archetype_driver("main-stereo");
+    let _ = driver.click("Chain: Roland JC-40").expect("lane B block");
+    driver.settle();
+    open_menu(&mut driver);
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("link");
+    driver.settle();
+    assert!(driver.chrome_mut().browser_mut().is_some());
+    let target = driver
+        .chrome_mut()
+        .load_flow_mut()
+        .pending_target()
+        .cloned()
+        .expect("a target");
+    assert_eq!(target.side, ronie_core::ChainSide::Right);
+    assert!(!driver.is_visible("PEDAL"), "the menu closed");
 }
 
 #[test]
@@ -560,6 +721,8 @@ fn the_block_you_add_opens_on_the_stage() {
     let (mut driver, backend) = archetype_driver("main-mono");
     let _ = driver.click("Add a block").expect("plus");
     driver.settle();
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("browser link");
+    driver.settle();
     let tone = ronie_core::Tone::from_value(serde_json::json!({
         "id": 4242, "title": "Freshly added amp", "format": "nam", "gear": "amp",
         "models": [{"id": 424201, "name": "One", "model_url": "https://fixtures.invalid/m/424201.nam"}]
@@ -586,6 +749,33 @@ fn the_block_you_add_opens_on_the_stage() {
         "the added block opens: {:?}",
         driver.chrome().gallery().selection()
     );
+}
+
+#[test]
+fn a_loaded_tone_joins_the_library() {
+    use ronie_ui::services::RecentTones;
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let _ = driver.click("Add a block").expect("plus");
+    driver.settle();
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("browser link");
+    driver.settle();
+    let tone = ronie_core::Tone::from_value(serde_json::json!({
+        "id": 4343, "title": "Library amp", "format": "nam", "gear": "amp",
+        "models": [{"id": 434301, "name": "One", "model_url": "https://fixtures.invalid/m/434301.nam"}]
+    }))
+    .expect("tone");
+    driver.chrome_mut().pick_tone(tone);
+    for _ in 0..20 {
+        driver.settle();
+    }
+    assert_eq!(
+        driver.chrome().recent_tones().tones()[0].title,
+        "Library amp"
+    );
+    let stored = backend
+        .text_preference(RecentTones::KEY)
+        .expect("the library is stored");
+    assert!(stored.contains("Library amp"), "{stored}");
 }
 
 // ---------------------------------------------------------------- Task 8: designs
@@ -661,6 +851,8 @@ fn plus_adds_to_the_lane_of_the_selected_block() {
     let _ = driver.click("Chain: Roland JC-40").expect("lane B block");
     driver.settle();
     let _ = driver.click("Add a block").expect("plus");
+    driver.settle();
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("browser link");
     driver.settle();
     assert!(
         matches!(
@@ -1083,4 +1275,461 @@ fn the_size_toggle_keeps_one_name() {
     let _ = driver.click("Full size").expect("size toggle");
     driver.settle();
     assert!(driver.is_visible("Full size"), "the name survives the flip");
+}
+
+// ---------------------------------------------------------------- Add menu results
+
+const AMP_SEARCH: &str = "Search amps in your library and on TONE3000";
+
+fn amp_tone(id: i64, title: &str) -> ronie_core::Tone {
+    ronie_core::Tone::from_value(serde_json::json!({
+        "id": id, "title": title, "format": "nam", "gear": "amp",
+        "downloads_count": 3200, "user": {"username": "lowend_lab"},
+        "models": [{"id": id * 10, "name": "m",
+            "model_url": format!("https://fixtures.invalid/m/{id}.nam")}]
+    }))
+    .expect("tone")
+}
+
+/// A driver whose library holds `library`, newest first, and whose user is signed in or not.
+fn menu_driver(
+    id: &str,
+    signed_in: bool,
+    library: &[ronie_core::Tone],
+) -> (UiDriver, Arc<MockBackend>) {
+    use ronie_ui::{backend::UiAction, services::recent_tones::RecentTones};
+    let mut recent = RecentTones::default();
+    for tone in library.iter().rev() {
+        recent.remember(tone.clone());
+    }
+    let backend = Arc::new(MockBackend::from_scenario(&scenario(id)));
+    backend
+        .dispatch(UiAction::SetTextPreference {
+            key: RecentTones::KEY.to_owned(),
+            value: recent.to_text(),
+        })
+        .expect("seed");
+    let mut chrome = ChromeController::new(backend.clone(), Vec::new(), signed_in, true);
+    chrome.set_view_mode(ViewMode::RonieFlow);
+    let mut driver = UiDriver::new(chrome, (*backend).clone());
+    driver.settle();
+    (driver, backend)
+}
+
+fn open_amp(driver: &mut UiDriver) {
+    open_menu(driver);
+    let _ = driver.click("AMP").expect("AMP row");
+    driver.settle();
+}
+
+/// Answers the query of the menu store with `tones`, out of `total` tones.
+fn answer_menu(driver: &mut UiDriver, tones: Vec<ronie_core::Tone>, total: u64) {
+    let store = driver.chrome_mut().add_store_mut().expect("the menu store");
+    let generation = store.begin_query();
+    let completed = store.complete_query(
+        generation,
+        ronie_core::Page {
+            data: tones,
+            page: 1,
+            page_size: 12,
+            total,
+            total_pages: total.div_ceil(12),
+        },
+        false,
+    );
+    assert!(completed);
+    driver.settle();
+}
+
+fn lane_titles(backend: &MockBackend, right: bool) -> Vec<String> {
+    let chain = backend.chain_state(0).chain;
+    let lane = if right { &chain.right } else { &chain.left };
+    lane.iter()
+        .filter(|block| !block.is_insert)
+        .filter_map(|block| block.tone.as_ref().map(|tone| tone.title.clone()))
+        .collect()
+}
+
+#[test]
+fn a_category_shows_library_and_tone3000() {
+    let (mut driver, _) = menu_driver("main-mono", true, &[]);
+    open_amp(&mut driver);
+    for text in ["YOUR LIBRARY", "TONE3000", "TRENDING"] {
+        assert!(driver.shows_text(text), "{text} is missing");
+    }
+    assert!(driver.is_visible("Back to categories"));
+    assert!(driver.is_visible(AMP_SEARCH));
+    assert!(
+        driver.shows_text("Nothing yet. Tones you load show up here."),
+        "an empty library says so"
+    );
+    assert!(!driver.is_visible("PEDAL"), "the categories gave way");
+}
+
+#[test]
+fn tone3000_rows_come_from_the_menu_store() {
+    let (mut driver, _) = menu_driver("main-mono", true, &[]);
+    open_amp(&mut driver);
+    let store = driver.chrome_mut().add_store_mut().expect("the menu store");
+    assert_eq!(store.query().gear, "amp");
+    answer_menu(
+        &mut driver,
+        vec![
+            amp_tone(501, "5150 III Red"),
+            amp_tone(502, "Friedman BE-100"),
+            amp_tone(503, "Twin Reverb Clean"),
+        ],
+        1284,
+    );
+    for title in ["5150 III Red", "Friedman BE-100", "Twin Reverb Clean"] {
+        assert!(driver.is_visible(title), "{title} is missing");
+    }
+    assert!(driver.shows_text("lowend_lab \u{b7} 3.2k \u{2193}"));
+    assert!(driver.is_visible("SHOW ALL 1,284 AMPS IN THE TONE BROWSER"));
+}
+
+#[test]
+fn adding_a_library_tone_puts_it_at_the_end_of_the_lane() {
+    let (mut driver, backend) = menu_driver("main-mono", false, &[amp_tone(601, "Plexi Lead")]);
+    open_amp(&mut driver);
+    assert!(driver.shows_text("Downloaded \u{b7} 1 capture"));
+    let _ = driver.click("Plexi Lead").expect("library row");
+    driver.settle();
+    let titles = lane_titles(&backend, false);
+    assert_eq!(
+        titles.last().map(String::as_str),
+        Some("Plexi Lead"),
+        "{titles:?}"
+    );
+    assert!(!driver.is_visible("Back to categories"), "the menu closed");
+    let added = backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .find(|block| {
+            block
+                .tone
+                .as_ref()
+                .is_some_and(|tone| tone.title == "Plexi Lead")
+        })
+        .map(|block| block.id.clone())
+        .expect("the block");
+    assert!(
+        matches!(driver.chrome().gallery().selection(), GallerySelection::BlockDetail(id) if *id == added),
+        "the new block is on the stage: {:?}",
+        driver.chrome().gallery().selection()
+    );
+    assert!(driver.chrome_mut().browser_mut().is_none());
+}
+
+#[test]
+fn stereo_adds_to_the_chosen_lane() {
+    let (mut driver, backend) = menu_driver("main-stereo", false, &[amp_tone(602, "Lane B Amp")]);
+    open_amp(&mut driver);
+    let _ = driver.click("LANE B").expect("lane B");
+    driver.settle();
+    let _ = driver.click("Lane B Amp").expect("library row");
+    driver.settle();
+    assert!(lane_titles(&backend, true).contains(&"Lane B Amp".to_owned()));
+    assert!(!lane_titles(&backend, false).contains(&"Lane B Amp".to_owned()));
+}
+
+#[test]
+fn a_tone_already_in_the_chain_reads_in_chain() {
+    let backend = MockBackend::from_scenario(&scenario("main-mono"));
+    let vox = backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .find_map(|block| block.tone.clone().filter(|tone| tone.title.contains("Vox")))
+        .expect("the Vox tone");
+    let (mut driver, _) = menu_driver("main-mono", false, &[vox, amp_tone(603, "Not Loaded")]);
+    open_amp(&mut driver);
+    assert!(driver.shows_text("IN CHAIN"));
+    assert!(driver.shows_text("ADD"), "the other tone can be added");
+}
+
+#[test]
+fn searching_filters_the_library() {
+    let (mut driver, _) = menu_driver(
+        "main-mono",
+        true,
+        &[amp_tone(604, "JCM800 Crunch"), amp_tone(605, "Twin Clean")],
+    );
+    open_amp(&mut driver);
+    assert!(driver.is_visible("Twin Clean"));
+    let _ = driver.fill(AMP_SEARCH, "jcm").expect("search");
+    assert!(driver.is_visible("JCM800 Crunch"));
+    assert!(!driver.is_visible("Twin Clean"));
+    let text = driver
+        .chrome_mut()
+        .add_store_mut()
+        .map(|store| store.query().text.clone());
+    assert_eq!(text.as_deref(), Some("jcm"));
+}
+
+/// A build with no key yet, whose sign-in opens the key page.
+struct NoKey;
+
+impl ronie_ui::services::key_setup::KeySetup for NoKey {
+    fn origin(&self) -> String {
+        "https://www.fixtures.invalid".to_owned()
+    }
+
+    fn has_saved_key(&self) -> bool {
+        false
+    }
+
+    fn save(
+        &mut self,
+        _key: &str,
+    ) -> Result<
+        Option<ronie_ui::services::key_setup::CommunityParts>,
+        ronie_ui::services::key_setup::KeySetupError,
+    > {
+        Ok(None)
+    }
+
+    fn remove(
+        &mut self,
+    ) -> Result<
+        Option<ronie_ui::services::key_setup::CommunityParts>,
+        ronie_ui::services::key_setup::KeySetupError,
+    > {
+        Ok(None)
+    }
+}
+
+#[test]
+fn signed_out_shows_the_sign_in_box() {
+    let (mut driver, _) = menu_driver("main-mono", false, &[amp_tone(606, "Kept Amp")]);
+    driver.chrome_mut().use_key_setup(Box::new(NoKey));
+    open_amp(&mut driver);
+    assert!(driver.is_visible("SIGN IN"));
+    assert!(driver.is_visible("Search amps in your library"));
+    assert!(
+        driver.shows_text("Sign in to search and download from the TONE3000 community library.")
+    );
+    assert!(driver.is_visible("Kept Amp"), "the library stays");
+    assert!(!driver.shows_text("TRENDING"));
+    assert!(!driver.chrome().auth_active());
+    let _ = driver.click("SIGN IN").expect("sign in");
+    driver.settle();
+    // A build with no key starts its sign-in on the key page, as the browser's button does.
+    assert!(driver.chrome().key_page().is_some(), "the sign-in starts");
+    assert!(!driver.shows_text("YOUR LIBRARY"), "the menu closed");
+}
+
+#[test]
+fn signing_out_while_results_show_turns_tone3000_into_the_sign_in_box() {
+    let (mut driver, _) = menu_driver("main-mono", true, &[]);
+    open_amp(&mut driver);
+    answer_menu(&mut driver, vec![amp_tone(607, "Remote Amp")], 1);
+    assert!(driver.is_visible("Remote Amp"));
+    driver.chrome_mut().sign_out().expect("sign out");
+    driver.frame();
+    assert!(driver.is_visible("SIGN IN"));
+    assert!(!driver.is_visible("Remote Amp"));
+}
+
+#[test]
+fn show_all_opens_the_browser_filtered() {
+    let (mut driver, _) = menu_driver("main-mono", true, &[]);
+    open_amp(&mut driver);
+    let _ = driver.fill(AMP_SEARCH, "plexi").expect("search");
+    answer_menu(&mut driver, vec![amp_tone(608, "Plexi Remote")], 3);
+    let _ = driver
+        .click("SHOW ALL 3 AMPS IN THE TONE BROWSER")
+        .expect("show all");
+    driver.settle();
+    let query = driver
+        .chrome_mut()
+        .browser_mut()
+        .map(|browser| browser.store().query().clone())
+        .expect("the browser opened");
+    assert_eq!(query.gear, "amp");
+    assert_eq!(query.text, "plexi");
+    assert!(!driver.is_visible("Back to categories"), "the menu closed");
+}
+
+#[test]
+fn back_returns_to_the_categories() {
+    let (mut driver, _) = menu_driver("main-mono", true, &[]);
+    open_amp(&mut driver);
+    let _ = driver.click("Back to categories").expect("back");
+    driver.settle();
+    assert!(driver.is_visible("PEDAL"));
+    assert!(!driver.shows_text("YOUR LIBRARY"));
+    assert!(
+        driver.chrome_mut().add_store_mut().is_none(),
+        "the results are gone"
+    );
+}
+
+#[test]
+fn a_second_add_takes_over_a_download_in_progress() {
+    let (mut driver, backend) = menu_driver("main-mono", true, &[]);
+    open_amp(&mut driver);
+    answer_menu(
+        &mut driver,
+        vec![amp_tone(701, "Slow Download"), amp_tone(702, "Second Pick")],
+        2,
+    );
+    // The first tone is still downloading.
+    let insert = backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .rev()
+        .find(|block| block.is_insert)
+        .map(|block| block.id.0.clone())
+        .expect("insert");
+    let flow = driver.chrome_mut().load_flow_mut();
+    flow.select(ronie_core::ChainSide::Left, &insert);
+    let _ticket = flow
+        .begin_remote_load(amp_tone(701, "Slow Download"))
+        .expect("load");
+    driver.settle();
+    assert!(driver.shows_text("DOWNLOADING"));
+
+    let _ = driver.click("Second Pick").expect("second row");
+    driver.settle();
+    let titles = lane_titles(&backend, false);
+    assert!(titles.contains(&"Second Pick".to_owned()), "{titles:?}");
+    assert!(!titles.contains(&"Slow Download".to_owned()), "{titles:?}");
+    assert_eq!(driver.chrome().loading_tone(), None);
+    assert!(!driver.shows_text("DOWNLOADING"));
+}
+
+#[test]
+fn a_refused_library_load_shows_a_toast_and_keeps_the_menu_and_the_tone() {
+    let local = ronie_core::Tone::from_value(serde_json::json!({
+        "id": 0, "title": "Collected Stash", "format": "nam", "gear": "amp", "local": true,
+        "models": [{"id": 1, "name": "m", "model_url": "file:///stash/collected.nam"}]
+    }))
+    .expect("tone");
+    let (mut driver, backend) = menu_driver("main-mono", false, &[local]);
+    backend.refuse_tone_loads(true);
+    open_amp(&mut driver);
+    assert!(driver.shows_text("Local .nam file"));
+    let _ = driver.click("Collected Stash").expect("library row");
+    driver.settle();
+    assert!(
+        !lane_titles(&backend, false).contains(&"Collected Stash".to_owned()),
+        "the chain stays as it was"
+    );
+    assert!(
+        driver
+            .chrome()
+            .visible_toast()
+            .is_some_and(|text| text.contains("try again")),
+        "the player reads why: {:?}",
+        driver.chrome().visible_toast()
+    );
+    assert!(driver.is_visible("Collected Stash"), "the menu stays open");
+    assert!(
+        driver
+            .chrome()
+            .recent_tones()
+            .tones()
+            .iter()
+            .any(|tone| tone.title == "Collected Stash"),
+        "the tone stays in the library"
+    );
+}
+
+// ---------------------------------------------------------------- Add menu: load a file
+
+/// Writes a short mono 16-bit WAV impulse response, a file that the menu's file dialog takes.
+fn write_ir(path: &std::path::Path) {
+    let samples = [0_i16, 1000, -1000, 0];
+    let mut bytes = Vec::from(b"RIFF".as_slice());
+    bytes.extend_from_slice(&(36 + samples.len() as u32 * 2).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&96_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&2_u16.to_le_bytes());
+    bytes.extend_from_slice(&16_u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(samples.len() as u32 * 2).to_le_bytes());
+    for sample in samples {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    std::fs::write(path, bytes).expect("WAV");
+}
+
+fn last_insert(backend: &MockBackend) -> String {
+    backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .rev()
+        .find(|block| block.is_insert)
+        .map(|block| block.id.0.clone())
+        .expect("insert")
+}
+
+#[test]
+fn a_loaded_file_lands_at_the_end_of_the_lane_joins_the_library_and_opens() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("closet-cab.wav");
+    write_ir(&path);
+    let insert = last_insert(&backend);
+
+    driver
+        .chrome_mut()
+        .drop_file_into(&insert, &path)
+        .expect("the file loads");
+    driver.settle();
+
+    let lane = backend.chain_state(0).chain.left.clone();
+    let last_tone = lane
+        .iter()
+        .rev()
+        .find(|block| !block.is_insert)
+        .expect("a tone block");
+    assert_eq!(last_tone.id.0, insert, "the file fills the last insert");
+    let title = last_tone.tone.as_ref().map(|tone| tone.title.clone());
+    assert!(
+        driver
+            .chrome()
+            .recent_tones()
+            .tones()
+            .first()
+            .is_some_and(|tone| Some(&tone.title) == title.as_ref() && tone.local),
+        "the file joins the library"
+    );
+    assert!(
+        matches!(driver.chrome().gallery().selection(), GallerySelection::BlockDetail(id) if id.0 == insert),
+        "the new block is on the stage: {:?}",
+        driver.chrome().gallery().selection()
+    );
+}
+
+#[test]
+fn a_missing_file_shows_a_toast() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let directory = tempfile::tempdir().expect("tempdir");
+    let insert = last_insert(&backend);
+    let before = backend.chain_state(0).revision;
+
+    let result = driver
+        .chrome_mut()
+        .drop_file_into(&insert, &directory.path().join("gone.nam"));
+    driver.settle();
+
+    assert!(result.is_err());
+    assert_eq!(backend.chain_state(0).revision, before, "the chain stays");
+    assert!(
+        driver.chrome().visible_toast().is_some(),
+        "the player reads that the file did not load"
+    );
 }

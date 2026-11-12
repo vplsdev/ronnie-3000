@@ -437,7 +437,7 @@ fn title_galley(
     ui.ctx().fonts_mut(|fonts| fonts.layout_job(job))
 }
 
-fn model_count(tone: &Tone) -> u64 {
+pub(crate) fn model_count(tone: &Tone) -> u64 {
     let field = if tone.kind == ronie_core::ModelKind::Nam {
         "a2_models_count"
     } else {
@@ -570,7 +570,7 @@ fn text_width(ui: &egui::Ui, text: &str, size: f32) -> f32 {
     })
 }
 
-fn compact_count(value: u64) -> String {
+pub(crate) fn compact_count(value: u64) -> String {
     if value < 10_000 {
         let digits = value.to_string();
         let mut output = String::new();

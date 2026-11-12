@@ -21,15 +21,17 @@ use super::{
     presets::PresetController,
 };
 use crate::services::{
+    catalog::CatalogStore,
     community::{CommunityAccess, CommunityService},
     community_worker::{
         CommunityEvent, CommunityFailure, CommunityScope, CommunityWork, CommunityWorker,
-        LoadRequest, QueryRequest,
+        LoadRequest, QueryRequest, QueryScope,
     },
     images::{ART_SIDE, AVATAR_SIDE, ImageCache, RemoteImages},
     key_setup::{CommunityParts, KeySetup, KeySetupError, is_publishable_key},
     links::open_web_url,
     load_flow::{LoadFlow, LoadPhase, LoadTicket, ModelSwitchFlow},
+    recent_tones::RecentTones,
     session::{AuthFlowAdapter, Session, SessionEvent, SessionStatus},
 };
 
@@ -37,6 +39,10 @@ use crate::services::{
 const HOME_LABEL: &str = "Back to main screen";
 /// What the user reads when the token store holds no usable session.
 const SESSION_ENDED: &str = "Your session ended. Sign in again to see your tones.";
+/// What the user reads when the backend refuses a tone that needs no download.
+const LOAD_REFUSED: &str = "The tone could not be loaded.";
+/// A local file that did not load. The menu that chose it has closed, so the user opens it again.
+const FILE_REFUSED: &str = "The file could not be loaded. Choose another file to try again.";
 /// The card of a failed load takes a click again, so the user reads how to retry.
 const LOAD_RETRY_HINT: &str = "Select the tone to try again.";
 /// The picker takes the same choice again, so the user reads how to retry.
@@ -127,6 +133,15 @@ pub struct ChromeController {
     /// Closed browser that keeps its query, results, and scroll for the next open.
     parked_browser: Option<BrowserView>,
     load_flow: LoadFlow,
+    recent_tones: RecentTones,
+    /// The TONE3000 results of the Archetype add menu, while it shows a category.
+    add_store: Option<CatalogStore>,
+    /// The newest query generation of an add menu store that closed. The next store counts on
+    /// from it, so a late answer of a closed store never matches a query of the next one.
+    add_generation: u64,
+    /// The block that an add from the menu fills, and the load generation that fills it, so that
+    /// the block opens when that load lands.
+    added: Option<(String, u64)>,
     model_switches: ModelSwitchFlow,
     /// Whether the worker can hold a model list or a switch of a detail.
     detail_work_live: bool,
@@ -230,6 +245,12 @@ impl ChromeController {
             browser: None,
             parked_browser: None,
             load_flow: LoadFlow::new(backend.clone()),
+            recent_tones: backend
+                .text_preference(RecentTones::KEY)
+                .map_or_else(RecentTones::default, |text| RecentTones::from_text(&text)),
+            add_store: None,
+            add_generation: 0,
+            added: None,
             model_switches: ModelSwitchFlow::new(backend.clone()),
             detail_work_live: false,
             images: None,
@@ -499,23 +520,33 @@ impl ChromeController {
     fn apply_community_event(&mut self, event: CommunityEvent) -> bool {
         let store = self.browser.as_mut().map(BrowserView::store_mut);
         let failure = match event {
-            CommunityEvent::Query { generation, result } => match result {
-                Ok(reply) => {
-                    if let Some(store) = store
-                        && store.complete_query(generation, reply.page, reply.trending)
-                    {
-                        store.remember_result_creators();
+            CommunityEvent::Query {
+                scope,
+                generation,
+                result,
+            } => {
+                let store = match scope {
+                    QueryScope::Browser => store,
+                    QueryScope::AddMenu => self.add_store.as_mut(),
+                };
+                match result {
+                    Ok(reply) => {
+                        if let Some(store) = store
+                            && store.complete_query(generation, reply.page, reply.trending)
+                        {
+                            store.remember_result_creators();
+                        }
+                        None
                     }
-                    None
-                }
-                Err(CommunityFailure::Failed(message)) => {
-                    if let Some(store) = store {
-                        store.fail_query(generation, message);
+                    Err(CommunityFailure::Failed(message)) => {
+                        if let Some(store) = store {
+                            store.fail_query(generation, message);
+                        }
+                        None
                     }
-                    None
+                    Err(failure) => Some(failure),
                 }
-                Err(failure) => Some(failure),
-            },
+            }
             CommunityEvent::Taxonomy {
                 generation,
                 kind,
@@ -648,9 +679,23 @@ impl ChromeController {
                     query: query.query,
                     page: query.page,
                     signed_in,
+                    scope: QueryScope::Browser,
                 }));
             }
             work.extend(taxonomy.map(CommunityWork::Taxonomy));
+        }
+        if let Some(query) = self
+            .add_store
+            .as_mut()
+            .and_then(CatalogStore::take_unsent_query)
+        {
+            work.push(CommunityWork::Query(QueryRequest {
+                generation: query.generation,
+                query: query.query,
+                page: query.page,
+                signed_in,
+                scope: QueryScope::AddMenu,
+            }));
         }
         if let Some(detail) = &mut self.detail {
             let list = detail.take_models_request(self.session.status());
@@ -699,6 +744,17 @@ impl ChromeController {
                 .is_some_and(|detail| detail.fail_switch(request.ticket.generation()))
             {
                 self.hints.set_toast(Some(problem.to_owned()));
+            }
+            return;
+        }
+        if let CommunityWork::Query(QueryRequest {
+            scope: QueryScope::AddMenu,
+            generation,
+            ..
+        }) = &work
+        {
+            if let Some(store) = &mut self.add_store {
+                store.fail_query(*generation, problem);
             }
             return;
         }
@@ -755,8 +811,13 @@ impl ChromeController {
     /// network and the tone lands at once.
     pub fn pick_tone(&mut self, tone: ronie_core::Tone) {
         if self.community.is_none() || tone.local {
-            if let Ok(generation) = self.load_flow.begin_load(tone.clone()) {
-                self.load_flow.complete_cached(generation, tone);
+            if let Ok(generation) = self.load_flow.begin_load(tone.clone())
+                && !self.load_flow.complete_cached(generation, tone)
+                && self.load_flow.phase() == LoadPhase::Failed
+            {
+                // A refused model, such as a local file that is gone, changes nothing in the chain.
+                self.hints
+                    .set_toast(Some(format!("{LOAD_REFUSED} {LOAD_RETRY_HINT}")));
             }
             return;
         }
@@ -939,8 +1000,203 @@ impl ChromeController {
         &mut self.load_flow
     }
 
+    /// The tones that were loaded lately.
+    #[must_use]
+    pub const fn recent_tones(&self) -> &RecentTones {
+        &self.recent_tones
+    }
+
+    fn remember_tone(&mut self, tone: ronie_core::Tone) {
+        self.recent_tones.remember(tone);
+        // The list is a convenience, so a refused write loses only the memory of it.
+        let _ = self.backend.dispatch(UiAction::SetTextPreference {
+            key: RecentTones::KEY.to_owned(),
+            value: self.recent_tones.to_text(),
+        });
+    }
+
+    /// Loads a local file into one insert, puts its tone in the library, and opens the new
+    /// block. A refused file shows a toast and changes nothing.
+    ///
+    /// # Errors
+    /// Returns the error of the drop.
+    pub fn drop_file_into(
+        &mut self,
+        insert_id: &str,
+        path: &std::path::Path,
+    ) -> Result<(), UiError> {
+        if let Err(error) = self.gallery.drop_file(insert_id, path) {
+            self.hints.set_toast(Some(FILE_REFUSED.to_owned()));
+            return Err(error);
+        }
+        let chain = self.backend.chain_state(0).chain;
+        if let Some(tone) = chain
+            .block(&ronie_core::BlockId(insert_id.to_owned()))
+            .and_then(|block| block.tone.clone())
+        {
+            self.remember_tone(tone);
+        }
+        // The insert holds the file's tone now, so it opens as a block, as an add does.
+        self.gallery.activate(insert_id);
+        self.sync_detail();
+        Ok(())
+    }
+
+    /// Shows the TONE3000 tones of one category in the add menu, for a search text.
+    ///
+    /// This keeps the store of an earlier call, and starts a query only for a signed-in user
+    /// whose category or text changed, or whose store holds no answer. A call each frame is
+    /// cheap.
+    pub fn open_add_results(&mut self, category: ronie_core::gear::GearCategory, text: &str) {
+        let after = self.add_generation;
+        let store = self
+            .add_store
+            .get_or_insert_with(|| CatalogStore::after_generation(after));
+        let gear = gear_value(category);
+        let sort = text
+            .trim()
+            .is_empty()
+            .then_some(ronie_core::ToneSort::Trending);
+        let query = store.query();
+        let changed = query.gear != gear || query.text != text || query.sort != sort;
+        if changed {
+            store.set_gear(gear);
+            let query = store.query_mut();
+            text.clone_into(&mut query.text);
+            query.sort = sort;
+        }
+        let unanswered = store.result().is_none()
+            && matches!(
+                store.status(),
+                crate::services::catalog::CatalogStatus::Idle
+            );
+        if self.session.status().signed_in() && (changed || unanswered) {
+            store.begin_query();
+        }
+    }
+
+    /// The store of the add menu results, while the menu shows a category.
+    pub fn add_store_mut(&mut self) -> Option<&mut CatalogStore> {
+        self.add_store.as_mut()
+    }
+
+    /// The store of the add menu results, while the menu shows a category.
+    #[must_use]
+    pub const fn add_store(&self) -> Option<&CatalogStore> {
+        self.add_store.as_ref()
+    }
+
+    /// Forgets the add menu results. A late answer then finds no store, or a store whose
+    /// generations it cannot match.
+    pub fn close_add_results(&mut self) {
+        if let Some(store) = self.add_store.take() {
+            self.add_generation = store.current_generation();
+        }
+    }
+
+    /// Whether a catalog tone can load now. A catalog load asks the service for the tone as the
+    /// user, so a signed-out user signs in first; with no service, a load needs no network.
+    #[must_use]
+    pub fn can_download_catalog_tones(&self) -> bool {
+        self.community.is_none() || self.session.status().signed_in()
+    }
+
+    /// The tone that a load is fetching now.
+    #[must_use]
+    pub fn loading_tone(&self) -> Option<ronie_core::ToneId> {
+        self.load_flow.loading_tone_id()
+    }
+
+    /// Loads `tone` into the insert `insert_id` of lane `side` from the add menu.
+    ///
+    /// The gallery selection stays, so the stage keeps its block until the tone lands; the new
+    /// block then opens. An open browser closes first, because its target is another slot.
+    pub fn add_tone(
+        &mut self,
+        side: ronie_core::ChainSide,
+        insert_id: &str,
+        tone: ronie_core::Tone,
+    ) {
+        if let Some(mut browser) = self.browser.take() {
+            browser.close();
+            self.parked_browser = Some(browser);
+            self.cancel_browser_work();
+            if matches!(
+                self.gallery.selection(),
+                GallerySelection::SelectTone { .. }
+            ) {
+                self.gallery.clear_selection();
+            }
+        }
+        self.load_flow.select(side, insert_id);
+        self.pick_tone(tone);
+        self.added = (self.load_flow.phase() != LoadPhase::Idle)
+            .then(|| (insert_id.to_owned(), self.load_flow.generation()));
+        // A tone with no network lands at once, so its block opens in this call.
+        if let Some(tone) = self.load_flow.take_landed() {
+            self.remember_tone(tone);
+            self.open_added_block();
+        }
+    }
+
+    /// Opens the block that an add from the menu filled, when the load that landed is that add.
+    fn open_added_block(&mut self) {
+        let Some((id, generation)) = self.added.take() else {
+            return;
+        };
+        if generation != self.load_flow.generation() {
+            return;
+        }
+        let filled = self
+            .backend
+            .chain_state(0)
+            .chain
+            .block(&BlockId(id.clone()))
+            .is_some_and(|block| !block.is_insert);
+        if filled {
+            self.gallery.activate(&id);
+            self.sync_detail();
+        }
+    }
+
+    /// Opens the tone browser for the insert `insert_id`, narrowed to `category` and `text`.
+    pub fn open_browser_for(
+        &mut self,
+        insert_id: &str,
+        category: Option<ronie_core::gear::GearCategory>,
+        text: &str,
+    ) {
+        self.gallery.activate(insert_id);
+        self.sync_browser();
+        let service = self.community.is_some();
+        let Some(category) = category else {
+            return;
+        };
+        if let Some(browser) = &mut self.browser {
+            let store = browser.store_mut();
+            store.set_gear(gear_value(category));
+            text.clone_into(&mut store.query_mut().text);
+            if service {
+                store.begin_query();
+            }
+        }
+    }
+
     /// Opens tone selection for the gallery target and closes completed flows.
     pub fn sync_browser(&mut self) {
+        if let Some(tone) = self.load_flow.take_landed() {
+            self.remember_tone(tone);
+            self.open_added_block();
+        }
+        if self.load_flow.phase() != LoadPhase::Loading
+            && self
+                .added
+                .as_ref()
+                .is_some_and(|(_, generation)| *generation != self.load_flow.generation())
+        {
+            // A newer load or a close took the place of the add.
+            self.added = None;
+        }
         // A finished phase stays set until the next selection, so it closes an open browser
         // one time. It must not act on a selection that the user makes later.
         if self.browser.is_some()
@@ -1672,6 +1928,9 @@ impl ChromeController {
             self.account_avatar = None;
             self.user_refresh_due = self.session.status().signed_in();
         }
+        if let Some(store) = &mut self.add_store {
+            store.drop_session_results();
+        }
         // A closed browser shows its results again at the next open.
         for browser in self
             .browser
@@ -1948,6 +2207,20 @@ impl ChromeController {
     #[must_use]
     pub fn coalesce_edit(&mut self, now_ms: u64, revision: u64) -> u64 {
         self.presets.coalesce_edit(now_ms, revision)
+    }
+}
+
+/// The TONE3000 `gear` value of one category.
+pub(super) const fn gear_value(category: ronie_core::gear::GearCategory) -> &'static str {
+    use ronie_core::gear::GearCategory;
+    match category {
+        GearCategory::Pedal => "pedal",
+        GearCategory::Amp => "amp",
+        GearCategory::FullRig => "amp+cab",
+        GearCategory::Cab => "cab",
+        GearCategory::Outboard => "outboard",
+        GearCategory::Space => "space",
+        GearCategory::Unknown => "",
     }
 }
 

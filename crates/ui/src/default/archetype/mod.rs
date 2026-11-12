@@ -5,12 +5,14 @@
 //! `BlockDetail`, `Faceplate`) and only places them differently.
 
 use crate::theme::Look;
+mod add_menu;
 mod header;
 mod utility;
 
 use eframe::egui;
 
 use super::header::{ChromeController, show_faceplate, show_overlay, show_stage};
+use crate::services::load_flow::LoadPhase;
 
 /// Header height in design points.
 pub(super) const HEADER_HEIGHT: f32 = 64.0;
@@ -26,6 +28,10 @@ pub(super) fn show(
 ) {
     let look = Look::archetype();
     Look::install(ui.ctx(), look);
+    let header_bounds = egui::Rect::from_min_size(
+        ui.available_rect_before_wrap().min,
+        egui::vec2(ui.available_width(), HEADER_HEIGHT),
+    );
     // Fill only what is left below any banner, so that the banner stays visible.
     ui.painter()
         .rect_filled(ui.available_rect_before_wrap(), 0.0, look.background);
@@ -68,6 +74,7 @@ pub(super) fn show(
             None => {
                 focus.store(ui.ctx());
                 show_empty(ui, chrome, state, look);
+                show_add_menu(ui, chrome, state, header_bounds);
                 return;
             }
         }
@@ -88,6 +95,93 @@ pub(super) fn show(
         chrome.sync_detail();
         ui.ctx().request_repaint();
     }
+    show_add_menu(ui, chrome, state, header_bounds);
+}
+
+/// Draws the add menu when it is open and carries out what the player chose.
+fn show_add_menu(
+    ui: &mut egui::Ui,
+    chrome: &mut ChromeController,
+    state: &crate::backend::ChainViewState,
+    header_bounds: egui::Rect,
+) {
+    let mut menu = add_menu::AddMenu::load(ui.ctx());
+    if menu.adding && chrome.load_flow_phase() != LoadPhase::Loading {
+        // The add from this menu ended: a landed tone closes the menu, and a failure leaves it.
+        menu.adding = false;
+        if chrome.load_flow_phase() == LoadPhase::Ready {
+            menu.open = false;
+        }
+        menu.store(ui.ctx());
+    }
+    if !menu.open {
+        chrome.close_add_results();
+        return;
+    }
+    if !state.chain.stereo_enabled {
+        // Mono has one lane; a lane B choice from before the switch no longer exists.
+        menu.lane = ronie_core::ChainSide::Left;
+    }
+    let data = add_menu::MenuData {
+        stereo: state.chain.stereo_enabled,
+        library: chrome.recent_tones(),
+        in_chain: state
+            .chain
+            .left
+            .iter()
+            .chain(&state.chain.right)
+            .filter(|block| !block.is_insert)
+            .filter_map(|block| block.tone.as_ref())
+            .collect(),
+        signed_in: chrome.session().signed_in(),
+        catalog_downloads: chrome.can_download_catalog_tones(),
+        results: chrome.add_store(),
+        loading: chrome.loading_tone(),
+    };
+    let anchor = header::plus_rect(header_bounds);
+    let action = add_menu::show(ui, anchor, &mut menu, &data);
+    if let Some(action) = action {
+        let insert = header::insert_of(state, menu.lane);
+        match action {
+            add_menu::AddMenuAction::OpenBrowser(category) => {
+                menu.open = false;
+                if let Some(id) = insert {
+                    chrome.open_browser_for(&id, category, &menu.search);
+                }
+            }
+            add_menu::AddMenuAction::LoadFile => {
+                menu.open = false;
+                let picked = rfd::FileDialog::new()
+                    .set_title("Open a Ronnie model")
+                    .add_filter("Audio models", &["nam", "wav"])
+                    .pick_file();
+                if let (Some(path), Some(id)) = (picked, insert) {
+                    let _ = chrome.drop_file_into(&id, &path);
+                }
+            }
+            add_menu::AddMenuAction::Add(tone) => {
+                if let Some(id) = insert {
+                    chrome.add_tone(menu.lane, &id, tone);
+                }
+                // A download keeps the menu open, so that its row shows the load, and a failed
+                // load keeps it open beside its toast, so that the player can try again.
+                menu.adding = chrome.load_flow_phase() == LoadPhase::Loading;
+                menu.open = chrome.load_flow_phase() != LoadPhase::Ready;
+            }
+            add_menu::AddMenuAction::SignIn => {
+                menu.open = false;
+                let _ = chrome.sign_in();
+            }
+        }
+    }
+    match menu.view {
+        add_menu::MenuView::Results(category) if menu.open => {
+            chrome.open_add_results(category, &menu.search);
+        }
+        _ => chrome.close_add_results(),
+    }
+    menu.store(ui.ctx());
+    ui.ctx().request_repaint();
 }
 
 /// The stage of a chain with no tone blocks: a prompt and a button that opens the browser.
