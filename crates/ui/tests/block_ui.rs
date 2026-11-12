@@ -841,6 +841,59 @@ fn a_catalog_b_waits_for_its_bytes_and_lands_in_b() {
     assert_eq!(detail.model_select().active(), Some(ModelId(71)));
 }
 
+#[test]
+fn re_picking_the_current_b_keeps_a_download_of_a() {
+    let backend = mock_backend(&scenario("main-detail"));
+    let mut detail = cab_detail(&backend);
+    detail
+        .select_second_model(Some(ModelId(72)), SignedIn)
+        .expect("B");
+    let b = detail.take_switch_request().expect("a download of B");
+    let stored = Tone {
+        models: vec![b.model.clone()],
+        ..b.tone.clone()
+    }
+    .for_storage(ModelId(72), &[])
+    .expect("stored");
+    assert!(
+        b.ticket
+            .publish(stored, ModelId(72), vec![1, 2, 3].into())
+            .expect("publish")
+    );
+    assert!(detail.finish_switch(b.ticket.generation()));
+
+    detail.select_model(ModelId(73), SignedIn).expect("A");
+    let a = detail.take_switch_request().expect("a download of A");
+    assert_eq!(a.ticket.slot(), ronie_ui::services::ModelSlot::A);
+
+    detail
+        .select_second_model(Some(ModelId(72)), SignedIn)
+        .expect("the current B");
+
+    assert!(detail.take_switch_request().is_none(), "B is held already");
+    assert_eq!(
+        detail.model_select().target(),
+        Some(ModelId(73)),
+        "A still downloads"
+    );
+    let stored = Tone {
+        models: vec![a.model.clone()],
+        ..a.tone.clone()
+    }
+    .for_storage(ModelId(73), &[])
+    .expect("stored");
+    assert!(
+        a.ticket
+            .publish(stored, ModelId(73), vec![4, 5, 6].into())
+            .expect("publish")
+    );
+    assert!(
+        detail.finish_switch(a.ticket.generation()),
+        "the download of A is still the switch in progress"
+    );
+    assert_eq!(detail.block().active_model_id, Some(ModelId(73)));
+}
+
 /// One frame of a light block page with `events`, and the rectangle of each labelled control.
 fn light_frame(
     context: &eframe::egui::Context,

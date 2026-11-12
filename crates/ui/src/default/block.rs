@@ -600,14 +600,19 @@ impl BlockDetail {
         if pending == Some((slot, id)) {
             return Ok(());
         }
-        self.revoke_switch();
-        if let Some((other, _)) = pending.filter(|(other, _)| *other != slot) {
-            self.picker_mut(other).clear_target();
-        }
         let held = self.slot_model(slot);
         let missing = slot == ModelSlot::B && self.block.ir_b_missing;
         if held == Some(id) && !missing {
+            // The slot already plays this model. A switch of this slot to another model ends,
+            // and a switch of the other slot goes on.
+            if pending.is_some_and(|(other, _)| other == slot) {
+                self.revoke_switch();
+            }
             return Ok(());
+        }
+        self.revoke_switch();
+        if let Some((other, _)) = pending.filter(|(other, _)| *other != slot) {
+            self.picker_mut(other).clear_target();
         }
         let tone = self.block.tone.clone();
         let Some(remote) = &mut self.remote else {
