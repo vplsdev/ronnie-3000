@@ -17,7 +17,7 @@ use super::{
     faceplate::Faceplate,
     hints::HintController,
     overlays::{DismissReason, Overlay, OverlayController},
-    popover::{Placement, Popover, Surface, Trigger},
+    popover::{Placement as PopoverPlacement, Popover, Surface, Trigger},
     presets::PresetController,
 };
 use crate::services::{
@@ -85,6 +85,17 @@ fn user_name(user: &serde_json::Value) -> Option<&str> {
         .find_map(|field| user[field].as_str().filter(|name| !name.trim().is_empty()))
 }
 
+/// Where a tone added from the stage lands in its lane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Placement {
+    /// After the last tone.
+    End,
+    /// Right after the block.
+    After(BlockId),
+    /// Right before the block.
+    Before(BlockId),
+}
+
 /// Complete Default chrome controller. Processor mutations go through `UiBackend`.
 pub struct ChromeController {
     backend: Arc<dyn UiBackend>,
@@ -142,6 +153,13 @@ pub struct ChromeController {
     /// The block that an add from the menu fills, and the load generation that fills it, so that
     /// the block opens when that load lands.
     added: Option<(String, u64)>,
+    /// Where the block of the pending add goes.
+    placement: Placement,
+    /// The lane of the pending add.
+    added_side: ronie_core::ChainSide,
+    /// Where a tone that the browser loads goes, when a stage slot opened the browser: the
+    /// insert it fills, and its place in the lane of that insert.
+    browser_placement: Option<(String, Placement)>,
     model_switches: ModelSwitchFlow,
     /// Whether the worker can hold a model list or a switch of a detail.
     detail_work_live: bool,
@@ -251,6 +269,9 @@ impl ChromeController {
             add_store: None,
             add_generation: 0,
             added: None,
+            placement: Placement::End,
+            added_side: ronie_core::ChainSide::Left,
+            browser_placement: None,
             model_switches: ModelSwitchFlow::new(backend.clone()),
             detail_work_live: false,
             images: None,
@@ -440,6 +461,7 @@ impl ChromeController {
         }
         self.browser = None;
         self.parked_browser = None;
+        self.browser_placement = None;
         self.after_session_change(before);
         self.user_refresh_due = self.session.status().signed_in();
     }
@@ -1024,11 +1046,13 @@ impl ChromeController {
         &mut self,
         insert_id: &str,
         path: &std::path::Path,
+        placement: Placement,
     ) -> Result<(), UiError> {
         if let Err(error) = self.gallery.drop_file(insert_id, path) {
             self.hints.set_toast(Some(FILE_REFUSED.to_owned()));
             return Err(error);
         }
+        self.place_block(insert_id, placement);
         let chain = self.backend.chain_state(0).chain;
         if let Some(tone) = chain
             .block(&ronie_core::BlockId(insert_id.to_owned()))
@@ -1116,6 +1140,7 @@ impl ChromeController {
         side: ronie_core::ChainSide,
         insert_id: &str,
         tone: ronie_core::Tone,
+        placement: Placement,
     ) {
         if let Some(mut browser) = self.browser.take() {
             browser.close();
@@ -1128,8 +1153,11 @@ impl ChromeController {
                 self.gallery.clear_selection();
             }
         }
+        self.browser_placement = None;
         self.load_flow.select(side, insert_id);
         self.pick_tone(tone);
+        self.placement = placement;
+        self.added_side = side;
         self.added = (self.load_flow.phase() != LoadPhase::Idle)
             .then(|| (insert_id.to_owned(), self.load_flow.generation()));
         // A tone with no network lands at once, so its block opens in this call.
@@ -1137,6 +1165,48 @@ impl ChromeController {
             self.remember_tone(tone);
             self.open_added_block();
         }
+    }
+
+    /// Moves block `id`, which an add just filled, to `placement` in the lane that holds it.
+    /// The placement of a pending add from the menu stays as it is.
+    fn place_block(&mut self, id: &str, placement: Placement) {
+        let chain = self.backend.chain_state(0).chain;
+        let holds = |lane: &[ronie_core::ChainBlock]| {
+            lane.iter()
+                .any(|block| block.id.0 == id && !block.is_insert)
+        };
+        let side = if holds(&chain.left) {
+            ronie_core::ChainSide::Left
+        } else if holds(&chain.right) {
+            ronie_core::ChainSide::Right
+        } else {
+            return;
+        };
+        self.place_added_block(id, side, placement);
+    }
+
+    /// Moves block `id`, which an add filled in lane `side`, to `placement`, when that is not
+    /// the end.
+    fn place_added_block(&self, id: &str, side: ronie_core::ChainSide, placement: Placement) {
+        let chain = self.backend.chain_state(0).chain;
+        let lane = match side {
+            ronie_core::ChainSide::Left => &chain.left,
+            ronie_core::ChainSide::Right => &chain.right,
+        };
+        let position = |anchor: &BlockId| lane.iter().position(|block| block.id == *anchor);
+        let index = match placement {
+            Placement::End => return,
+            Placement::After(anchor) => position(&anchor).map(|at| at + 1),
+            Placement::Before(anchor) => position(&anchor),
+        };
+        let Some(index) = index else {
+            return;
+        };
+        let _ = self.backend.dispatch(UiAction::PlaceAddedBlock {
+            block_id: BlockId(id.to_owned()),
+            side,
+            index,
+        });
     }
 
     /// Opens the block that an add from the menu filled, when the load that landed is that add.
@@ -1154,18 +1224,24 @@ impl ChromeController {
             .block(&BlockId(id.clone()))
             .is_some_and(|block| !block.is_insert);
         if filled {
+            let placement = std::mem::replace(&mut self.placement, Placement::End);
+            self.place_added_block(&id, self.added_side, placement);
             self.gallery.activate(&id);
             self.sync_detail();
         }
     }
 
     /// Opens the tone browser for the insert `insert_id`, narrowed to `category` and `text`.
+    /// The tone that the browser loads lands at `placement` in the lane of the insert.
     pub fn open_browser_for(
         &mut self,
         insert_id: &str,
         category: Option<ronie_core::gear::GearCategory>,
         text: &str,
+        placement: Placement,
     ) {
+        self.browser_placement =
+            (placement != Placement::End).then(|| (insert_id.to_owned(), placement));
         self.gallery.activate(insert_id);
         self.sync_browser();
         let service = self.community.is_some();
@@ -1185,8 +1261,21 @@ impl ChromeController {
     /// Opens tone selection for the gallery target and closes completed flows.
     pub fn sync_browser(&mut self) {
         if let Some(tone) = self.load_flow.take_landed() {
+            // The slot's place belongs to the load that filled the slot's insert, and not to a
+            // load that landed in another insert.
+            let filled = self.browser_placement.take().filter(|(insert, _)| {
+                self.backend
+                    .chain_state(0)
+                    .chain
+                    .block(&BlockId(insert.clone()))
+                    .and_then(|block| block.tone.as_ref())
+                    .is_some_and(|held| held.id == tone.id)
+            });
             self.remember_tone(tone);
             self.open_added_block();
+            if let Some((insert, placement)) = filled {
+                self.place_block(&insert, placement);
+            }
         }
         if self.load_flow.phase() != LoadPhase::Loading
             && self
@@ -1206,6 +1295,7 @@ impl ChromeController {
             )
         {
             let mut closed = self.browser.take();
+            self.browser_placement = None;
             if self.community.is_some() {
                 // A cancelled load leaves the store open, and its worker now stops.
                 if let Some(browser) = &mut closed {
@@ -1265,6 +1355,7 @@ impl ChromeController {
             self.parked_browser = self.browser.take();
             self.cancel_browser_work();
         }
+        self.browser_placement = None;
         if let Some(detail) = &mut self.detail {
             detail.close();
             self.detail = None;
@@ -2828,7 +2919,7 @@ pub(super) fn show_overlay(ui: &mut egui::Ui, chrome: &mut ChromeController) {
     let popover = |name: &str, panel: egui::Rect, radius: f32| {
         Popover::new(
             ui.scope_id().with(name),
-            Placement::At(panel.min),
+            PopoverPlacement::At(panel.min),
             panel.size(),
             Surface::edged(radius),
         )

@@ -1015,6 +1015,7 @@ fn slowest_frame(backend: &StandaloneBackend, frames: usize) -> Duration {
 /// A frame at 60 Hz has about 16 ms. A busy test machine can stop a thread, so that the limit
 /// leaves room for that and it still fails on a wait for the device work, which never ends here.
 const FRAME_LIMIT: Duration = Duration::from_millis(100);
+const CONSTRUCT_LIMIT: Duration = Duration::from_secs(2);
 
 #[test]
 fn a_frame_returns_while_the_first_open_waits_for_the_server() {
@@ -1023,10 +1024,13 @@ fn a_frame_returns_while_the_first_open_waits_for_the_server() {
     let directory = tempfile::tempdir().expect("tempdir");
     let device = DummyBackend::connected();
 
+    // The gate stays closed until the end, so a constructor that waited for the server would
+    // never return. The bound only catches a constructor that is grossly slow; it is wider than
+    // a frame because building the processor takes longer on a busy runner.
     let started = Instant::now();
     let backend = slow_backend(&directory.path().join(PREFERENCES_SETTINGS), &gate, &device);
     assert!(
-        started.elapsed() < FRAME_LIMIT,
+        started.elapsed() < CONSTRUCT_LIMIT,
         "the window must not wait for the server"
     );
     gate.wait_for_a_call();

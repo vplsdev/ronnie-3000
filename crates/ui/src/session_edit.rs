@@ -489,6 +489,11 @@ impl SessionEditor {
                 target_side,
                 target_index,
             } => self.move_block_to_lane(&block_id, target_side, target_index),
+            UiAction::PlaceAddedBlock {
+                block_id,
+                side,
+                index,
+            } => self.place_added_block(&block_id, side, index),
             UiAction::RetryModelLoad(block_id) => self.retry_model_load(&block_id),
             UiAction::SetBlockParamsGesture {
                 block_id,
@@ -703,6 +708,31 @@ impl SessionEditor {
         let lane = lane_mut(&mut self.current.session.chain, side);
         let block = lane.remove(index);
         lane.insert(target_index.min(lane.len()), block);
+        Ok(self.chain_changed())
+    }
+
+    /// Moves a block that was just added to `index` of lane `side`, before the trailing insert.
+    ///
+    /// It takes no undo step, so one undo removes the add with its placement.
+    fn place_added_block(
+        &mut self,
+        block_id: &BlockId,
+        side: ChainSide,
+        index: usize,
+    ) -> Result<UiEffect, UiError> {
+        let (source_side, source_index) = self.position(block_id)?;
+        if self.block(block_id)?.is_insert {
+            return Err(UiError::InvalidAction(
+                "an insert slot cannot be placed".to_owned(),
+            ));
+        }
+        self.check_lane(side)?;
+        let chain = &mut self.current.session.chain;
+        let block = lane_mut(chain, source_side).remove(source_index);
+        let lane = lane_mut(chain, side);
+        // A lane keeps its tones first and its empty slots after them.
+        let end = lane.iter().filter(|block| !block.is_insert).count();
+        lane.insert(index.min(end), block);
         Ok(self.chain_changed())
     }
 
@@ -1645,6 +1675,60 @@ mod tests {
             })
             .expect("load");
         slot
+    }
+
+    fn place(editor: &mut SessionEditor, id: &BlockId, index: usize) -> Result<UiReceipt, UiError> {
+        editor.apply_alone(UiAction::PlaceAddedBlock {
+            block_id: id.clone(),
+            side: ChainSide::Left,
+            index,
+        })
+    }
+
+    #[test]
+    fn placing_an_added_block_adds_no_history_step() {
+        let mut editor = editor();
+        let before = editor.view(0).chain.left.clone();
+        let last = before.len() - 2;
+        let slot = editor.view(0).chain.left[last].id.clone();
+        editor
+            .apply_alone(UiAction::LoadTone {
+                target_insert_id: slot.clone(),
+                tone: tone(1),
+                model_id: ModelId(10),
+            })
+            .expect("load");
+        place(&mut editor, &slot, 0).expect("place");
+        assert_eq!(editor.view(0).chain.left[0].id, slot);
+        editor.apply_alone(UiAction::Undo).expect("undo");
+        assert_eq!(editor.view(0).chain.left, before);
+    }
+
+    #[test]
+    fn placing_clamps_before_the_insert() {
+        let mut editor = editor();
+        let first = load(&mut editor);
+        let second = editor.view(0).chain.left[1].id.clone();
+        editor
+            .apply_alone(UiAction::LoadTone {
+                target_insert_id: second.clone(),
+                tone: tone(2),
+                model_id: ModelId(20),
+            })
+            .expect("load");
+        place(&mut editor, &first, 99).expect("place");
+        let lane = editor.view(0).chain.left.clone();
+        assert_eq!(lane[0].id, second);
+        assert_eq!(lane[1].id, first);
+        assert!(lane[2].is_insert);
+    }
+
+    #[test]
+    fn placing_an_insert_is_refused() {
+        let mut editor = editor();
+        let insert = editor.view(0).chain.left[0].id.clone();
+        assert!(place(&mut editor, &insert, 1).is_err());
+        assert!(!editor.view(0).can_undo);
     }
 
     fn editor() -> SessionEditor {

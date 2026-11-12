@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use ronie_ui::{
     backend::{MockBackend, UiBackend},
-    default::ChromeController,
+    default::{ChromeController, Placement},
     driver::UiDriver,
     shell::ViewMode,
     testbed::{UiScenario, load_scenarios},
@@ -190,24 +190,46 @@ fn plus_opens_the_add_menu() {
 fn a_second_click_or_escape_closes_the_menu() {
     let (mut driver, _) = archetype_driver("main-mono");
     open_menu(&mut driver);
+    assert!(
+        driver.is_visible("OPEN THE TONE BROWSER"),
+        "the menu is open"
+    );
     let _ = driver.click("Add a block").expect("plus");
     driver.settle();
     assert!(!driver.is_visible("PEDAL"), "the second click closes it");
+    assert!(
+        !driver.is_visible("OPEN THE TONE BROWSER"),
+        "the second click closes it"
+    );
     open_menu(&mut driver);
-    assert!(driver.is_visible("PEDAL"));
+    assert!(
+        driver.is_visible("OPEN THE TONE BROWSER"),
+        "the menu is open"
+    );
     let _ = driver.press_key(eframe::egui::Key::Escape);
     driver.settle();
     assert!(!driver.is_visible("PEDAL"), "escape closes it");
+    assert!(
+        !driver.is_visible("OPEN THE TONE BROWSER"),
+        "escape closes it"
+    );
 }
 
 #[test]
 fn clicking_outside_closes_the_menu() {
     let (mut driver, _) = archetype_driver("main-mono");
     open_menu(&mut driver);
-    assert!(driver.is_visible("PEDAL"));
+    assert!(
+        driver.is_visible("OPEN THE TONE BROWSER"),
+        "the menu is open"
+    );
     let _ = driver.click_empty_space();
     driver.settle();
     assert!(!driver.is_visible("PEDAL"));
+    assert!(
+        !driver.is_visible("OPEN THE TONE BROWSER"),
+        "outside click closes it"
+    );
 }
 
 fn lane_radio(driver: &UiDriver, label: &str) -> bool {
@@ -1171,6 +1193,53 @@ fn pedalboard_driver() -> (UiDriver, Arc<MockBackend>) {
     (driver, backend)
 }
 
+fn add_beside(
+    placement: impl FnOnce(&ronie_core::ChainSnapshot) -> Placement,
+) -> (Vec<String>, String) {
+    let (mut driver, backend) = pedalboard_driver();
+    let chain = backend.chain_state(0).chain;
+    let insert = chain
+        .left
+        .iter()
+        .find(|block| block.is_insert)
+        .map(|block| block.id.0.clone())
+        .expect("insert");
+    let tone = ronie_core::Tone::from_value(serde_json::json!({
+        "id": 4243, "title": "Placed amp", "format": "nam", "gear": "amp",
+        "models": [{"id": 424301, "name": "One", "model_url": "https://fixtures.invalid/m/424301.nam"}]
+    }))
+    .expect("tone");
+    let placement = placement(&chain);
+    driver
+        .chrome_mut()
+        .add_tone(ronie_core::ChainSide::Left, &insert, tone, placement);
+    for _ in 0..20 {
+        driver.settle();
+    }
+    let titles = backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .filter_map(|block| block.tone.as_ref().map(|tone| tone.title.clone()))
+        .collect();
+    (titles, "Placed amp".to_owned())
+}
+
+#[test]
+fn a_tone_added_after_a_block_lands_after_it() {
+    let (titles, added) = add_beside(|chain| Placement::After(chain.left[0].id.clone()));
+    assert_eq!(titles.len(), 5, "{titles:?}");
+    assert_eq!(titles[1], added, "{titles:?}");
+}
+
+#[test]
+fn a_vanished_anchor_falls_back_to_the_end() {
+    let (titles, added) = add_beside(|_| Placement::After(ronie_core::BlockId("gone".to_owned())));
+    assert_eq!(titles.len(), 5, "{titles:?}");
+    assert_eq!(titles[4], added, "{titles:?}");
+}
+
 #[test]
 fn consecutive_pedals_share_the_stage() {
     let (driver, _) = pedalboard_driver();
@@ -1207,6 +1276,114 @@ fn an_amp_shares_the_stage_with_no_one() {
     let _ = driver.click(VOX).expect("amp");
     driver.settle();
     assert!(driver.label_starting_with("Pedal render").is_none());
+}
+
+// ---------------------------------------------------------------- Slots on the stage
+
+/// main-mono with `extra` more overdrives after the fuzz, so the pedals stage is crowded.
+fn crowded_pedalboard(extra: usize) -> UiDriver {
+    let mut scenario = scenario("main-mono");
+    let chain = scenario.state["chain"]["chain"]
+        .as_array_mut()
+        .expect("chain");
+    for index in 0..extra {
+        let mut od = chain[0].clone();
+        od["blockId"] = format!("blk-od{index}").into();
+        od["tone"]["id"] = (200 + index).into();
+        od["tone"]["title"] = format!("Overdrive {index}").into();
+        chain.insert(1 + index, od);
+    }
+    let backend = Arc::new(MockBackend::from_scenario(&scenario));
+    let mut chrome = ChromeController::new(backend.clone(), Vec::new(), false, true);
+    chrome.set_view_mode(ViewMode::RonieFlow);
+    let mut driver = UiDriver::new(chrome, (*backend).clone());
+    driver.settle();
+    driver
+}
+
+#[test]
+fn a_pedal_run_ends_with_a_pedal_slot() {
+    let (driver, _) = pedalboard_driver();
+    let slot = rect_of(&driver, "Add a pedal after these").expect("the slot");
+    let last = rect_of(&driver, &format!("Pedal render: {OD}")).expect("last pedal");
+    assert!(slot.left() >= last.right() + 17.9, "{slot:?} vs {last:?}");
+    assert!((slot.center().y - last.center().y).abs() < 1.0);
+    // 110 x 176 against a 300 pt render, scaled with the render.
+    let scale = last.height() / 300.0;
+    assert!((slot.width() - 110.0 * scale).abs() < 0.1, "{slot:?}");
+    assert!((slot.height() - 176.0 * scale).abs() < 0.1, "{slot:?}");
+}
+
+#[test]
+fn an_amp_has_a_pedal_slot_before_it() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    let slot = rect_of(&driver, "Add a pedal before the amp").expect("the slot");
+    let amp = rect_of(&driver, "Amp render").expect("amp");
+    assert!(slot.right() <= amp.left() - 17.9, "{slot:?} vs {amp:?}");
+    let scale = amp.height() / 300.0;
+    assert!((slot.width() - 96.0 * scale).abs() < 0.1, "{slot:?}");
+    assert!((slot.height() - 160.0 * scale).abs() < 0.1, "{slot:?}");
+    assert!(rect_of(&driver, "Add a pedal after these").is_none());
+}
+
+#[test]
+fn an_amp_followed_by_a_cab_has_no_cab_slot() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    assert!(rect_of(&driver, "Add a cab after the amp").is_none());
+}
+
+#[test]
+fn an_amp_with_no_cab_after_it_has_a_cab_slot() {
+    let (mut driver, _) = edited_driver("main-mono", |chain| {
+        chain["chain"].as_array_mut().expect("chain").remove(2);
+    });
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    let slot = rect_of(&driver, "Add a cab after the amp").expect("the slot");
+    let amp = rect_of(&driver, "Amp render").expect("amp");
+    assert!(slot.left() >= amp.right() + 17.9, "{slot:?} vs {amp:?}");
+    let scale = amp.height() / 300.0;
+    assert!((slot.width() - 96.0 * scale).abs() < 0.1, "{slot:?}");
+    assert!((slot.height() - 160.0 * scale).abs() < 0.1, "{slot:?}");
+}
+
+#[test]
+fn a_cab_page_has_no_slots() {
+    let (mut driver, _) = archetype_driver("main-mono");
+    let _ = driver
+        .click("Chain: UK Greenback - Marshall 1960TV 4x12 M201")
+        .expect("cab");
+    driver.settle();
+    for name in [
+        "Add a pedal after these",
+        "Add a pedal before the amp",
+        "Add a cab after the amp",
+    ] {
+        assert!(rect_of(&driver, name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn slots_stay_visible_in_a_narrow_window() {
+    let roomy = rect_of(&pedalboard_driver().0, "Pedal render").expect("roomy pedal");
+    let mut driver = crowded_pedalboard(4);
+    let slot = rect_of(&driver, "Add a pedal after these").expect("the slot");
+    let first = rect_of(&driver, "Pedal render").expect("open pedal");
+    assert!(
+        first.height() < roomy.height(),
+        "the renders shrank: {first:?} vs {roomy:?}"
+    );
+    assert!(
+        slot.right() <= 1024.0 - 56.0,
+        "{slot:?} is inside the stage"
+    );
+    let scale = first.height() / 300.0;
+    assert!((slot.height() - 176.0 * scale).abs() < 0.1, "{slot:?}");
+    let _ = driver.click("Add a pedal after these").expect("clickable");
 }
 
 // ---------------------------------------------------------------- Light EQ and INFO
@@ -1560,7 +1737,10 @@ fn back_returns_to_the_categories() {
     open_amp(&mut driver);
     let _ = driver.click("Back to categories").expect("back");
     driver.settle();
-    assert!(driver.is_visible("PEDAL"));
+    assert!(
+        driver.is_visible("OPEN THE TONE BROWSER"),
+        "the categories show again"
+    );
     assert!(!driver.shows_text("YOUR LIBRARY"));
     assert!(
         driver.chrome_mut().add_store_mut().is_none(),
@@ -1686,7 +1866,7 @@ fn a_loaded_file_lands_at_the_end_of_the_lane_joins_the_library_and_opens() {
 
     driver
         .chrome_mut()
-        .drop_file_into(&insert, &path)
+        .drop_file_into(&insert, &path, Placement::End)
         .expect("the file loads");
     driver.settle();
 
@@ -1721,9 +1901,11 @@ fn a_missing_file_shows_a_toast() {
     let insert = last_insert(&backend);
     let before = backend.chain_state(0).revision;
 
-    let result = driver
-        .chrome_mut()
-        .drop_file_into(&insert, &directory.path().join("gone.nam"));
+    let result = driver.chrome_mut().drop_file_into(
+        &insert,
+        &directory.path().join("gone.nam"),
+        Placement::End,
+    );
     driver.settle();
 
     assert!(result.is_err());
@@ -1731,5 +1913,642 @@ fn a_missing_file_shows_a_toast() {
     assert!(
         driver.chrome().visible_toast().is_some(),
         "the player reads that the file did not load"
+    );
+}
+
+// ---------------------------------------------------------------- A slot opens the add menu
+
+const PEDAL_SEARCH: &str = "Search pedals in your library";
+
+fn gear_tone(id: i64, title: &str, gear: &str) -> ronie_core::Tone {
+    ronie_core::Tone::from_value(serde_json::json!({
+        "id": id, "title": title, "format": "nam", "gear": gear,
+        "downloads_count": 1200, "user": {"username": "lowend_lab"},
+        "models": [{"id": id * 10, "name": "m",
+            "model_url": format!("https://fixtures.invalid/m/{id}.nam")}]
+    }))
+    .expect("tone")
+}
+
+/// A driver of scenario `id`, with its chain changed by `edit`, `library` in the library, and
+/// its user signed in or not.
+fn slot_driver(
+    id: &str,
+    signed_in: bool,
+    library: &[ronie_core::Tone],
+    edit: impl FnOnce(&mut Vec<serde_json::Value>),
+) -> (UiDriver, Arc<MockBackend>) {
+    use ronie_ui::{backend::UiAction, services::recent_tones::RecentTones};
+    let mut scenario = scenario(id);
+    edit(
+        scenario.state["chain"]["chain"]
+            .as_array_mut()
+            .expect("chain"),
+    );
+    let mut recent = RecentTones::default();
+    for tone in library.iter().rev() {
+        recent.remember(tone.clone());
+    }
+    let backend = Arc::new(MockBackend::from_scenario(&scenario));
+    backend
+        .dispatch(UiAction::SetTextPreference {
+            key: RecentTones::KEY.to_owned(),
+            value: recent.to_text(),
+        })
+        .expect("seed");
+    let mut chrome = ChromeController::new(backend.clone(), Vec::new(), signed_in, true);
+    chrome.set_view_mode(ViewMode::RonieFlow);
+    let mut driver = UiDriver::new(chrome, (*backend).clone());
+    driver.settle();
+    (driver, backend)
+}
+
+/// main-mono with a green overdrive right after the fuzz, as `pedalboard_driver`.
+fn add_overdrive(chain: &mut Vec<serde_json::Value>) {
+    let mut od = chain[0].clone();
+    od["blockId"] = "blk-od".into();
+    od["activeModelId"] = 1199.into();
+    od["tone"]["id"] = 199.into();
+    od["tone"]["title"] = OD.into();
+    od["tone"]["models"] = serde_json::json!([{ "id": 1199, "name": "Drive 5" }]);
+    chain.insert(1, od);
+}
+
+fn plus_is_solid(driver: &UiDriver) -> bool {
+    driver
+        .controls()
+        .iter()
+        .find(|control| control.label == "Add a block")
+        .expect("the + button")
+        .checked
+}
+
+/// The menu's outline: its back button sits in its top left corner inside the 8 pt padding, its
+/// search field ends 8 + 6 + 8 pt inside its right edge, and its last link row ends 8 pt above
+/// its bottom.
+fn menu_rect(driver: &UiDriver, search: &str, last_row: &str) -> eframe::egui::Rect {
+    let back = rect_of(driver, "Back to categories").expect("the back button");
+    let field = rect_of(driver, search).expect("the search field");
+    let link = rect_of(driver, last_row).expect("the last row");
+    eframe::egui::Rect::from_min_max(
+        back.min - eframe::egui::vec2(8.0, 8.0),
+        eframe::egui::pos2(field.right() + 22.0, link.bottom() + 8.0),
+    )
+}
+
+#[test]
+fn the_pedal_slot_opens_the_menu_on_pedals() {
+    let (mut driver, _) = slot_driver("main-mono", false, &[], add_overdrive);
+    open_menu(&mut driver);
+    assert!(plus_is_solid(&driver), "the + menu shows the + solid");
+    let _ = driver.click("Add a block").expect("plus");
+    driver.settle();
+
+    let slot = rect_of(&driver, "Add a pedal after these").expect("the slot");
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    assert!(driver.is_visible("Back to categories"));
+    assert!(driver.shows_text("PEDAL"), "the header names the category");
+    assert!(
+        driver.shows_text("after TS808 Tube Scream\u{2026}"),
+        "the header says where the pedal goes"
+    );
+    assert!(!driver.shows_text("to the end of the chain"));
+    assert!(!driver.is_visible("LANE A") && !driver.is_visible("LANE B"));
+    assert!(!plus_is_solid(&driver), "the + stays dashed");
+
+    let menu = menu_rect(&driver, PEDAL_SEARCH, "OPEN THE TONE BROWSER");
+    assert!(!menu.intersects(slot), "{menu:?} covers {slot:?}");
+    assert!(
+        menu.right() <= slot.left() - 9.0 || menu.left() >= slot.right() + 9.0,
+        "{menu:?} sits beside {slot:?}"
+    );
+    assert!((menu.width() - 380.0).abs() < 2.0, "{menu:?}");
+    assert!(
+        (menu.top()..=menu.bottom()).contains(&slot.center().y),
+        "{menu:?} is level with {slot:?}"
+    );
+}
+
+#[test]
+fn a_second_click_on_the_slot_closes_its_menu() {
+    let (mut driver, _) = slot_driver("main-mono", false, &[], add_overdrive);
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    assert!(driver.is_visible("Back to categories"));
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    assert!(!driver.is_visible("Back to categories"));
+}
+
+#[test]
+fn the_plus_takes_over_a_slot_menu() {
+    let (mut driver, _) = slot_driver("main-mono", false, &[], add_overdrive);
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    open_menu(&mut driver);
+    assert!(driver.is_visible("OPEN THE TONE BROWSER"), "the + menu");
+    assert!(driver.shows_text("to the end of the chain"));
+    assert!(plus_is_solid(&driver));
+}
+
+fn library_pedal() -> ronie_core::Tone {
+    gear_tone(801, "Library Drive", "pedal")
+}
+
+#[test]
+fn adding_from_the_pedal_slot_puts_the_pedal_after_the_run() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[library_pedal()], add_overdrive);
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    let _ = driver.click("Library Drive").expect("library row");
+    driver.settle();
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles.len(), 5, "{titles:?}");
+    assert_eq!(titles[1], OD, "{titles:?}");
+    assert_eq!(titles[2], "Library Drive", "{titles:?}");
+    assert!(!driver.is_visible("Back to categories"), "the menu closed");
+    let added = block_titled(&backend, "Library Drive")
+        .expect("the block")
+        .id;
+    assert!(
+        matches!(driver.chrome().gallery().selection(), GallerySelection::BlockDetail(id) if *id == added),
+        "the new block is on the stage: {:?}",
+        driver.chrome().gallery().selection()
+    );
+}
+
+#[test]
+fn adding_from_the_amp_slot_puts_the_pedal_before_the_amp() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[library_pedal()], |_| {});
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    let _ = driver.click("Add a pedal before the amp").expect("slot");
+    driver.settle();
+    assert!(driver.shows_text("before '02 Vox AC30/6 To\u{2026}"));
+    let _ = driver.click("Library Drive").expect("library row");
+    driver.settle();
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles.len(), 4, "{titles:?}");
+    assert_eq!(titles[1], "Library Drive", "{titles:?}");
+    assert!(titles[2].contains("AC30"), "{titles:?}");
+}
+
+#[test]
+fn the_cab_slot_adds_a_cab_after_the_amp() {
+    // A pedal after the amp in place of the cab, so the slot's place differs from the end.
+    let (mut driver, backend) = slot_driver(
+        "main-mono",
+        false,
+        &[gear_tone(802, "Library Cab", "cab")],
+        |chain| {
+            let mut late = chain[0].clone();
+            late["blockId"] = "blk-late".into();
+            late["tone"]["title"] = "Late Fuzz".into();
+            chain[2] = late;
+        },
+    );
+    let _ = driver.click(VOX).expect("amp");
+    driver.settle();
+    let _ = driver.click("Add a cab after the amp").expect("slot");
+    driver.settle();
+    assert!(driver.shows_text("after '02 Vox AC30/6 To\u{2026}"));
+    assert!(driver.shows_text("CAB"), "the header names the category");
+    let _ = driver.click("Library Cab").expect("library row");
+    driver.settle();
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles.len(), 4, "{titles:?}");
+    assert_eq!(titles[2], "Library Cab", "{titles:?}");
+    assert_eq!(titles[3], "Late Fuzz", "{titles:?}");
+}
+
+#[test]
+fn one_undo_removes_a_slot_add() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[library_pedal()], add_overdrive);
+    let before = lane_titles(&backend, false);
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    let _ = driver.click("Library Drive").expect("library row");
+    driver.settle();
+    assert_eq!(lane_titles(&backend, false).len(), before.len() + 1);
+    let _ = driver.click("Undo").expect("undo");
+    driver.settle();
+    assert_eq!(lane_titles(&backend, false), before);
+}
+
+#[test]
+fn back_from_a_slot_menu_shows_categories_and_keeps_the_placement() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[library_pedal()], add_overdrive);
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    let _ = driver.click("Back to categories").expect("back");
+    driver.settle();
+    assert!(driver.is_visible("OPEN THE TONE BROWSER"), "the categories");
+    assert!(
+        driver.shows_text("after TS808 Tube Scream\u{2026}"),
+        "the place stays"
+    );
+    let _ = driver.click("PEDAL").expect("PEDAL row");
+    driver.settle();
+    let _ = driver.click("Library Drive").expect("library row");
+    driver.settle();
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles[2], "Library Drive", "{titles:?}");
+}
+
+#[test]
+fn a_slot_add_in_lane_b_stays_in_lane_b() {
+    let (mut driver, backend) = slot_driver("main-stereo", false, &[library_pedal()], |_| {});
+    let _ = driver.click("Chain: Roland JC-40").expect("lane B amp");
+    driver.settle();
+    let left = lane_titles(&backend, false);
+    let _ = driver.click("Add a pedal before the amp").expect("slot");
+    driver.settle();
+    assert!(!driver.is_visible("LANE A") && !driver.is_visible("LANE B"));
+    assert!(driver.shows_text("before Roland JC-40"));
+    let _ = driver.click("Library Drive").expect("library row");
+    driver.settle();
+    let right = lane_titles(&backend, true);
+    assert_eq!(
+        right.first().map(String::as_str),
+        Some("Library Drive"),
+        "{right:?}"
+    );
+    assert_eq!(
+        right.get(1).map(String::as_str),
+        Some("Roland JC-40"),
+        "{right:?}"
+    );
+    assert_eq!(lane_titles(&backend, false), left);
+}
+
+#[test]
+fn a_slot_menu_takes_over_a_download_of_the_plus_menu() {
+    let (mut driver, backend) = slot_driver("main-mono", true, &[library_pedal()], add_overdrive);
+    open_menu(&mut driver);
+    let _ = driver.click("PEDAL").expect("PEDAL row");
+    driver.settle();
+    answer_menu(
+        &mut driver,
+        vec![gear_tone(701, "Slow Download", "pedal")],
+        1,
+    );
+    // The + menu's pick is still downloading to the end of the lane.
+    let insert = last_insert(&backend);
+    let flow = driver.chrome_mut().load_flow_mut();
+    flow.select(ronie_core::ChainSide::Left, &insert);
+    let _ticket = flow
+        .begin_remote_load(gear_tone(701, "Slow Download", "pedal"))
+        .expect("load");
+    driver.settle();
+    assert!(driver.shows_text("DOWNLOADING"));
+    // The + menu covers the slot, so the player closes it; the download goes on.
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+    driver.settle();
+    assert_eq!(
+        driver.chrome().loading_tone(),
+        Some(ronie_core::ToneId(701))
+    );
+
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    assert!(driver.is_visible("Back to categories"), "the slot menu");
+    let _ = driver.click("Library Drive").expect("library row");
+    driver.settle();
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles[2], "Library Drive", "{titles:?}");
+    assert!(!titles.contains(&"Slow Download".to_owned()), "{titles:?}");
+    assert_eq!(driver.chrome().loading_tone(), None);
+    assert!(!driver.shows_text("DOWNLOADING"));
+}
+
+/// The labels of the slots that read as selected, which the stage draws solid.
+fn solid_slots(driver: &UiDriver) -> Vec<String> {
+    driver
+        .controls()
+        .iter()
+        .filter(|control| control.label.starts_with("Add a ") && control.label != "Add a block")
+        .filter(|control| control.checked)
+        .map(|control| control.label.clone())
+        .collect()
+}
+
+#[test]
+fn the_open_slot_reads_as_selected() {
+    let (mut driver, _) = slot_driver("main-mono", false, &[], add_overdrive);
+    assert!(solid_slots(&driver).is_empty());
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    assert_eq!(solid_slots(&driver), ["Add a pedal after these"]);
+}
+
+#[test]
+fn a_slot_menu_closes_when_its_slot_leaves_the_stage() {
+    let (mut driver, backend) = slot_driver("main-mono", true, &[library_pedal()], add_overdrive);
+    open_menu(&mut driver);
+    let _ = driver.click("PEDAL").expect("PEDAL row");
+    driver.settle();
+    let slow = gear_tone(701, "Slow Download", "pedal");
+    answer_menu(&mut driver, vec![slow.clone()], 1);
+    // The + menu's pick is still downloading to the end of the lane.
+    let insert = last_insert(&backend);
+    let flow = driver.chrome_mut().load_flow_mut();
+    flow.select(ronie_core::ChainSide::Left, &insert);
+    let ticket = flow.begin_remote_load(slow.clone()).expect("load");
+    driver.settle();
+    let _ = driver.press_key(eframe::egui::Key::Escape);
+    driver.settle();
+
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    assert!(driver.is_visible("Back to categories"), "the slot menu");
+    assert_eq!(solid_slots(&driver), ["Add a pedal after these"]);
+
+    // The download lands and its pedal opens on the stage, whose own pedal slot sits after it.
+    assert!(
+        ticket
+            .publish(slow, ronie_core::ModelId(7010), vec![1, 2, 3].into())
+            .expect("publish")
+    );
+    assert!(
+        driver
+            .chrome_mut()
+            .load_flow_mut()
+            .finish_remote(ticket.generation())
+    );
+    driver.chrome_mut().gallery_mut().activate(&insert);
+    driver.chrome_mut().sync_detail();
+    driver.settle();
+    assert!(
+        driver.is_visible("Add a pedal after these"),
+        "the new page has a pedal slot"
+    );
+    assert!(
+        !driver.is_visible("Back to categories"),
+        "the menu of the slot that left closes"
+    );
+    assert!(
+        solid_slots(&driver).is_empty(),
+        "{:?}",
+        solid_slots(&driver)
+    );
+}
+
+#[test]
+fn a_browser_pick_from_a_slot_lands_at_the_slot() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[], add_overdrive);
+    let before = lane_titles(&backend, false);
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("browser link");
+    driver.settle();
+    assert!(
+        driver.chrome_mut().browser_mut().is_some(),
+        "the browser opened"
+    );
+    driver
+        .chrome_mut()
+        .pick_tone(gear_tone(803, "Browser Drive", "pedal"));
+    for _ in 0..20 {
+        driver.settle();
+    }
+    let titles = lane_titles(&backend, false);
+    assert_eq!(titles.len(), before.len() + 1, "{titles:?}");
+    assert_eq!(titles[2], "Browser Drive", "{titles:?}");
+    let _ = driver.click("Undo").expect("undo");
+    driver.settle();
+    assert_eq!(lane_titles(&backend, false), before);
+}
+
+#[test]
+fn a_file_from_a_slot_lands_at_the_slot() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[], add_overdrive);
+    let before = lane_titles(&backend, false);
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("closet-cab.wav");
+    write_ir(&path);
+    let insert = last_insert(&backend);
+    driver
+        .chrome_mut()
+        .drop_file_into(
+            &insert,
+            &path,
+            Placement::After(BlockId("blk-od".to_owned())),
+        )
+        .expect("the file loads");
+    driver.settle();
+    let lane = backend.chain_state(0).chain.left.clone();
+    let tones: Vec<_> = lane.iter().filter(|block| !block.is_insert).collect();
+    assert_eq!(tones.len(), before.len() + 1);
+    assert_eq!(tones[2].id.0, insert, "the file sits after the run");
+    assert!(
+        matches!(driver.chrome().gallery().selection(), GallerySelection::BlockDetail(id) if id.0 == insert),
+        "the new block is on the stage"
+    );
+    let _ = driver.click("Undo").expect("undo");
+    driver.settle();
+    assert_eq!(lane_titles(&backend, false), before);
+}
+
+/// A local tone, which lands at once with or without a service.
+fn local_pedal(id: i64, title: &str) -> ronie_core::Tone {
+    ronie_core::Tone::from_value(serde_json::json!({
+        "id": id, "title": title, "format": "nam", "gear": "pedal", "local": true,
+        "models": [{"id": id * 10, "name": "m", "model_url": format!("file:///stash/{id}.nam")}]
+    }))
+    .expect("tone")
+}
+
+/// Opens the tone browser from the pedal slot after the run, for the lane's insert.
+fn open_browser_from_the_slot(driver: &mut UiDriver) {
+    let _ = driver.click("Add a pedal after these").expect("slot");
+    driver.settle();
+    let _ = driver.click("OPEN THE TONE BROWSER").expect("browser link");
+    driver.settle();
+    assert!(
+        driver.chrome_mut().browser_mut().is_some(),
+        "the browser opened"
+    );
+}
+
+/// Loads `tone` into insert `insert` of lane A through the browser of the chain, which no slot
+/// opened.
+fn load_through_the_browser(driver: &mut UiDriver, insert: &str, tone: ronie_core::Tone) {
+    let chrome = driver.chrome_mut();
+    chrome
+        .gallery_mut()
+        .select_tone(ronie_core::ChainSide::Left, BlockId(insert.to_owned()));
+    chrome.sync_browser();
+    chrome.pick_tone(tone);
+    chrome.sync_browser();
+    driver.settle();
+}
+
+/// A key setup that starts a service over `transport` when a key is saved.
+struct KeyOnSave(tempfile::TempDir, ronie_core::RecordedTransport);
+
+/// Saves a key, which starts a service over `transport` in place of none.
+fn start_a_service(driver: &mut UiDriver, transport: ronie_core::RecordedTransport) {
+    let chrome = driver.chrome_mut();
+    chrome.use_key_setup(Box::new(KeyOnSave(
+        tempfile::tempdir().expect("temporary settings"),
+        transport,
+    )));
+    chrome.open_key_page();
+    chrome
+        .key_page_mut()
+        .expect("key page")
+        .set_draft("t3k_pub_test_fake");
+    chrome.save_key().expect("the key saves");
+}
+
+impl ronie_ui::services::key_setup::KeySetup for KeyOnSave {
+    fn origin(&self) -> String {
+        "https://www.fixtures.invalid".to_owned()
+    }
+
+    fn has_saved_key(&self) -> bool {
+        false
+    }
+
+    fn save(
+        &mut self,
+        key: &str,
+    ) -> Result<
+        Option<ronie_ui::services::key_setup::CommunityParts>,
+        ronie_ui::services::key_setup::KeySetupError,
+    > {
+        let origin = url::Url::parse("https://api.example").expect("origin");
+        Ok(Some(
+            ronie_ui::services::community::CommunityService::new(
+                ronie_core::OAuthConfig::new(origin.clone(), key.to_owned()),
+                ronie_core::OriginPolicy::new(origin, []),
+                self.1.clone(),
+                ronie_core::SettingsStore::standalone(
+                    self.0.path(),
+                    ronie_core::UI_PREFERENCES_SETTINGS,
+                ),
+            )
+            .into(),
+        ))
+    }
+
+    fn remove(
+        &mut self,
+    ) -> Result<
+        Option<ronie_ui::services::key_setup::CommunityParts>,
+        ronie_ui::services::key_setup::KeySetupError,
+    > {
+        Ok(None)
+    }
+}
+
+#[test]
+fn a_service_change_ends_the_place_of_a_browser_from_a_slot() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[], add_overdrive);
+    let insert = last_insert(&backend);
+    open_browser_from_the_slot(&mut driver);
+    // A saved key starts a service, whose views start again with no browser.
+    start_a_service(&mut driver, ronie_core::RecordedTransport::new(Vec::new()));
+    assert!(driver.chrome_mut().browser_mut().is_none());
+
+    load_through_the_browser(&mut driver, &insert, local_pedal(901, "Later Drive"));
+    let titles = lane_titles(&backend, false);
+    assert_eq!(
+        titles.last().map(String::as_str),
+        Some("Later Drive"),
+        "{titles:?}"
+    );
+}
+
+#[test]
+fn a_browser_from_a_slot_places_only_the_tone_of_its_insert() {
+    let (mut driver, backend) = slot_driver("main-mono", false, &[], add_overdrive);
+    let insert = last_insert(&backend);
+    open_browser_from_the_slot(&mut driver);
+    // A file fills the slot's insert at the end of the lane while the browser is open.
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("closet-cab.wav");
+    write_ir(&path);
+    driver
+        .chrome_mut()
+        .drop_file_into(&insert, &path, Placement::End)
+        .expect("the file loads");
+    driver.settle();
+    let file = lane_titles(&backend, false);
+
+    // A later load into the next insert lands at the end, and the file stays where it is.
+    let next = last_insert(&backend);
+    assert_ne!(next, insert);
+    load_through_the_browser(&mut driver, &next, local_pedal(902, "Next Drive"));
+    let mut expected = file;
+    expected.push("Next Drive".to_owned());
+    assert_eq!(lane_titles(&backend, false), expected);
+}
+
+#[test]
+fn a_file_load_keeps_the_place_of_a_slot_download() {
+    let (mut driver, backend) = slot_driver("main-stereo", false, &[], |_| {});
+    // A service whose first request, the download, waits for good.
+    let held = Arc::new(tokio::sync::Notify::new());
+    start_a_service(
+        &mut driver,
+        ronie_core::RecordedTransport::gated(Vec::new(), held.clone(), held),
+    );
+    driver.chrome_mut().close_auth();
+    let chain = backend.chain_state(0).chain;
+    let first = chain.left[0].id.clone();
+    let insert = last_insert(&backend);
+    let lane_b_insert = chain
+        .right
+        .iter()
+        .rev()
+        .find(|block| block.is_insert)
+        .map(|block| block.id.0.clone())
+        .expect("lane B insert");
+
+    // A slot download before the first block of lane A starts and is held.
+    let pedal = gear_tone(704, "Slot Download", "pedal");
+    driver.chrome_mut().add_tone(
+        ronie_core::ChainSide::Left,
+        &insert,
+        pedal.clone(),
+        Placement::Before(first.clone()),
+    );
+    assert_eq!(
+        driver.chrome().loading_tone(),
+        Some(ronie_core::ToneId(704))
+    );
+
+    // A file lands at the end of lane B meanwhile.
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("closet-cab.wav");
+    write_ir(&path);
+    driver
+        .chrome_mut()
+        .drop_file_into(&lane_b_insert, &path, Placement::End)
+        .expect("the file loads");
+    assert_eq!(
+        lane_titles(&backend, true).last().map(String::as_str),
+        Some("closet-cab")
+    );
+
+    // The download lands in its insert, as the worker publishes it.
+    backend
+        .dispatch(ronie_ui::backend::UiAction::LoadTone {
+            target_insert_id: BlockId(insert.clone()),
+            tone: pedal,
+            model_id: ronie_core::ModelId(7040),
+        })
+        .expect("publish");
+    let flow = driver.chrome_mut().load_flow_mut();
+    let generation = flow.generation();
+    assert!(flow.finish_remote(generation));
+    driver.chrome_mut().sync_browser();
+    let left = lane_titles(&backend, false);
+    assert_eq!(
+        left.first().map(String::as_str),
+        Some("Slot Download"),
+        "{left:?}"
     );
 }

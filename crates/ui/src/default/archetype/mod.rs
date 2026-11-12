@@ -11,7 +11,7 @@ mod utility;
 
 use eframe::egui;
 
-use super::header::{ChromeController, show_faceplate, show_overlay, show_stage};
+use super::header::{ChromeController, Placement, show_faceplate, show_overlay, show_stage};
 use crate::services::load_flow::LoadPhase;
 
 /// Header height in design points.
@@ -50,6 +50,8 @@ pub(super) fn show(
     if let Some(stereo) = chrome.faceplate_mut().take_lanes_request() {
         let _ = chrome.set_stereo(stereo);
     }
+    // What is left between the header and the global panel: the stage, which holds a slot's menu.
+    let stage = ui.available_rect_before_wrap();
 
     // Settle selection first, so that the stage decides on this frame's state and never falls
     // through to the reference chain gallery.
@@ -74,7 +76,7 @@ pub(super) fn show(
             None => {
                 focus.store(ui.ctx());
                 show_empty(ui, chrome, state, look);
-                show_add_menu(ui, chrome, state, header_bounds);
+                show_add_menu(ui, chrome, state, header_bounds, stage);
                 return;
             }
         }
@@ -85,6 +87,9 @@ pub(super) fn show(
         detail.set_page(super::block::BlockPage::Archetype);
         let (before, after) = pedal_run(state, detail.block_id());
         detail.set_stage_neighbours(before, after);
+        let slots = stage_slots(state, detail.block_id());
+        detail.set_stage_slots(slots);
+        detail.set_open_slot(add_menu::AddMenu::load(ui.ctx()).open_slot());
     }
     show_stage(ui, chrome, now_ms);
     if let Some(id) = chrome
@@ -95,7 +100,76 @@ pub(super) fn show(
         chrome.sync_detail();
         ui.ctx().request_repaint();
     }
-    show_add_menu(ui, chrome, state, header_bounds);
+    if let Some(request) = chrome
+        .detail_mut()
+        .and_then(super::block::BlockDetail::take_slot_request)
+    {
+        open_slot_menu(ui.ctx(), state, request);
+    }
+    follow_slot(ui.ctx(), chrome);
+    show_add_menu(ui, chrome, state, header_bounds, stage);
+}
+
+/// Opens the add menu beside the slot that the player clicked, or closes it when it is that
+/// slot's menu already.
+fn open_slot_menu(
+    ctx: &egui::Context,
+    state: &crate::backend::ChainViewState,
+    request: super::block::SlotRequest,
+) {
+    let mut menu = add_menu::AddMenu::load(ctx);
+    if menu.open_slot() == Some((request.category, request.placement.clone())) {
+        menu.open = false;
+    } else {
+        let lane = match &request.placement {
+            Placement::After(id) | Placement::Before(id) => header::lane_of(state, Some(id)),
+            Placement::End => ronie_core::ChainSide::Left,
+        };
+        menu.open_at(request.category, request.placement, request.anchor, lane);
+    }
+    menu.store(ctx);
+    ctx.request_repaint();
+}
+
+/// Keeps a slot's menu beside its slot when the stage lays out again, such as after a resize,
+/// and closes it when its slot left the stage, such as when another block opened. Another slot
+/// of the same gear places the block elsewhere, so the menu follows only its own placement.
+fn follow_slot(ctx: &egui::Context, chrome: &mut ChromeController) {
+    let mut menu = add_menu::AddMenu::load(ctx);
+    let Some((category, placement)) = menu.open_slot() else {
+        return;
+    };
+    let drawn = chrome
+        .detail_mut()
+        .and_then(|detail| detail.slot_rect(category, &placement));
+    match drawn {
+        Some(rect) if menu.anchor == Some(rect) => return,
+        Some(rect) => menu.anchor = Some(rect),
+        None => {
+            menu.open = false;
+            if let Some(detail) = chrome.detail_mut() {
+                detail.set_open_slot(None);
+            }
+            ctx.request_repaint();
+        }
+    }
+    menu.store(ctx);
+}
+
+/// What the header of a slot's menu says about where the block lands, such as "after OD808".
+fn place_of_slot(state: &crate::backend::ChainViewState, placement: &Placement) -> Option<String> {
+    let (word, id) = match placement {
+        Placement::After(id) => ("after", id),
+        Placement::Before(id) => ("before", id),
+        Placement::End => return None,
+    };
+    let block = state
+        .chain
+        .left
+        .iter()
+        .chain(&state.chain.right)
+        .find(|block| &block.id == id)?;
+    Some(add_menu::place_text(word, &block.tone.as_ref()?.title))
 }
 
 /// Draws the add menu when it is open and carries out what the player chose.
@@ -104,6 +178,7 @@ fn show_add_menu(
     chrome: &mut ChromeController,
     state: &crate::backend::ChainViewState,
     header_bounds: egui::Rect,
+    stage: egui::Rect,
 ) {
     let mut menu = add_menu::AddMenu::load(ui.ctx());
     if menu.adding && chrome.load_flow_phase() != LoadPhase::Loading {
@@ -137,16 +212,17 @@ fn show_add_menu(
         catalog_downloads: chrome.can_download_catalog_tones(),
         results: chrome.add_store(),
         loading: chrome.loading_tone(),
+        place: place_of_slot(state, &menu.placement),
     };
-    let anchor = header::plus_rect(header_bounds);
-    let action = add_menu::show(ui, anchor, &mut menu, &data);
+    let plus = header::plus_rect(header_bounds);
+    let action = add_menu::show(ui, plus, stage, &mut menu, &data);
     if let Some(action) = action {
         let insert = header::insert_of(state, menu.lane);
         match action {
             add_menu::AddMenuAction::OpenBrowser(category) => {
                 menu.open = false;
                 if let Some(id) = insert {
-                    chrome.open_browser_for(&id, category, &menu.search);
+                    chrome.open_browser_for(&id, category, &menu.search, menu.placement.clone());
                 }
             }
             add_menu::AddMenuAction::LoadFile => {
@@ -156,12 +232,12 @@ fn show_add_menu(
                     .add_filter("Audio models", &["nam", "wav"])
                     .pick_file();
                 if let (Some(path), Some(id)) = (picked, insert) {
-                    let _ = chrome.drop_file_into(&id, &path);
+                    let _ = chrome.drop_file_into(&id, &path, menu.placement.clone());
                 }
             }
             add_menu::AddMenuAction::Add(tone) => {
                 if let Some(id) = insert {
-                    chrome.add_tone(menu.lane, &id, tone);
+                    chrome.add_tone(menu.lane, &id, tone, menu.placement.clone());
                 }
                 // A download keeps the menu open, so that its row shows the load, and a failed
                 // load keeps it open beside its toast, so that the player can try again.
@@ -379,4 +455,45 @@ pub(super) fn pedal_run(
         return (before, after);
     }
     (Vec::new(), Vec::new())
+}
+
+/// Where the stage of block `id` offers a slot: a pedal after the last pedal of a run, and for
+/// an amp a pedal before it and, unless a cab follows it in its lane, a cab after it.
+pub(super) fn stage_slots(
+    state: &crate::backend::ChainViewState,
+    id: &ronie_core::BlockId,
+) -> super::block::StageSlots {
+    use ronie_core::gear::GearCategory::{Amp, Cab, Pedal};
+    let category = |block: &ronie_core::ChainBlock| {
+        if block.is_insert {
+            return None;
+        }
+        super::skins::skin_for(block).map(|skin| skin.category)
+    };
+    for lane in [&state.chain.left, &state.chain.right] {
+        let Some(index) = lane.iter().position(|block| &block.id == id) else {
+            continue;
+        };
+        let mut slots = super::block::StageSlots::default();
+        match category(&lane[index]) {
+            Some(Pedal) => {
+                let last = lane[index..]
+                    .iter()
+                    .take_while(|block| category(block) == Some(Pedal))
+                    .last()
+                    .unwrap_or(&lane[index]);
+                slots.pedal_after = Some(last.id.clone());
+            }
+            Some(Amp) => {
+                slots.pedal_before = Some(id.clone());
+                let next = lane[index + 1..].iter().find(|block| !block.is_insert);
+                if next.and_then(category) != Some(Cab) {
+                    slots.cab_after = Some(id.clone());
+                }
+            }
+            _ => {}
+        }
+        return slots;
+    }
+    super::block::StageSlots::default()
 }

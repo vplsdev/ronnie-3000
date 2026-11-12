@@ -63,6 +63,42 @@ const BYPASSED_TINT: Color32 = Color32::from_rgb(0xb4, 0xb4, 0xb2);
 /// Tallest a rendered skin draws, in points (the design's stage height).
 const RENDER_HEIGHT: f32 = 300.0;
 
+/// Where the stage of a block offers a slot to add gear: the block each slot is placed
+/// against, or `None` where the slot does not show.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StageSlots {
+    /// A pedal after this block (the last pedal of a run), on the pedals stage.
+    pub pedal_after: Option<BlockId>,
+    /// A pedal before this block, on an amp's stage.
+    pub pedal_before: Option<BlockId>,
+    /// A cab after this block, on an amp's stage.
+    pub cab_after: Option<BlockId>,
+}
+
+/// A click on a slot of the stage.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlotRequest {
+    /// The kind of gear the slot adds.
+    pub category: ronie_core::gear::GearCategory,
+    /// Where the added block goes.
+    pub placement: super::Placement,
+    /// The slot on screen, for the menu to open beside.
+    pub anchor: Rect,
+}
+
+/// One slot as the stage lays it out.
+struct SlotSpec {
+    category: ronie_core::gear::GearCategory,
+    placement: super::Placement,
+    label: &'static str,
+    name: &'static str,
+    /// Width and height at the full render height.
+    size: egui::Vec2,
+}
+
+/// Space between a slot and the render next to it.
+const SLOT_GAP: f32 = 18.0;
+
 /// Complete block detail controller.
 pub struct BlockDetail {
     backend: Arc<dyn UiBackend>,
@@ -75,6 +111,14 @@ pub struct BlockDetail {
     neighbours: (Vec<ChainBlock>, Vec<ChainBlock>),
     /// A neighbour pedal that was clicked, for the layout to open.
     select_request: Option<BlockId>,
+    /// Where the stage offers a slot to add gear.
+    slots: StageSlots,
+    /// The slot whose menu is open, drawn solid.
+    open_slot: Option<(ronie_core::gear::GearCategory, super::Placement)>,
+    /// A slot that was clicked, for the layout to open its menu.
+    slot_request: Option<SlotRequest>,
+    /// Where each slot was drawn on the latest frame, for an open menu to stay beside it.
+    slot_rects: Vec<(ronie_core::gear::GearCategory, super::Placement, Rect)>,
     block_id: BlockId,
     block: ChainBlock,
     calibrate_input: bool,
@@ -156,6 +200,10 @@ impl BlockDetail {
             page: BlockPage::Reference,
             neighbours: (Vec::new(), Vec::new()),
             select_request: None,
+            slots: StageSlots::default(),
+            open_slot: None,
+            slot_request: None,
+            slot_rects: Vec::new(),
             block_id: id,
             block,
             calibrate_input,
@@ -1393,6 +1441,39 @@ impl BlockDetail {
         self.select_request.take()
     }
 
+    /// Sets where the stage offers a slot to add gear.
+    pub fn set_stage_slots(&mut self, slots: StageSlots) {
+        self.slots = slots;
+        self.slot_rects.clear();
+    }
+
+    /// Where the slot of `category` that places a block at `placement` was drawn since the
+    /// latest `set_stage_slots`, if it was.
+    #[must_use]
+    pub fn slot_rect(
+        &self,
+        category: ronie_core::gear::GearCategory,
+        placement: &super::Placement,
+    ) -> Option<Rect> {
+        self.slot_rects
+            .iter()
+            .find(|(each, place, _)| *each == category && place == placement)
+            .map(|(_, _, rect)| *rect)
+    }
+
+    /// The slot the user clicked on the stage, once.
+    pub fn take_slot_request(&mut self) -> Option<SlotRequest> {
+        self.slot_request.take()
+    }
+
+    /// Draws the slot of a kind of gear and a placement solid while its menu is open.
+    pub fn set_open_slot(
+        &mut self,
+        slot: Option<(ronie_core::gear::GearCategory, super::Placement)>,
+    ) {
+        self.open_slot = slot;
+    }
+
     /// Chooses the page the detail draws.
     pub fn set_page(&mut self, page: BlockPage) {
         self.page = page;
@@ -1835,8 +1916,11 @@ impl BlockDetail {
             .and_then(|skin| Some((skin, super::skins::textures(ui.ctx(), skin.id)?)));
         let gear = match &skin {
             Some((skin, textures)) => {
-                let body = if skin.category == ronie_core::gear::GearCategory::Pedal {
-                    self.show_pedalboard(ui, stage, textures)
+                let body = if matches!(
+                    skin.category,
+                    ronie_core::gear::GearCategory::Pedal | ronie_core::gear::GearCategory::Amp
+                ) {
+                    self.show_pedalboard(ui, stage, textures, skin.category)
                 } else {
                     textures.manifest.fit(stage, RENDER_HEIGHT)
                 };
@@ -1910,13 +1994,54 @@ impl BlockDetail {
         }
     }
 
-    /// Lays the pedal and its neighbours out side by side at one height, draws the neighbours,
-    /// and returns where this pedal's body goes.
+    /// The slots this stage offers, leading and trailing the renders.
+    fn stage_slots(
+        &self,
+        category: ronie_core::gear::GearCategory,
+    ) -> (Option<SlotSpec>, Option<SlotSpec>) {
+        use ronie_core::gear::GearCategory::{Amp, Cab, Pedal};
+
+        use super::Placement::{After, Before};
+        match category {
+            Pedal => (
+                None,
+                self.slots.pedal_after.clone().map(|id| SlotSpec {
+                    category: Pedal,
+                    placement: After(id),
+                    label: "PEDAL",
+                    name: "Add a pedal after these",
+                    size: egui::vec2(110.0, 176.0),
+                }),
+            ),
+            Amp => (
+                self.slots.pedal_before.clone().map(|id| SlotSpec {
+                    category: Pedal,
+                    placement: Before(id),
+                    label: "PEDAL",
+                    name: "Add a pedal before the amp",
+                    size: egui::vec2(96.0, 160.0),
+                }),
+                self.slots.cab_after.clone().map(|id| SlotSpec {
+                    category: Cab,
+                    placement: After(id),
+                    label: "CAB",
+                    name: "Add a cab after the amp",
+                    size: egui::vec2(96.0, 160.0),
+                }),
+            ),
+            _ => (None, None),
+        }
+    }
+
+    /// Lays the gear, its pedal neighbours and the slots out side by side at one height,
+    /// draws the neighbours and the slots, and returns where this block's body goes. The
+    /// renders and the slots shrink together when they do not fit.
     fn show_pedalboard(
         &mut self,
         ui: &mut egui::Ui,
         stage: Rect,
         textures: &super::skins::SkinTextures,
+        category: ronie_core::gear::GearCategory,
     ) -> Rect {
         let neighbour = |block: &ChainBlock| {
             let skin = super::skins::skin_for(block)?;
@@ -1924,7 +2049,8 @@ impl BlockDetail {
         };
         let before: Vec<_> = self.neighbours.0.iter().filter_map(neighbour).collect();
         let after: Vec<_> = self.neighbours.1.iter().filter_map(neighbour).collect();
-        if before.is_empty() && after.is_empty() {
+        let (lead, trail) = self.stage_slots(category);
+        if before.is_empty() && after.is_empty() && lead.is_none() && trail.is_none() {
             return textures.manifest.fit(stage, RENDER_HEIGHT);
         }
         let aspect = |manifest: &super::skins::SkinManifest| {
@@ -1937,31 +2063,48 @@ impl BlockDetail {
             .map(|(_, each)| aspect(&each.manifest))
             .sum::<f32>()
             + aspect(&textures.manifest);
-        let gaps = PEDAL_GAP * (count - 1) as f32;
+        let slot_count = usize::from(lead.is_some()) + usize::from(trail.is_some());
+        let slot_widths: f32 = [&lead, &trail]
+            .into_iter()
+            .flatten()
+            .map(|slot| slot.size.x / RENDER_HEIGHT)
+            .sum();
+        let gaps = PEDAL_GAP * (count - 1) as f32 + SLOT_GAP * slot_count as f32;
         let height = stage
             .height()
             .min(RENDER_HEIGHT)
-            .min((stage.width() - gaps) / aspects);
-        let total = aspects * height + gaps;
+            .min((stage.width() - gaps) / (aspects + slot_widths));
+        let scale = height / RENDER_HEIGHT;
+        let total = (aspects + slot_widths) * height + gaps;
         let mut x = stage.center().x - total / 2.0;
         let top = stage.center().y - height / 2.0;
-        let mut place = |manifest: &super::skins::SkinManifest| {
+        let place_slot = |slot: &SlotSpec, x: &mut f32| {
+            let size = slot.size * scale;
+            let rect = Rect::from_min_size(egui::pos2(*x, stage.center().y - size.y / 2.0), size);
+            *x = rect.right() + SLOT_GAP;
+            rect
+        };
+        let lead_rect = lead.as_ref().map(|slot| place_slot(slot, &mut x));
+        let place = |manifest: &super::skins::SkinManifest, x: &mut f32| {
             let rect = Rect::from_min_size(
-                egui::pos2(x, top),
+                egui::pos2(*x, top),
                 egui::vec2(aspect(manifest) * height, height),
             );
-            x = rect.right() + PEDAL_GAP;
+            *x = rect.right() + PEDAL_GAP;
             rect
         };
         let before_rects: Vec<_> = before
             .iter()
-            .map(|(_, each)| place(&each.manifest))
+            .map(|(_, each)| place(&each.manifest, &mut x))
             .collect();
-        let own = place(&textures.manifest);
+        let own = place(&textures.manifest, &mut x);
         let after_rects: Vec<_> = after
             .iter()
-            .map(|(_, each)| place(&each.manifest))
+            .map(|(_, each)| place(&each.manifest, &mut x))
             .collect();
+        // The run's last render is followed by the slot's gap, not by a pedal gap.
+        x += SLOT_GAP - PEDAL_GAP;
+        let trail_rect = trail.as_ref().map(|slot| place_slot(slot, &mut x));
         for ((block, each), rect) in before
             .iter()
             .zip(before_rects)
@@ -1969,7 +2112,95 @@ impl BlockDetail {
         {
             self.show_neighbour(ui, rect, block, each);
         }
+        for (slot, rect) in [(lead, lead_rect), (trail, trail_rect)] {
+            if let (Some(slot), Some(rect)) = (slot, rect) {
+                self.show_slot(ui, rect, &slot);
+            }
+        }
         own
+    }
+
+    /// A dashed slot where gear can be added: a plus and a label, solid while its menu is open.
+    fn show_slot(&mut self, ui: &mut egui::Ui, rect: Rect, slot: &SlotSpec) {
+        let response = ui.interact(
+            rect,
+            ui.scope_id().with(("slot", slot.name)),
+            Sense::click(),
+        );
+        let open = self
+            .open_slot
+            .as_ref()
+            .is_some_and(|(category, placement)| {
+                *category == slot.category && *placement == slot.placement
+            });
+        response
+            .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, open, slot.name));
+        self.slot_rects
+            .push((slot.category, slot.placement.clone(), rect));
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.clicked() {
+            self.slot_request = Some(SlotRequest {
+                category: slot.category,
+                placement: slot.placement.clone(),
+                anchor: rect,
+            });
+        }
+        let (fill, edge, content) = if open {
+            (SLOT_INK, SLOT_INK, Color32::WHITE)
+        } else {
+            (
+                Color32::from_white_alpha(89),
+                SLOT_EDGE,
+                Color32::from_rgb(0x5f, 0x5f, 0x5c),
+            )
+        };
+        let painter = ui.painter();
+        painter.rect_filled(rect, 10.0, fill);
+        if open {
+            painter.rect_stroke(
+                rect,
+                10.0,
+                egui::Stroke::new(1.5, edge),
+                egui::StrokeKind::Inside,
+            );
+        } else {
+            let outline = rounded_outline(rect.shrink(0.75), 10.0);
+            painter.extend(egui::Shape::dashed_line(
+                &outline,
+                egui::Stroke::new(1.5, edge),
+                5.0,
+                4.0,
+            ));
+        }
+        // The plus and the tracked label, centred as a column with an 8 pt gap.
+        let font = bold_font(10.0);
+        let letters: Vec<_> = slot
+            .label
+            .chars()
+            .map(|letter| painter.layout_no_wrap(letter.to_string(), font.clone(), content))
+            .collect();
+        let tracking = 1.2;
+        let width: f32 = letters.iter().map(|galley| galley.size().x).sum::<f32>()
+            + tracking * (letters.len() - 1) as f32;
+        let text_height = letters.first().map_or(0.0, |galley| galley.size().y);
+        let column = 18.0 + 8.0 + text_height;
+        let icon = egui::Pos2::new(rect.center().x, rect.center().y - column / 2.0 + 9.0);
+        let stroke = egui::Stroke::new(2.2, content);
+        let arm = 7.0;
+        painter.line_segment(
+            [icon - egui::vec2(arm, 0.0), icon + egui::vec2(arm, 0.0)],
+            stroke,
+        );
+        painter.line_segment(
+            [icon - egui::vec2(0.0, arm), icon + egui::vec2(0.0, arm)],
+            stroke,
+        );
+        let mut at = egui::pos2(rect.center().x - width / 2.0, icon.y + 9.0 + 8.0);
+        for galley in letters {
+            let advance = galley.size().x + tracking;
+            painter.galley(at, galley, content);
+            at.x += advance;
+        }
     }
 
     /// A pedal next to the open one: drawn with its knobs where its settings put them, and
@@ -2156,6 +2387,32 @@ const CHIP_EDGE: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcc);
 const CARD_EDGE: Color32 = Color32::from_rgb(0xdc, 0xdc, 0xd9);
 /// Body text of the light INFO tab.
 const INFO_BODY: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
+
+/// Edge of an empty slot on the stage.
+const SLOT_EDGE: Color32 = Color32::from_rgb(0xa9, 0xa9, 0xa6);
+/// Fill and edge of the slot whose menu is open.
+const SLOT_INK: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
+
+/// The outline of a rounded rectangle as a closed list of points.
+fn rounded_outline(rect: Rect, radius: f32) -> Vec<egui::Pos2> {
+    use std::f32::consts::FRAC_PI_2;
+    let corners = [
+        (rect.right_top(), egui::vec2(-radius, radius), 3.0),
+        (rect.right_bottom(), egui::vec2(-radius, -radius), 0.0),
+        (rect.left_bottom(), egui::vec2(radius, -radius), 1.0),
+        (rect.left_top(), egui::vec2(radius, radius), 2.0),
+    ];
+    let mut points = Vec::new();
+    for (corner, inset, quarter) in corners {
+        let centre = corner + inset;
+        for step in 0..=6 {
+            let angle = (quarter + step as f32 / 6.0) * FRAC_PI_2;
+            points.push(centre + egui::vec2(angle.cos(), angle.sin()) * radius);
+        }
+    }
+    points.push(points[0]);
+    points
+}
 
 fn bold_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("arimo-bold".into()))

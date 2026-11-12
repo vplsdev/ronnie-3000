@@ -23,7 +23,9 @@ use ronie_ui::{
         ChainViewState, GesturePhase, MeterSnapshot, MockBackend, UiAction, UiBackend, UiError,
         UiReceipt,
     },
-    default::{ART_SIDE, AuthPhase, ChromeController, FilterMenu, ModelOption, TileVisualState},
+    default::{
+        ART_SIDE, AuthPhase, ChromeController, FilterMenu, ModelOption, Placement, TileVisualState,
+    },
     driver::UiDriver,
     services::{
         AuthService, CatalogStatus, LoadFlow, LoadPhase, ModelSwitchFlow,
@@ -5404,7 +5406,7 @@ fn an_add_while_another_downloads_lands_only_the_newer_tone() {
         .expect("insert");
     let mut chrome = chrome_with(inner.clone(), &routes, &directory);
 
-    chrome.add_tone(ChainSide::Left, &insert, catalog_row(5));
+    chrome.add_tone(ChainSide::Left, &insert, catalog_row(5), Placement::End);
     let waiting = routes.clone();
     pump(&mut chrome, "the first download", move |_| {
         waiting.count(PUBLIC_FILE) == 1
@@ -5415,7 +5417,7 @@ fn an_add_while_another_downloads_lands_only_the_newer_tone() {
         .respond(TONE_SIX, tone_answer(6, "nam"))
         .respond(MODELS, one_model(8, "https://models.example/files/8.nam"))
         .respond("/files/8.nam", file_answer(b"new"));
-    chrome.add_tone(ChainSide::Left, &insert, catalog_row(6));
+    chrome.add_tone(ChainSide::Left, &insert, catalog_row(6), Placement::End);
     assert_eq!(
         chrome.loading_tone(),
         Some(ToneId(6)),
