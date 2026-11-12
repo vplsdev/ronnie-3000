@@ -3335,3 +3335,17 @@ fn cabs_and_pedals_have_no_lights() {
     cab.settle();
     assert!(!cab.is_visible("Captures"));
 }
+
+#[test]
+fn the_edge_of_the_last_light_selects_it_instead_of_paging() {
+    let (mut driver, backend) = amp_driver(9);
+    let rect = rect_of(&driver, "Take 8").expect("last visible light");
+    // The light's hit area reaches 4 pt past its visible edge on the right.
+    let _ = driver.click_at(eframe::egui::pos2(rect.right() - 1.0, rect.center().y));
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-2"), Some(1108));
+    assert_eq!(
+        lights(&driver, 9).first().map(|(l, _)| l.as_str()),
+        Some("Take 1")
+    );
+}

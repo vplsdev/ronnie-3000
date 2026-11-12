@@ -3153,18 +3153,19 @@ impl BlockDetail {
             .map(|option| (option.id, option.name.clone()))
             .collect();
         let count = options.len();
-        let shown = self.capture_shown_id();
-        let active = shown
-            .and_then(|id| options.iter().position(|(each, _)| *each == id))
-            .unwrap_or(0);
+        // The shown capture, as the display and the picker have it; none lit when it is not in
+        // the list.
+        let active = self.capture_index();
         // The window follows the active light whenever the active capture changes, and the
         // arrows move it by one from there.
         let visible = count.min(CAPTURE_LIGHT_COUNT);
         let last_start = count - visible;
-        if self.light_followed != Some(active) {
-            self.light_followed = Some(active);
-            let lowest = active.saturating_sub(visible - 1);
-            self.light_start = self.light_start.clamp(lowest, active);
+        if self.light_followed != active {
+            self.light_followed = active;
+            if let Some(active) = active {
+                let lowest = active.saturating_sub(visible - 1);
+                self.light_start = self.light_start.clamp(lowest, active);
+            }
         }
         self.light_start = self.light_start.min(last_start);
         let start = self.light_start;
@@ -3173,7 +3174,12 @@ impl BlockDetail {
 
         let label_font = bold_font(9.5);
         let label_width = tracked_width(ui.painter(), "CAPTURE", &label_font, CAPTURE_TRACKING);
-        let name: String = options[active].1.chars().take(CAPTURE_NAME_CHARS).collect();
+        let name: String = self
+            .capture_shown()
+            .1
+            .chars()
+            .take(CAPTURE_NAME_CHARS)
+            .collect();
         let name_font = egui::FontId::monospace(10.0);
         let name_width = ui
             .painter()
@@ -3181,7 +3187,7 @@ impl BlockDetail {
             .size()
             .x;
         let arrow = if paged { LIGHT_PITCH } else { 0.0 };
-        let lights_width = visible as f32 * LIGHT_PITCH - LIGHT_GAP + 2.0 * arrow;
+        let lights_width = visible as f32 * LIGHT_PITCH - LIGHT_GAP / 2.0 + 2.0 * arrow;
         let pad = 14.0;
         let gap = 12.0;
         let width = pad * 2.0 + label_width + gap + lights_width + gap + name_width;
@@ -3261,7 +3267,7 @@ impl BlockDetail {
         }
         for (offset, (id, name)) in options.iter().enumerate().skip(start).take(visible) {
             let center = egui::pos2(x + LIGHT_SIZE / 2.0, pill.center().y);
-            let on = offset == active;
+            let on = Some(offset) == active;
             let hit = Rect::from_center_size(center, egui::Vec2::splat(LIGHT_PITCH));
             let response = ui.interact(
                 hit,
@@ -3309,12 +3315,8 @@ impl BlockDetail {
             }
             x += LIGHT_PITCH;
         }
-        if paged {
-            x -= LIGHT_GAP;
-            if arrow_button(ui, x, "\u{203a}", "Next captures", start < last_start) {
-                step_to = Some(start + 1);
-            }
-            x += LIGHT_PITCH;
+        if paged && arrow_button(ui, x, "\u{203a}", "Next captures", start < last_start) {
+            step_to = Some(start + 1);
         }
         if let Some(to) = step_to {
             self.light_start = to;
@@ -3340,7 +3342,6 @@ impl BlockDetail {
                 .with(("capture-lights-name", &self.block_id.0)),
             &name,
         );
-        let _ = x;
     }
 
     /// The capture the display shows: the one on its way, or else the one the block plays.
