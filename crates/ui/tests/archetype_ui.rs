@@ -1640,3 +1640,96 @@ fn a_refused_library_load_shows_a_toast_and_keeps_the_menu_and_the_tone() {
         "the tone stays in the library"
     );
 }
+
+// ---------------------------------------------------------------- Add menu: load a file
+
+/// Writes a short mono 16-bit WAV impulse response, a file that the menu's file dialog takes.
+fn write_ir(path: &std::path::Path) {
+    let samples = [0_i16, 1000, -1000, 0];
+    let mut bytes = Vec::from(b"RIFF".as_slice());
+    bytes.extend_from_slice(&(36 + samples.len() as u32 * 2).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&96_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&2_u16.to_le_bytes());
+    bytes.extend_from_slice(&16_u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(samples.len() as u32 * 2).to_le_bytes());
+    for sample in samples {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    std::fs::write(path, bytes).expect("WAV");
+}
+
+fn last_insert(backend: &MockBackend) -> String {
+    backend
+        .chain_state(0)
+        .chain
+        .left
+        .iter()
+        .rev()
+        .find(|block| block.is_insert)
+        .map(|block| block.id.0.clone())
+        .expect("insert")
+}
+
+#[test]
+fn a_loaded_file_lands_at_the_end_of_the_lane_joins_the_library_and_opens() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("closet-cab.wav");
+    write_ir(&path);
+    let insert = last_insert(&backend);
+
+    driver
+        .chrome_mut()
+        .drop_file_into(&insert, &path)
+        .expect("the file loads");
+    driver.settle();
+
+    let lane = backend.chain_state(0).chain.left.clone();
+    let last_tone = lane
+        .iter()
+        .rev()
+        .find(|block| !block.is_insert)
+        .expect("a tone block");
+    assert_eq!(last_tone.id.0, insert, "the file fills the last insert");
+    let title = last_tone.tone.as_ref().map(|tone| tone.title.clone());
+    assert!(
+        driver
+            .chrome()
+            .recent_tones()
+            .tones()
+            .first()
+            .is_some_and(|tone| Some(&tone.title) == title.as_ref() && tone.local),
+        "the file joins the library"
+    );
+    assert!(
+        matches!(driver.chrome().gallery().selection(), GallerySelection::BlockDetail(id) if id.0 == insert),
+        "the new block is on the stage: {:?}",
+        driver.chrome().gallery().selection()
+    );
+}
+
+#[test]
+fn a_missing_file_shows_a_toast() {
+    let (mut driver, backend) = archetype_driver("main-mono");
+    let directory = tempfile::tempdir().expect("tempdir");
+    let insert = last_insert(&backend);
+    let before = backend.chain_state(0).revision;
+
+    let result = driver
+        .chrome_mut()
+        .drop_file_into(&insert, &directory.path().join("gone.nam"));
+    driver.settle();
+
+    assert!(result.is_err());
+    assert_eq!(backend.chain_state(0).revision, before, "the chain stays");
+    assert!(
+        driver.chrome().visible_toast().is_some(),
+        "the player reads that the file did not load"
+    );
+}

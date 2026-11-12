@@ -41,6 +41,8 @@ const HOME_LABEL: &str = "Back to main screen";
 const SESSION_ENDED: &str = "Your session ended. Sign in again to see your tones.";
 /// What the user reads when the backend refuses a tone that needs no download.
 const LOAD_REFUSED: &str = "The tone could not be loaded.";
+/// A local file that did not load. The menu that chose it has closed, so the user opens it again.
+const FILE_REFUSED: &str = "The file could not be loaded. Choose another file to try again.";
 /// The card of a failed load takes a click again, so the user reads how to retry.
 const LOAD_RETRY_HINT: &str = "Select the tone to try again.";
 /// The picker takes the same choice again, so the user reads how to retry.
@@ -1013,7 +1015,8 @@ impl ChromeController {
         });
     }
 
-    /// Loads a local file into one insert and puts its tone in the library.
+    /// Loads a local file into one insert, puts its tone in the library, and opens the new
+    /// block. A refused file shows a toast and changes nothing.
     ///
     /// # Errors
     /// Returns the error of the drop.
@@ -1022,7 +1025,10 @@ impl ChromeController {
         insert_id: &str,
         path: &std::path::Path,
     ) -> Result<(), UiError> {
-        self.gallery.drop_file(insert_id, path)?;
+        if let Err(error) = self.gallery.drop_file(insert_id, path) {
+            self.hints.set_toast(Some(FILE_REFUSED.to_owned()));
+            return Err(error);
+        }
         let chain = self.backend.chain_state(0).chain;
         if let Some(tone) = chain
             .block(&ronie_core::BlockId(insert_id.to_owned()))
@@ -1030,6 +1036,9 @@ impl ChromeController {
         {
             self.remember_tone(tone);
         }
+        // The insert holds the file's tone now, so it opens as a block, as an add does.
+        self.gallery.activate(insert_id);
+        self.sync_detail();
         Ok(())
     }
 
