@@ -2792,6 +2792,11 @@ fn the_reference_layout_has_no_mics_panel() {
 /// The pedalboard where the fuzz is a local tone with three captures, followed by the
 /// single-capture overdrive.
 fn capture_pedalboard() -> (UiDriver, Arc<MockBackend>) {
+    crowded_capture_pedalboard(0)
+}
+
+/// `capture_pedalboard` with `extra` more overdrives after it, so the renders shrink.
+fn crowded_capture_pedalboard(extra: usize) -> (UiDriver, Arc<MockBackend>) {
     let mut scenario = scenario("main-mono");
     let chain = scenario.state["chain"]["chain"]
         .as_array_mut()
@@ -2808,6 +2813,13 @@ fn capture_pedalboard() -> (UiDriver, Arc<MockBackend>) {
     od["tone"]["id"] = 199.into();
     od["tone"]["title"] = OD.into();
     od["tone"]["models"] = serde_json::json!([{ "id": 1199, "name": "Drive 5" }]);
+    for index in 0..extra {
+        let mut more = od.clone();
+        more["blockId"] = format!("blk-od{index}").into();
+        more["tone"]["id"] = (300 + index).into();
+        more["tone"]["title"] = format!("Overdrive {index}").into();
+        chain.insert(1, more);
+    }
     chain.insert(1, od);
     let backend = Arc::new(MockBackend::from_scenario(&scenario));
     let mut chrome = ChromeController::new(backend.clone(), Vec::new(), false, true);
@@ -3089,4 +3101,94 @@ fn rapid_lcd_clicks_end_on_the_landed_capture() {
         "{controls:?}"
     );
     assert_eq!(active_model(&backend, "blk-1"), Some(1106));
+}
+
+#[test]
+fn a_knob_beside_a_small_lcd_keeps_its_clicks() {
+    use eframe::egui;
+
+    let (mut driver, backend) = crowded_capture_pedalboard(5);
+    let display = rect_of(&driver, "Capture display: Muff 1").expect("LCD");
+    let render = rect_of(&driver, "Pedal render").expect("render");
+    assert!(render.height() < 190.0, "a small render: {render:?}");
+    // The knob nearest the LCD, and a point that both hit areas cover.
+    let (label, knob) = ["GAIN IN:", "OUTPUT:", "MIX:"]
+        .into_iter()
+        .filter_map(|prefix| {
+            let label = driver.label_starting_with(prefix)?;
+            let rect = rect_of(&driver, &label)?;
+            Some((label, rect))
+        })
+        .min_by(|(_, a), (_, b)| {
+            a.center()
+                .distance(display.center())
+                .total_cmp(&b.center().distance(display.center()))
+        })
+        .expect("a knob");
+    let shared = knob.intersect(display);
+    assert!(shared.is_positive(), "{knob:?} and {display:?} overlap");
+    let at = shared.center();
+    let prefix = label.split(':').next().expect("prefix").to_owned();
+
+    let _ = driver.click_at(at);
+    driver.settle();
+    assert_eq!(
+        active_model(&backend, "blk-1"),
+        Some(1104),
+        "a click on the knob"
+    );
+    assert!(
+        driver
+            .focused()
+            .is_some_and(|focused| focused.starts_with(&prefix)),
+        "the knob takes the click: {:?}",
+        driver.focused()
+    );
+
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    driver.play(vec![egui::Event::PointerMoved(at)]);
+    for _ in 0..2 {
+        driver.play(vec![button(true)]);
+        driver.play(vec![button(false)]);
+    }
+    driver.settle();
+    assert_eq!(
+        active_model(&backend, "blk-1"),
+        Some(1104),
+        "a double-click on the knob"
+    );
+}
+
+#[test]
+fn an_lcd_step_is_one_undo_step() {
+    let (mut driver, backend) = capture_pedalboard();
+    let _ = driver.click("Capture display: Muff 1").expect("LCD");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-1"), Some(1105));
+    let _ = driver.click("Undo").expect("undo");
+    driver.settle();
+    assert_eq!(active_model(&backend, "blk-1"), Some(1104), "one undo");
+    assert!(driver.is_visible("Capture display: Muff 1"));
+}
+
+#[test]
+fn a_downloading_display_says_so() {
+    let backend = Arc::new(MockBackend::from_scenario(&scenario("main-detail")));
+    let mut detail = catalog_pedal(&backend);
+    let context = lcd_context();
+    lcd_frame(&context, &mut detail, Vec::new());
+    lcd_click(&context, &mut detail, "Capture display: Model 1104");
+    let _request = detail.take_switch_request().expect("a download");
+    let (controls, _) = lcd_frame(&context, &mut detail, Vec::new());
+    assert!(
+        controls
+            .iter()
+            .any(|(label, _)| label == "Capture display: Model 1105 (loading)"),
+        "{controls:?}"
+    );
 }

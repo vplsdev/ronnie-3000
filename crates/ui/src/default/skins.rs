@@ -402,6 +402,8 @@ const LCD_GLOW: [(f32, Color32); 2] = [
         Color32::from_rgba_unmultiplied_const(0x9e, 0xff, 0xb3, 14),
     ),
 ];
+/// The dark pane inside the rendered glass, #0b120d at 85 %.
+const LCD_PANE: Color32 = Color32::from_rgba_unmultiplied_const(0x0b, 0x12, 0x0d, 217);
 /// The smallest LCD text. A longer name is cut, without an ellipsis.
 const LCD_MIN_SIZE: f32 = 7.0;
 /// What a pedal's LCD shows while its capture downloads.
@@ -425,11 +427,21 @@ pub fn draw_lcd(
     Some(glass)
 }
 
-/// Draws `text` centred on the LCD glass in `rect`, green with a soft glow, at the largest size
-/// that fits the glass's width down to 7 pt, and cut at the end when even that is too wide.
+/// Draws a dark pane inside the LCD glass in `rect`, and `text` centred on it, green with a soft
+/// glow, at the largest size that fits the width down to 7 pt, and cut at the end when even that
+/// is too wide.
 pub fn paint_lcd(painter: &egui::Painter, rect: Rect, text: &str) {
+    if !rect.is_positive() {
+        return;
+    }
+    // The rendered glass reads mid-grey; a dark pane inside its bezel gives the text contrast.
+    painter.rect_filled(
+        rect.shrink(1.0),
+        (rect.height() * 0.15).clamp(1.0, 3.0),
+        LCD_PANE,
+    );
     let text = text.trim();
-    if !rect.is_positive() || text.is_empty() {
+    if text.is_empty() {
         return;
     }
     let pad = (rect.height() * 0.2).clamp(1.0, 4.0);

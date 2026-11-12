@@ -2964,6 +2964,9 @@ impl BlockDetail {
         let pass = ui.ctx().cumulative_pass_nr();
         let mut positions = Vec::new();
         let mut hint = None;
+        // The display goes under the knobs, so a knob keeps the clicks where their hit areas
+        // overlap on a small render.
+        let display = self.capture_display_input(ui, body, textures, session);
         for knob in &textures.manifest.knobs {
             let (label, spec, value) = match knob.control {
                 KnobControl::Gain => ("GAIN IN", &gain, self.block.params.input_gain),
@@ -3011,7 +3014,9 @@ impl BlockDetail {
             },
             tint,
         );
-        if let Some(lcd_hint) = self.show_capture_display(ui, &painter, body, textures, session) {
+        if let Some(lcd_hint) =
+            display.and_then(|display| self.paint_capture_display(ui, &painter, &display))
+        {
             hint = hint.or(Some(lcd_hint));
         }
         if let Some((anchor, text)) = hint {
@@ -3019,17 +3024,15 @@ impl BlockDetail {
         }
     }
 
-    /// The LCD of the open pedal: its capture, or dots while one downloads. A click steps to
-    /// the next capture, wrapping, when the tone has more than one. Returns the hint to show
-    /// while the pointer or the keyboard focus is on it.
-    fn show_capture_display(
+    /// The LCD of the open pedal as a control: a click steps to the next capture, wrapping,
+    /// when the tone has more than one. `None` when the skin has no LCD.
+    fn capture_display_input(
         &mut self,
         ui: &mut egui::Ui,
-        painter: &egui::Painter,
         body: Rect,
         textures: &super::skins::SkinTextures,
         session: SessionStatus,
-    ) -> Option<(Rect, String)> {
+    ) -> Option<CaptureDisplay> {
         let manifest = &textures.manifest;
         let glass = manifest.lcd.as_ref()?.rect_in(body, manifest);
         let id = ui.scope_id().with(("capture-display", &self.block_id.0));
@@ -3054,14 +3057,38 @@ impl BlockDetail {
             let id = self.models.options()[next].id;
             let _ = self.select_model(id, session);
         }
+        Some(CaptureDisplay {
+            glass,
+            id,
+            response,
+            steps,
+        })
+    }
+
+    /// Draws the LCD's text: its capture, or dots while one downloads, and the ring under the
+    /// pointer. Returns the hint to show while the pointer or the keyboard focus is on it.
+    fn paint_capture_display(
+        &self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        display: &CaptureDisplay,
+    ) -> Option<(Rect, String)> {
+        let CaptureDisplay {
+            glass,
+            id,
+            response,
+            steps,
+        } = display;
         let (_, name, text) = self.capture_shown();
-        super::skins::paint_lcd(painter, glass, &text);
-        static_text(ui, glass, id.with("text"), &text);
+        super::skins::paint_lcd(painter, *glass, &text);
+        static_text(ui, *glass, id.with("text"), &text);
         if !(response.hovered() || response.has_focus()) {
             return None;
         }
-        let index = self.capture_index().map_or(1, |index| index + 1);
-        let place = format!("CAPTURE {index} / {} \u{b7} {name}", count.max(1));
+        // A capture missing from the list is 0, as in the picker.
+        let index = self.capture_index().map_or(0, |index| index + 1);
+        let count = self.models.options().len();
+        let place = format!("CAPTURE {index} / {count} \u{b7} {name}");
         if !steps {
             return Some((glass.expand(4.0), place));
         }
@@ -3100,12 +3127,18 @@ impl BlockDetail {
             .map(|option| option.name.clone())
             .or_else(|| capture_name(&self.block))
             .unwrap_or_default();
-        let text = if self.models.target().is_some() {
-            super::skins::LCD_LOADING.to_owned()
+        let (label, text) = if self.models.target().is_some() {
+            (
+                format!("Capture display: {name} (loading)"),
+                super::skins::LCD_LOADING.to_owned(),
+            )
         } else {
-            super::skins::lcd_text(&name)
+            (
+                format!("Capture display: {name}"),
+                super::skins::lcd_text(&name),
+            )
         };
-        (format!("Capture display: {name}"), name, text)
+        (label, name, text)
     }
 
     fn write_params(&mut self) -> Result<(), UiError> {
@@ -3159,6 +3192,18 @@ fn rounded_outline(rect: Rect, radius: f32) -> Vec<egui::Pos2> {
 
 fn bold_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("arimo-bold".into()))
+}
+
+/// The open pedal's LCD control, between its input and its drawing.
+struct CaptureDisplay {
+    /// The glass.
+    glass: Rect,
+    /// The control's id.
+    id: egui::Id,
+    /// The control's response.
+    response: egui::Response,
+    /// Whether a click steps the capture.
+    steps: bool,
 }
 
 /// The name of the capture a block plays.
