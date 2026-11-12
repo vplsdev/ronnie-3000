@@ -348,11 +348,7 @@ pub fn gear_category(block: &ChainBlock) -> Option<ronie_core::gear::GearCategor
     let model = block
         .active_model_id
         .and_then(|id| tone.models.iter().find(|model| model.id == id));
-    Some(
-        identify(&GearHints::from_tone(tone, model))
-            .family
-            .category(),
-    )
+    Some(identify(&GearHints::from_tone(tone, model)).category)
 }
 
 /// The skin of a block's gear, when the app has a render for it: the block's chosen skin when

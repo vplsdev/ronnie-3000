@@ -4143,20 +4143,14 @@ fn page_toggle(
 
 /// The category word of the light page title, from the gear the block models.
 fn page_category(block: &ChainBlock) -> &'static str {
-    use ronie_core::gear::{GearCategory, GearHints, identify};
-    let Some(tone) = block.tone.as_ref() else {
-        return "BLOCK";
-    };
-    let model = block
-        .active_model_id
-        .and_then(|id| tone.models.iter().find(|model| model.id == id));
-    match identify(&GearHints::from_tone(tone, model)).category {
-        GearCategory::Pedal => "PEDAL",
-        GearCategory::Amp => "AMP",
-        GearCategory::Cab => "CAB",
-        GearCategory::FullRig => "RIG",
-        GearCategory::Outboard => "OUTBOARD",
-        GearCategory::Space => "SPACE",
+    use ronie_core::gear::GearCategory;
+    match super::skins::gear_category(block) {
+        Some(GearCategory::Pedal) => "PEDAL",
+        Some(GearCategory::Amp) => "AMP",
+        Some(GearCategory::Cab) => "CAB",
+        Some(GearCategory::FullRig) => "RIG",
+        Some(GearCategory::Outboard) => "OUTBOARD",
+        Some(GearCategory::Space) => "SPACE",
         _ => "BLOCK",
     }
 }

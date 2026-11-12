@@ -264,13 +264,8 @@ fn delete_on_key(ctx: &egui::Context, chrome: &mut ChromeController) {
 
 /// The kind of gear that a block models, when it is known.
 fn gear_of(block: &ronie_core::ChainBlock) -> Option<ronie_core::gear::GearCategory> {
-    use ronie_core::gear::{GearCategory, GearHints, identify};
-    let tone = block.tone.as_ref()?;
-    let model = block
-        .active_model_id
-        .and_then(|id| tone.models.iter().find(|model| model.id == id));
-    let category = identify(&GearHints::from_tone(tone, model)).category;
-    (category != GearCategory::Unknown).then_some(category)
+    super::skins::gear_category(block)
+        .filter(|category| *category != ronie_core::gear::GearCategory::Unknown)
 }
 
 /// Keeps a replace menu under the REPLACE button that opened it when the page lays out again,
